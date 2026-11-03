@@ -42,6 +42,13 @@ export function parseQBR(j) {
 }
 // QBR (0-100, ~55 = average starter) onto the app's rating scale (72 = average starter, 88 = all-star) [J]
 export const qbrToRating = q => Math.max(60, Math.min(97, Math.round(72 + (q - 55) * 0.8)));
+// a player's season stats (used for NHL probable goalies: save %, GAA, starts)
+export const athleteStatsUrl = (sport, espnYear, id) => `${CORE}/${ROUTES[sport].sport}/leagues/${ROUTES[sport].leagues[0]}/seasons/${espnYear}/types/2/athletes/${id}/statistics`;
+export function parseGoalie(j) {
+  const st = j?.splits?.categories?.flatMap(c => c.stats || []) || [];
+  const sv = statOf(st, "savePct"), gaa = statOf(st, "avgGoalsAgainst", "goalsAgainstAverage"), gs = statOf(st, "gameStarted", "gamesStarted", "games");
+  return sv != null && sv > 0.5 && sv < 1 ? { sv, gaa, gs } : null;
+}
 export const rankingsUrl = (sport, league) => `${SITE}/${ROUTES[sport].sport}/${league}/rankings`;
 
 // ---------- small helpers ----------
@@ -129,7 +136,7 @@ export function parseScoreboard(j, sport, { standings = {}, hist = {}, lg = null
         id, name: t.displayName || t.name || "", abbr: t.abbreviation || "", color: t.color ? "#" + t.color : "", rec,
         gp: cur?.gp ?? null, gpg: cur?.gpg ?? avgPts ?? null, ga: cur?.gaa ?? null,
         pgpg: prev?.gpg ?? null, pga: prev?.gaa ?? null, pgp: prev?.gp ?? null,
-        gk: pr?.athlete?.displayName || null, lineup: null, rest: null, miles: null,
+        gk: pr?.athlete?.displayName || null, gkId: pr?.athlete?.id ? String(pr.athlete.id) : null, lineup: null, rest: null, miles: null,
         l5w: form ? (form.match(/W/g) || []).length : null, l5l: form ? (form.match(/L/g) || []).length : null,
         hist: hist[id] || [], score: n(comp.score),
       };

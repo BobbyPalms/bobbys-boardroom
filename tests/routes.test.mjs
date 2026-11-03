@@ -1,4 +1,4 @@
-import { parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -61,4 +61,11 @@ const nflB = { events: [event({ id: "n1", away: competitor({ id: "29", abbr: "CA
 nflB.events[0].competitions[0].leaders = [{ name: "passingYards", leaders: [{ displayValue: "30/41, 288 YDS", athlete: { id: "4036378", displayName: "Jordan Love" }, team: { id: "9" } }] }];
 const ng = parseScoreboard(nflB, "NFL")[0];
 check("QB named from the passing leader", ng.home.qbId === "4036378" && ng.home.gk === "Jordan Love" && !ng.away.qbId);
+// NHL goalie: real player-stats shape (Bobrovsky 2026-27: savePct .885, 10 starts)
+const gk = parseGoalie({ splits: { categories: [{ stats: [{ name: "avgGoalsAgainst", value: 3.285 }, { name: "savePct", value: 0.885 }, { name: "gameStarted", value: 10 }] }] } });
+check("goalie stats parsed", gk.sv === 0.885 && gk.gaa === 3.285 && gk.gs === 10, gk);
+check("goalie with no starts yet -> null", parseGoalie({ splits: { categories: [{ stats: [{ name: "savePct", value: 0 }] }] } }) === null);
+check("player stats url", athleteStatsUrl("NHL", 2027, "5571") === "https://sports.core.api.espn.com/v2/sports/hockey/leagues/nhl/seasons/2027/types/2/athletes/5571/statistics");
+const nhlB = { events: [event({ id: "h1", away: competitor({ id: "129764", abbr: "UTA", name: "Utah Mammoth", ha: "away", probables: [{ athlete: { id: "999", displayName: "Sebastian Cossa" }, statistics: [] }] }), home: competitor({ id: "21", abbr: "TOR", name: "Toronto Maple Leafs", ha: "home" }) })] };
+check("probable goalie id kept for the stats lookup", parseScoreboard(nhlB, "NHL")[0].away.gkId === "999");
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

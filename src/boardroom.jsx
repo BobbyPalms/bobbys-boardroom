@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { qbrUrl, parseQBR, qbrToRating } from "./routes.js";
+import { qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -283,6 +283,17 @@ async function applyQBR(games, sport) {
     if (row) { t.gkr = qbrToRating(row.qbr); t.qbr = row.qbr; }
   }
 }
+// NHL: the probable goalie's own save % and starts this season, plus last season's save % (player stats route)
+const _gk = {};
+async function applyGoalies(games, sport) {
+  if (sport !== "NHL") return;
+  const y = espnSeason(sport, seasonYear(sport)), get = (yy, id) => (_gk[`${yy}:${id}`] = _gk[`${yy}:${id}`] || getJSON(athleteStatsUrl(sport, yy, id)).then(parseGoalie).catch(() => null));
+  await Promise.all(games.flatMap(g => [g.away, g.home]).filter(t => t.gkId).map(async t => {
+    const [cur, prev] = await Promise.all([get(y, t.gkId), get(y - 1, t.gkId)]);
+    if (cur) { t.gks = cur.sv; t.gkn = cur.gs; }
+    if (prev) t.gkPrevSv = prev.sv;
+  }));
+}
 function applySplits(games, sp) {
   if (!sp?.games) return;
   for (const g of games) { const x = sp.games[`${g.away.abbr}@${g.home.abbr}`]; if (x && g.mkt) { g.mkt.pubAwayPct = x.spreadAwayPub ?? x.mlAwayPub ?? null; g.mkt.pubOverPct = x.overPub ?? null; } }
@@ -316,6 +327,7 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   if (!found) throw new Error(`Couldn't find ${awayName} and ${homeName} in ${SPORT_CFG[sport].label}. Check the team names.`);
   if (isNeutral) found.neutral = true;
   await applyQBR([found], sport);
+  await applyGoalies([found], sport);
   let sum = {};
   if (found.id) { try { sum = parseSummary(await getJSON(summaryUrl(sport, foundLeague, found.id))); } catch (_) { sum = {}; } }
   const x = slateGameToMatchData(found, sport), md = x.md, m = found.mkt;
@@ -844,6 +856,7 @@ async function fetchSlate(sport) {
   const games = per.flat().sort((a, b) => a.date.localeCompare(b.date));
   applySplits(games, await dataFile(`splits/${sport}.json`));
   await applyQBR(games, sport);
+  await applyGoalies(games, sport);
   const sc = SLATE_SCOPE[sport];
   return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard"], games: (sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
 }
@@ -899,15 +912,16 @@ function slateGameToMatchData(g, sport) {
   // the day's starter in the shape the engine reads: pitcher ERA + IP, goalie save % + starts, keeper goals/match, QB rating
   const starter = t => {
     if (sport === "MLB" || sport === "Soccer") return { gaa: nn(t.gks), n: nn(t.gkn) };
-    if (sport === "NHL") { const sv = nn(t.gks); return { svPct: sv != null && sv > 1 && sv < 100 ? sv / 100 : sv, n: nn(t.gkn) }; }
+    if (sport === "NHL") { const sv = nn(t.gks); return { svPct: sv != null && sv > 1 && sv < 100 ? sv / 100 : sv, n: nn(t.gkn), prevSvPct: nn(t.gkPrevSv) }; }
     if (sport === "NFL" || sport === "CFB") return { rating: nn(t.gkr) };
     return {};
   };
   const team = t => {
     const gpg = nn(t.gpg), ga = nn(t.ga), lu = nn(t.lineup);
     const ab = (t.abbr && String(t.abbr).trim()) || initials(t.name);
-    if (!(gpg > 0)) missing.push(`${ab} ${cfg.unitFull} scored`);
-    if (!(ga > 0)) missing.push(`${ab} ${cfg.unitFull} allowed`);
+    const prior = nn(t.pgpg) > 0 || (Array.isArray(t.hist) && t.hist.length > 0);
+    if (!(gpg > 0) && !prior) missing.push(`${ab} ${cfg.unitFull} scored`);
+    if (!(ga > 0) && !prior) missing.push(`${ab} ${cfg.unitFull} allowed`);
     if (lu == null && !(Array.isArray(t.hist) && t.hist.length >= 3)) missing.push(`${ab} lineup rating or past seasons`);
     return {
       name: String(t.name).trim(), abbr: ab, record: t.rec ? String(t.rec) : "", color: "", espnId: t.id || null, hist: Array.isArray(t.hist) ? t.hist : [],
@@ -942,7 +956,9 @@ function slateGameToMatchData(g, sport) {
   };
   const md = normalizeMatchup(raw, sport);
   const ha = md.away.has, hh = md.home.has;
-  const sourced = [ha.gpg, hh.gpg, ha.gaa, hh.gaa, ha.lineup || md.away.hist.length >= 3, hh.lineup || md.home.hist.length >= 3].filter(Boolean).length;
+  // a team is rated from this season OR, early in a season, from last season and every past season on file
+  const rated = t => t.has.gpg || t.prev.gpg > 0 || t.hist.length > 0, ratedD = t => t.has.gaa || t.prev.gaa > 0 || t.hist.length > 0;
+  const sourced = [rated(md.away), rated(md.home), ratedD(md.away), ratedD(md.home), ha.lineup || md.away.hist.length >= 3, hh.lineup || md.home.hist.length >= 3].filter(Boolean).length;
   // which of the optional inputs the engine was able to use for this game (shown in the "why")
   const both = f => f(md.away) && f(md.home);
   const used = [
@@ -960,7 +976,7 @@ function slateGameToMatchData(g, sport) {
     awaySpread, awaySpreadOdds: od(m.awaySpreadOdds), homeSpreadOdds: od(m.homeSpreadOdds),
     total, overOdds: od(m.overOdds), underOdds: od(m.underOdds), sharp, rlm: m.rlm === true, steam: m.steam === true, pubAway, pubOver,
   };
-  return { md, mkt, dq: sourced, missing, used, usable: ha.gpg && hh.gpg && sourced >= 4, neutral: g.neutral === true };
+  return { md, mkt, dq: sourced, missing, used, usable: rated(md.away) && rated(md.home) && sourced >= 4, neutral: g.neutral === true };
 }
 // ---- pricing: sim projection -> probabilities -> EV --------------------------
 function normCdf(z) {                                          // Abramowitz-Stegun 7.1.26, error < 1.5e-7
