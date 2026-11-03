@@ -49,6 +49,27 @@ export function parseGoalie(j) {
   const sv = statOf(st, "savePct"), gaa = statOf(st, "avgGoalsAgainst", "goalsAgainstAverage"), gs = statOf(st, "gameStarted", "gamesStarted", "games");
   return sv != null && sv > 0.5 && sv < 1 ? { sv, gaa, gs } : null;
 }
+// ESPN power index: opponent-adjusted team strength. NBA / college hoops = BPI (offense + defense, points vs an
+// average opponent), NFL / CFB = FPI (net points vs an average opponent on a neutral field).
+const POWER_LG = { NBA: "basketball/leagues/nba", CBB: "basketball/leagues/mens-college-basketball", CBBW: "basketball/leagues/womens-college-basketball", NFL: "football/leagues/nfl", CFB: "football/leagues/college-football" };
+export const powerUrl = (sport, espnYear) => POWER_LG[sport] ? `${CORE}/${POWER_LG[sport]}/seasons/${espnYear}/powerindex?limit=400` : null;
+export const powerTeamUrl = (sport, espnYear, teamId) => POWER_LG[sport] ? `${CORE}/${POWER_LG[sport]}/seasons/${espnYear}/powerindex/${teamId}` : null;
+export function powerOf(item) {
+  const st = [...(item?.stats || []), ...(item?.predictives || [])];
+  const off = statOf(st, "bpioffense"), def = statOf(st, "bpidefense"), net = statOf(st, "bpi", "fpi");
+  if (off != null && def != null) return { off, def, net: net ?? off + def };
+  return net != null ? { off: net / 2, def: net / 2, net } : null;
+}
+export function parsePower(j) {
+  const out = {};
+  for (const it of j?.items || (j && (j.stats || j.predictives) ? [j] : [])) {
+    const id = (it.team?.$ref || "").match(/teams\/(\d+)/)?.[1], p = powerOf(it);
+    if (id && p) out[id] = p;
+  }
+  return out;
+}
+// power points -> the engine's offence / defence ratios vs the league average L (defence: lower = better)
+export const powerRatios = (p, L) => p && L > 0 ? { offRating: (L + p.off) / L, defRating: (L - p.def) / L } : null;
 export const rankingsUrl = (sport, league) => `${SITE}/${ROUTES[sport].sport}/${league}/rankings`;
 
 // ---------- small helpers ----------

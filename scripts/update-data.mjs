@@ -8,6 +8,7 @@
 //   ratings/<SPORT>.json     Elo for every player / fighter, fitted and back-tested on held-out matches
 // State carries over between runs through the deployed site (scripts/restore-state.mjs) and a daily commit.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
+import { powerTeamUrl, parsePower } from "../src/routes.js";
 import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd } from "../src/routes.js";
 import { parseTennis, parseUFC, fitElo } from "../src/ratings.js";
 
@@ -114,6 +115,18 @@ async function probeSplits(sport) {
   write(`data/splits/${sport}.json`, out);
 }
 
+// ---- 5b. college hoops power index (BPI) for every team, once a day (the list route only has the top 25) ----
+async function power(sport) {
+  if (sport !== "CBB" && sport !== "CBBW") return;
+  const file = `data/power/${sport}.json`, P = read(file, { day: "", teams: {} }), today = ymd(new Date());
+  if (P.day === today && !FORCE_BACKFILL) return;
+  const H = read(`data/history/${sport}.json`, { teams: {} }), y = startYearNow(sport);
+  const ids = Object.entries(H.teams).filter(([, rows]) => rows.some(r => r[0] >= y - 1)).map(([id]) => id);
+  const teams = {};
+  await pool(ids, 4, async id => { const p = parsePower(await get(powerTeamUrl(sport, espnSeason(sport, y), id)))[id]; if (p) teams[id] = p; });
+  if (Object.keys(teams).length) write(file, { day: today, teams });
+}
+
 // ---- 6. tennis + MMA: every match / fight on record, then ratings ----
 const shard = (sport, y) => `data/matches/${sport}/${y}.json`;
 function loadMatches(sport) { const dir = `data/matches/${sport}`, all = {}; if (!existsSync(dir)) return all; for (const f of readdirSync(dir)) Object.assign(all, read(`${dir}/${f}`, { m: {} }).m); return all; }
@@ -168,7 +181,7 @@ function ratings(sport, all) {
 
 for (const s of sports) {
   try {
-    if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); if (HOURLY) await probeSplits(s); }
+    if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); if (HOURLY) await probeSplits(s); await power(s); }
     else if (s === "Tennis") ratings("Tennis", await tennis());
     else if (s === "MMA") ratings("MMA", await mma());
   } catch (e) { console.error(s, e); fails++; }

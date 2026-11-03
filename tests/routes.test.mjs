@@ -1,4 +1,4 @@
-import { parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -68,4 +68,12 @@ check("goalie with no starts yet -> null", parseGoalie({ splits: { categories: [
 check("player stats url", athleteStatsUrl("NHL", 2027, "5571") === "https://sports.core.api.espn.com/v2/sports/hockey/leagues/nhl/seasons/2027/types/2/athletes/5571/statistics");
 const nhlB = { events: [event({ id: "h1", away: competitor({ id: "129764", abbr: "UTA", name: "Utah Mammoth", ha: "away", probables: [{ athlete: { id: "999", displayName: "Sebastian Cossa" }, statistics: [] }] }), home: competitor({ id: "21", abbr: "TOR", name: "Toronto Maple Leafs", ha: "home" }) })] };
 check("probable goalie id kept for the stats lookup", parseScoreboard(nhlB, "NHL")[0].away.gkId === "999");
+// power index: per-team BPI (real 2026-27 shape), NBA list, CFB FPI predictives
+const one = parsePower({ team: { $ref: "http://x/seasons/2027/teams/2287?lang=en" }, stats: [{ name: "bpi", value: 3.9098 }, { name: "bpioffense", value: 1.7851 }, { name: "bpidefense", value: 2.1247 }] });
+check("per-team BPI parsed", Math.abs(one["2287"].off - 1.7851) < 1e-9 && Math.abs(one["2287"].def - 2.1247) < 1e-9);
+const list = parsePower({ items: [{ team: { $ref: "http://x/teams/24?lang=en" }, stats: [{ name: "bpi", value: 8.309 }, { name: "bpioffense", value: 3.703 }, { name: "bpidefense", value: 4.606 }] }, { team: { $ref: "http://x/teams/87?lang=en" }, predictives: [{ name: "fpi", value: 26.817 }] }] });
+check("BPI list + FPI predictives", list["24"].net === 8.309 && list["87"].off === 26.817 / 2 && list["87"].def === 26.817 / 2);
+const pr = powerRatios({ off: 3.7, def: 4.6 }, 115);
+check("power -> ratios (better defence = lower ratio)", Math.abs(pr.offRating - 118.7 / 115) < 1e-12 && pr.defRating < 1);
+check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seasons/2027/powerindex") && powerTeamUrl("CBBW", 2027, "2287").endsWith("womens-college-basketball/seasons/2027/powerindex/2287") && powerUrl("MLB", 2026) === null);
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

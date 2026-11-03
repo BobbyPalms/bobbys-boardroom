@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie } from "./routes.js";
+import { qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -41,12 +41,12 @@ const LEAGUE = {
   NBA:    { L:114.5,hfa:2.0,  fam:"norm", sdM:12.0, sdT:18.2, otF:0.104, k:12, rho:0.65, gpDef:40,  season:82,  wEff:0.5, useXG:false },
   NHL:    { L:3.08, hfa:0.20, fam:"pois", k:50, rho:0.50, gpDef:40, season:82,  omega:0.55, lgGK:2.87, lgSv:0.900, kGK:35, kGKprev:45, rhoGK:0.50, gkDefN:25, wEff:0.5, useXG:true },
   Soccer: { L:1.40, hfa:0.30, fam:"pois", k:11, rho:0.75, gpDef:20, season:38,  omega:0.25, lgGK:1.40, kGK:15, kGKprev:30, rhoGK:0.60, gkDefN:15, wEff:0.5, useXG:true },
-  CFB:    { L:29.0, hfa:2.8,  fam:"norm", sdM:15.3, sdT:15.5, otF:0.200, k:7,  rho:0.50, gpDef:6,   season:13,  qbK:0.0035, wEff:1.0, useXG:false },
-  CBB:    { L:73.5, hfa:2.8,  fam:"norm", sdM:11.0, sdT:14.5, otF:0.125, k:14, rho:0.55, gpDef:18,  season:32,  wEff:1.0, useXG:false },
+  CFB:    { L:29.0, hfa:2.8,  fam:"norm", sdM:15.3, sdT:15.5, otF:0.200, k:7,  rho:0.50, gpDef:6,   season:13,  qbK:0.0035, wEff:3.0, useXG:false },
+  CBB:    { L:73.5, hfa:2.8,  fam:"norm", sdM:11.0, sdT:14.5, otF:0.125, k:14, rho:0.55, gpDef:18,  season:32,  wEff:3.0, useXG:false },
   WNBA:   { L:82.0, hfa:1.5,  fam:"norm", sdM:12.0, sdT:15.0, otF:0.125, k:10, rho:0.60, gpDef:20,  season:44,  wEff:0.5, useXG:false },
   Tennis: { fam:"indiv", L:1, k:1, rho:0, gpDef:1, season:1 },
   MMA:    { fam:"indiv", L:1, k:1, rho:0, gpDef:1, season:1 },
-  CBBW:   { L:67.0, hfa:3.0,  fam:"norm", sdM:13.0, sdT:14.0, otF:0.125, k:14, rho:0.60, gpDef:16,  season:31,  wEff:1.0, useXG:false },
+  CBBW:   { L:67.0, hfa:3.0,  fam:"norm", sdM:13.0, sdT:14.0, otF:0.125, k:14, rho:0.60, gpDef:16,  season:31,  wEff:3.0, useXG:false },
 };
 // Provenance by sport (the rest is [J]):
 //  MLB   L 4.49 = 2023-25 league runs per team-game (4.62, 4.39, 4.45) [S, Lahman] · hfa 0.25 [A] · r 3.7 from team run variance ≈ 9.6 [A] · lgERA 4.15 [A]
@@ -294,6 +294,19 @@ async function applyGoalies(games, sport) {
     if (prev) t.gkPrevSv = prev.sv;
   }));
 }
+// Opponent-adjusted ratings (BPI / FPI). College hoops: every team from the data job (the live list is the top 25 only).
+const POWER_N = { CBB: 40, CBBW: 40, CFB: 40, NBA: 15, NFL: 15 };        // [J] games of evidence a power rating is worth
+const _pw = {};
+async function applyPower(games, sport) {
+  if (!POWER_N[sport]) return;
+  const y = espnSeason(sport, seasonYear(sport));
+  if (!_pw[sport]) _pw[sport] = Promise.all([dataFile(`power/${sport}.json`), getJSON(powerUrl(sport, y)).then(parsePower).catch(() => ({}))]).then(([f, live]) => ({ ...(f?.teams || {}), ...live }));
+  const PW = await _pw[sport];
+  for (const g of games) {
+    const L = g.lg > 0 ? g.lg : LEAGUE[sport].L;
+    for (const [side, t] of [["advAway", g.away], ["advHome", g.home]]) { const r = powerRatios(PW[t.id], L); if (r) g[side] = { ...r, n: POWER_N[sport], source: sport === "NFL" || sport === "CFB" ? "FPI" : "BPI" }; }
+  }
+}
 function applySplits(games, sp) {
   if (!sp?.games) return;
   for (const g of games) { const x = sp.games[`${g.away.abbr}@${g.home.abbr}`]; if (x && g.mkt) { g.mkt.pubAwayPct = x.spreadAwayPub ?? x.mlAwayPub ?? null; g.mkt.pubOverPct = x.overPub ?? null; } }
@@ -328,6 +341,7 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   if (isNeutral) found.neutral = true;
   await applyQBR([found], sport);
   await applyGoalies([found], sport);
+  await applyPower([found], sport);
   let sum = {};
   if (found.id) { try { sum = parseSummary(await getJSON(summaryUrl(sport, foundLeague, found.id))); } catch (_) { sum = {}; } }
   const x = slateGameToMatchData(found, sport), md = x.md, m = found.mkt;
@@ -562,7 +576,7 @@ function poolSide(t, sport, L, side, adv) {
   const wsum = pcs.reduce((s, p) => s + p[1], 0);
   // evidence in games: an xG-informed rate is worth 1.5x the sample; ratings share games with the scoring numbers, so half weight
   let n = xg > 0 ? 1.5 * gp : hasOwn ? gp : 0;
-  if (effOK) n += 0.5 * P.wEff * gp;
+  if (effOK) n += adv?.n > 0 ? adv.n : 0.5 * P.wEff * gp;
   const cur = wsum > 0 && n > 0 ? { r: pcs.reduce((s, p) => s + p[0] * p[1], 0) / wsum, n } : null;
   const curY = seasonYear(sport), H = HIST_PARAMS[sport]?.[side] || { k: P.k, fL: 0, rho: P.rho };
   const pr = seasonPrior(seasonRows(t, sport, side, L, curY), H, curY);
@@ -857,6 +871,7 @@ async function fetchSlate(sport) {
   applySplits(games, await dataFile(`splits/${sport}.json`));
   await applyQBR(games, sport);
   await applyGoalies(games, sport);
+  await applyPower(games, sport);
   const sc = SLATE_SCOPE[sport];
   return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard"], games: (sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
 }
@@ -953,6 +968,7 @@ function slateGameToMatchData(g, sport) {
       ml: { awayBetsPct: null, awayDollarsPct: null, awayML: od(m.awayML), homeML: od(m.homeML) },
     },
     away: a, home: h,
+    advancedAway: g.advAway || null, advancedHome: g.advHome || null,
   };
   const md = normalizeMatchup(raw, sport);
   const ha = md.away.has, hh = md.home.has;
@@ -970,6 +986,7 @@ function slateGameToMatchData(g, sport) {
     md.league.gpg != null ? "league average" : null,
     both(t => t.hist.length >= 3) ? "every past season on file" : null,
     m.spreadMove != null || m.totalMove != null ? "line movement" : null,
+    g.advAway && g.advHome ? `${g.advAway.source} power ratings` : null,
   ].filter(Boolean);
   const mkt = {
     awayML: od(m.awayML), homeML: od(m.homeML), drawML: od(m.drawML),
