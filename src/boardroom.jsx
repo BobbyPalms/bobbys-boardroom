@@ -295,7 +295,9 @@ async function applyGoalies(games, sport) {
   }));
 }
 // Opponent-adjusted ratings (BPI / FPI). College hoops: every team from the data job (the live list is the top 25 only).
-const POWER_N = { CBB: 40, CBBW: 40, CFB: 40, NBA: 15, NFL: 15 };        // [J] games of evidence a power rating is worth
+// [J] games of evidence a power rating is worth. College: BPI/FPI already fold in each program's history adjusted for
+// schedule, while the raw-scoring history flatters teams from weak conferences, so the power rating carries most of the weight.
+const POWER_N = { CBB: 150, CBBW: 150, CFB: 150, NBA: 15, NFL: 15 };
 const _pw = {};
 async function applyPower(games, sport) {
   if (!POWER_N[sport]) return;
