@@ -1084,25 +1084,25 @@ function candidates(rec, px, sport, totalsOk) {
     if (m.homeML != null && m.awayML != null && m.drawML != null) {
       const tot = [m.homeML, m.drawML, m.awayML].reduce((s, o) => s + 1 / decOdds(o), 0);
       [["home", m.homeML, pH], ["draw", m.drawML, pD], ["away", m.awayML, pA]].forEach(([side, o, p]) =>
-        out.push(makeBet({ key: `ml-${side}`, market: "ML", side, odds: o, w: p, l: 1 - p, fair: (1 / decOdds(o)) / tot,
+        out.push(makeBet({ bw, key: `ml-${side}`, market: "ML", side, odds: o, w: p, l: 1 - p, fair: (1 / decOdds(o)) / tot,
           label: side === "draw" ? `Draw (${fmtOdds(o)})` : `${side === "home" ? H : A} ML (${fmtOdds(o)})` })));
     }
   } else if (m.homeML != null || m.awayML != null) {
     const both = m.homeML != null && m.awayML != null;
-    if (m.homeML != null) out.push(makeBet({ key: "ml-home", market: "ML", side: "home", odds: m.homeML, w: pH, l: pA, fair: both ? pair(m.homeML, m.awayML) : 1 / decOdds(m.homeML), label: `${H} ML (${fmtOdds(m.homeML)})` }));
-    if (m.awayML != null) out.push(makeBet({ key: "ml-away", market: "ML", side: "away", odds: m.awayML, w: pA, l: pH, fair: both ? pair(m.awayML, m.homeML) : 1 / decOdds(m.awayML), label: `${A} ML (${fmtOdds(m.awayML)})` }));
+    if (m.homeML != null) out.push(makeBet({ bw, key: "ml-home", market: "ML", side: "home", odds: m.homeML, w: pH, l: pA, fair: both ? pair(m.homeML, m.awayML) : 1 / decOdds(m.homeML), label: `${H} ML (${fmtOdds(m.homeML)})` }));
+    if (m.awayML != null) out.push(makeBet({ bw, key: "ml-away", market: "ML", side: "away", odds: m.awayML, w: pA, l: pH, fair: both ? pair(m.awayML, m.homeML) : 1 / decOdds(m.awayML), label: `${A} ML (${fmtOdds(m.awayML)})` }));
   }
   if (m.awaySpread != null) {                                  // home covers when (home margin) > awaySpread
     const L = m.awaySpread, p = px.margin(L);
     const oH = m.homeSpreadOdds ?? OTHER_DEFAULT, oA = m.awaySpreadOdds ?? OTHER_DEFAULT, fH = pair(oH, oA);
-    out.push(makeBet({ key: "sp-home", market: "SPR", side: "home", line: -L, odds: oH, w: p.gt, push: p.push, l: p.lt, fair: fH, label: `${H} ${fmtLine(-L)} (${fmtOdds(oH)})` }));
-    out.push(makeBet({ key: "sp-away", market: "SPR", side: "away", line: L, odds: oA, w: p.lt, push: p.push, l: p.gt, fair: 1 - fH, label: `${A} ${fmtLine(L)} (${fmtOdds(oA)})` }));
+    out.push(makeBet({ bw, key: "sp-home", market: "SPR", side: "home", line: -L, odds: oH, w: p.gt, push: p.push, l: p.lt, fair: fH, label: `${H} ${fmtLine(-L)} (${fmtOdds(oH)})` }));
+    out.push(makeBet({ bw, key: "sp-away", market: "SPR", side: "away", line: L, odds: oA, w: p.lt, push: p.push, l: p.gt, fair: 1 - fH, label: `${A} ${fmtLine(L)} (${fmtOdds(oA)})` }));
   }
   if (m.total != null && totalsOk) {
     const p = px.total(m.total);
     const oO = m.overOdds ?? OTHER_DEFAULT, oU = m.underOdds ?? OTHER_DEFAULT, fO = pair(oO, oU);
-    out.push(makeBet({ key: "tot-over", market: "TOT", side: "over", line: m.total, odds: oO, w: p.gt, push: p.push, l: p.lt, fair: fO, label: `OVER ${m.total} (${fmtOdds(oO)})` }));
-    out.push(makeBet({ key: "tot-under", market: "TOT", side: "under", line: m.total, odds: oU, w: p.lt, push: p.push, l: p.gt, fair: 1 - fO, label: `UNDER ${m.total} (${fmtOdds(oU)})` }));
+    out.push(makeBet({ bw, key: "tot-over", market: "TOT", side: "over", line: m.total, odds: oO, w: p.gt, push: p.push, l: p.lt, fair: fO, label: `OVER ${m.total} (${fmtOdds(oO)})` }));
+    out.push(makeBet({ bw, key: "tot-under", market: "TOT", side: "under", line: m.total, odds: oU, w: p.lt, push: p.push, l: p.gt, fair: 1 - fO, label: `UNDER ${m.total} (${fmtOdds(oU)})` }));
   }
   return out;
 }
