@@ -1,4 +1,4 @@
-import { parseTennis, parseUFC, runElo, fitElo, score, eloP, setProb, tennisOutlook, rateFor, recordWL } from "../src/ratings.js";
+import { SETTINGS, parseTennis, parseUFC, runElo, fitElo, score, eloP, setProb, tennisOutlook, rateFor, recordWL } from "../src/ratings.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
 // real-shaped tennis board (Boss Open 2025: Li Tu bt Eliot Spizzirri 6-4 7-5)
@@ -27,11 +27,11 @@ const r1 = runElo(synth(300, 0.8), "Tennis", 1);
 check("Elo: a player winning 80% rises well above 1500", r1.R.S.r > 1650, r1.R.S.r);
 check("Elo: predictions only once both sides have history", r1.preds.length < 300 && r1.preds.length > 100);
 const f = fitElo(synth(1200, 0.75), "Tennis");
-check("fit: K scale chosen from the grid and tested on the later 25%", [0.7, 0.85, 1, 1.15, 1.3].includes(f.scale) && f.test && f.test.n > 50 && f.test.acc > 0.6, f.test);
+check("fit: K scale chosen from the grid and tested on the later 25%", SETTINGS.Tennis.grid.includes(f.scale) && f.test && f.test.n > 50 && f.test.acc > 0.6, f.test);
 check("fit: calibration buckets reported", f.test.buckets.length === 4);
 check("score() handles nothing", score([]) === null);
 const fm = fitElo(synth(400, 0.7).map(m => ({ ...m, a: { ...m.a, rec: "20-2-0" }, b: { ...m.b, rec: "5-5-0" } })), "MMA");
-check("MMA fit picks K and record prior", fm.scale && [0, 6, 12].includes(fm.initW));
+check("MMA fit picks K and record prior", fm.scale && SETTINGS.MMA.initGrid.includes(fm.initW));
 // tennis outlook
 check("set probability inverts best-of-3", Math.abs(setProb(0.5) - 0.5) < 1e-9 && setProb(0.7) > 0.5 && setProb(0.7) < 0.7);
 const o3 = tennisOutlook(0.65, 3), o5 = tennisOutlook(0.65, 5);

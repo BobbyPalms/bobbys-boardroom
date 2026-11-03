@@ -847,7 +847,7 @@ async function fetchSlate(sport) {
   const hist = await loadHistory(sport);
   const per = await Promise.all(R.leagues.map(async league => {
     const ctx = await routeContext(sport, league, hist);
-    for (const k of [0, 1]) {                                  // today; tomorrow when nothing is left today
+    for (const k of (sport === "NFL" || sport === "CFB" ? [0, 1, 2, 3, 4, 5, 6] : [0, 1])) {   // today, else the next day with games (football: the coming week)
       const games = (await routeBoard(sport, league, k, ctx)).filter(g => g.state === "pre");
       if (games.length) return games;
     }
@@ -1040,19 +1040,26 @@ const fmtLine = l => l === 0 ? "PK" : (l > 0 ? "+" : "-") + Math.abs(l);
 const pair = (o1, o2) => { const a = 1 / decOdds(o1), b = 1 / decOdds(o2); return a / (a + b); };   // no-vig prob of side 1
 const OTHER_DEFAULT = -110;
 
-function makeBet({ key, market, side, label, line = null, odds, w, push = 0, l, fair }) {
-  const b = decOdds(odds) - 1, d = w + l || 1, wc = w / d;
+// The sim's probability is blended with the no-vig market price: the market also knows injuries, rotations and
+// roster moves the team stats can't see. bw = weight on the sim (learned per sport from graded games, see learnFrom).
+const MARKET_BLEND = 0.35;                                     // [J] starting weight on the sim until 60 graded games teach it
+const blendW = sport => { const x = LEARNED[sport]; return x && x.bw != null ? x.bw : MARKET_BLEND; };
+function makeBet({ key, market, side, label, line = null, odds, w, push = 0, l, fair, bw = 1 }) {
+  const b = decOdds(odds) - 1, d0 = w + l || 1, wcRaw = w / d0, wc = fair != null ? bw * wcRaw + (1 - bw) * fair : wcRaw;
+  w = wc * (1 - push); l = (1 - wc) * (1 - push);
+  const d = w + l || 1;
   const ev = w * b - l;                                        // per $1 staked, pushes refunded
   const edge = (wc - fair) * 100;                              // points above the no-vig price
   const wEff = Math.min(wc, fair + 0.10);                      // a gap beyond 10 pts earns no extra credit
   const kelly = Math.max(0, (wEff * b - (1 - wEff)) / b);
-  return { key, market, side, label, line, odds, w, push, l, wc, fair, be: 1 / decOdds(odds), ev, edge, kelly, capped: wc - fair > 0.10 };
+  return { key, market, side, label, line, odds, w, push, l, wc, wcRaw, fair, be: 1 / decOdds(odds), ev, edge, kelly, capped: wc - fair > 0.10 };
 }
 
 const median = xs => { const s = [...xs].sort((a, b) => a - b), n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null; };
 const DQ_FACTOR = [0, 0, 0, 0, 0.6, 0.85, 1];
 
 function candidates(rec, px, sport, totalsOk) {
+  const bw = blendW(sport);
   const cfg = SPORT_CFG[sport], m = rec.mkt, A = rec.md.away.abbr, H = rec.md.home.abbr, out = [];
   const { pH, pD, pA } = px.ml;                                // a tie after regulation is already settled in overtime by team strength inside priceGame
   rec.pricing = { pH, pD, pA };
@@ -1308,16 +1315,28 @@ const LEARN_MIN = 20;
 function learnFrom(games, sport) {
   const P = LEAGUE[sport], gs = Object.values(games).filter(g => g.sport === sport && g.result && g.proj && g.proj.rawTotal > 0);
   const n = gs.length;
-  if (n < LEARN_MIN) return { s: 1, h: 0, n, inactive: true };
+  if (n < LEARN_MIN) return { s: 1, h: 0, n, inactive: true, bw: null };
   const mlog = gs.reduce((a, g) => a + Math.log((g.result.as + g.result.hs + 0.5) / (g.proj.rawTotal + 0.5)), 0) / n;
   const s = clampTo(Math.exp(mlog * n / (n + 60)), 0.94, 1.06);
   const hg = gs.filter(g => !g.neutral), cap = 0.1 * (P.sdM || 2 * Math.sqrt(P.L));
   const hm = hg.length ? hg.reduce((a, g) => a + (g.result.hs - g.result.as - g.proj.rawMargin), 0) / hg.length : 0;
   const h = clampTo(hm * hg.length / (hg.length + 100), -cap, cap);
-  return { s, h, n };
+  // market blend: the weight on the sim that best predicted graded moneylines (log loss), shrunk toward the default
+  const ml = gs.filter(g => g.mkt && g.mkt.homeML != null && g.mkt.awayML != null && g.p && g.result.hs !== g.result.as);
+  let bw = null;
+  if (ml.length >= 60) {
+    let best = null;
+    for (let w = 0.05; w <= 0.951; w += 0.05) {
+      let ll = 0;
+      for (const g of ml) { const ih = 1 / decOdds(g.mkt.homeML), ia = 1 / decOdds(g.mkt.awayML), f = ih / (ih + ia), pm = g.p.h / Math.max(1e-9, g.p.h + g.p.a), p = clampTo(w * pm + (1 - w) * f, 1e-4, 1 - 1e-4); ll -= Math.log(g.result.hs > g.result.as ? p : 1 - p); }
+      if (!best || ll < best.ll) best = { w, ll };
+    }
+    bw = clampTo(MARKET_BLEND + (best.w - MARKET_BLEND) * ml.length / (ml.length + 100), 0.05, 0.9);
+  }
+  return { s, h, n, bw, nMl: ml.length };
 }
 let LEARNED = {};
-const learnedFor = sport => { const x = LEARNED[sport]; return x && !x.inactive && (x.s !== 1 || x.h !== 0) ? x : null; };
+const learnedFor = sport => { const x = LEARNED[sport]; return x && !x.inactive && (x.s !== 1 || x.h !== 0) ? x : null; };   // scoring/home edge only; the blend weight is read by blendW
 function refreshLearned() {
   const st = trackLoad();
   LEARNED = st.learnOn === false ? {} : Object.fromEntries(Object.keys(SPORT_CFG).map(sp => [sp, learnFrom(st.games, sp)]));
@@ -1721,7 +1740,7 @@ function WhyBlock({ r }) {
 function SlateRow({ r, sport, open, onToggle, onRunFull }) {
   const cfg = SPORT_CFG[sport], A = r.md.away, H = r.md.home, pk = r.pick, g = GRADE[r.grade] || GRADE.PASS;
   let head, sub, right = null;
-  if (r.status === "bet") { head = pk.label; sub = `${MKT_NAME[pk.market]} · algo ${pc(pk.wc)} vs ${pc(pk.fair)} priced · edge ${signed(pk.edge)} pts`; right = <div style={{ textAlign: "right" }}><div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: g.c }}>{signed(pk.ev * 100)}%</div><div style={{ fontSize: 10, color: T.dim }}>EV</div></div>; }
+  if (r.status === "bet") { head = pk.label; sub = `${MKT_NAME[pk.market]} · algo ${pc(pk.wc)}${pk.wcRaw != null && Math.abs(pk.wcRaw - pk.wc) > 0.005 ? ` (sim ${pc(pk.wcRaw)})` : ""} vs ${pc(pk.fair)} priced · edge ${signed(pk.edge)} pts`; right = <div style={{ textAlign: "right" }}><div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: g.c }}>{signed(pk.ev * 100)}%</div><div style={{ fontSize: 10, color: T.dim }}>EV</div></div>; }
   else if (r.status === "pass") { head = "No value at these prices"; sub = `closest: ${pk.label} · EV ${signed(pk.ev * 100)}%`; }
   else if (r.status === "model") { const homeFav = r.pricing.pH >= r.pricing.pA; head = `Algo leans ${homeFav ? H.abbr : A.abbr}`; sub = `${pc(Math.max(r.pricing.pH, r.pricing.pA))} to win · no usable odds found, so there is nothing to price`; }
   else { head = "Not enough sourced data to simulate"; sub = r.flags[0] || ""; }
@@ -1760,7 +1779,7 @@ function SlateFootnote({ ranked, sport }) {
   return <Panel title="HOW THIS IS RANKED">
     <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.75 }}>
       <div>▸ Every game runs through the same factor engine and 10,000-run sim as the full sim. No AI picks anything: the inputs come straight from the live routes.</div>
-      <div>▸ Each bet is priced against the posted odds. Games rank by grade first (A, B, C), then by Kelly score: how far the algo's probability beats the price, scaled by the odds. A gap past 10 pts earns no extra credit and cannot grade A, and missing inputs cut the score.</div>
+      <div>▸ Each bet is priced against the posted odds, using the sim's probability blended with the no-vig market price (the market knows injuries and roster news the stats can't; the blend weight is learned from graded games). Games rank by grade first (A, B, C), then by Kelly score: how far the algo's probability beats the price, scaled by the odds. A gap past 10 pts earns no extra credit and cannot grade A, and missing inputs cut the score.</div>
       <div>▸ Win, cover and over probabilities come from the algo's own score distribution for each game (a typical {SPORT_CFG[sport].label} game swings about ±{sd.m.toFixed(1)} on the margin and ±{sd.t.toFixed(1)} on the total). Overtime is settled by team strength; no home edge is applied at a neutral site.</div>
       {sc.mode === "slate" && <div>▸ The algo's scoring level sits {Math.abs((sc.median - 1) * 100).toFixed(0)}% {sc.median > 1 ? "above" : "below"} the market's on this board, past the 7% band it is trusted within, so projections are divided by ×{sc.s.toFixed(2)}. Picks reflect the algo's relative view.</div>}
       <div>▸ This is a lighter data pull than the full sim (no officials, advanced metrics or situational spots), so RUN FULL SIM can move a number.</div>

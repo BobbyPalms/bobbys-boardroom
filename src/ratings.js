@@ -45,8 +45,8 @@ export const recordWL = s => { const m = String(s || "").match(/^(\d+)-(\d+)/); 
 export const eloP = (ra, rb) => 1 / (1 + Math.pow(10, (rb - ra) / 400));
 // tennis K (FiveThirtyEight's form): K = 250 / (matches + 5)^0.4, scaled by a fitted factor
 export const SETTINGS = {
-  Tennis: { grid: [0.7, 0.85, 1, 1.15, 1.3], k: (nm, s) => s * 250 / Math.pow(nm + 5, 0.4), init: () => 1500, minN: 5 },
-  MMA:    { grid: [60, 90, 120, 160], k: (nm, s) => s / Math.pow(nm + 1, 0.25), init: (rec, w) => { const r = recordWL(rec); return 1500 + (r ? Math.max(-150, Math.min(150, w * (r.w - r.l))) : 0); }, minN: 2, initGrid: [0, 6, 12] },
+  Tennis: { grid: [0.35, 0.45, 0.55, 0.7, 0.85, 1, 1.15], k: (nm, s) => s * 250 / Math.pow(nm + 5, 0.4), init: () => 1500, minN: 5 },
+  MMA:    { grid: [25, 35, 45, 60, 90, 120], k: (nm, s) => s / Math.pow(nm + 1, 0.25), init: (rec, w) => { const r = recordWL(rec); return 1500 + (r ? Math.max(-150, Math.min(150, w * (r.w - r.l))) : 0); }, minN: 2, initGrid: [0, 6, 12, 18, 25] },
 };
 // Run every rated match in date order. Returns ratings and the out-of-sample predictions made before each result.
 export function runElo(matches, sport, scale, initW = 0) {
