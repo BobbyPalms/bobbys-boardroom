@@ -1,0 +1,45 @@
+name: Site and data
+# Every 15 minutes: refresh the data from the routes, rebuild the site and deploy it to GitHub Pages.
+# Live data ships with each deploy (no commit). Long-term records (history, matches, ratings, officials) are
+# committed once a day so they're safe in the repo, without bloating it.
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "index.html", "scripts/**", "package.json", ".github/workflows/site.yml"]
+  schedule: [{ cron: "*/15 * * * *" }]
+  workflow_dispatch:
+    inputs:
+      backfill: { description: "Re-pull every past season / match from scratch", type: boolean, default: false }
+permissions: { contents: write, pages: write, id-token: write }
+concurrency: { group: site, cancel-in-progress: false }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - id: pages
+        uses: actions/configure-pages@v5
+      - run: npm install --no-audit --no-fund
+      - name: Carry over the last run's data from the live site
+        continue-on-error: true
+        run: node scripts/restore-state.mjs "${{ steps.pages.outputs.base_url }}"
+      - name: Update data from the routes
+        run: node scripts/update-data.mjs ${{ inputs.backfill && '--backfill' || '' }}
+      - run: node scripts/build.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: dist }
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Daily snapshot of the long-term data
+        run: |
+          today=$(date -u +%F); last=$(git log -1 --format=%cs -- data/ratings 2>/dev/null || true)
+          if [ "$last" != "$today" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git config user.name "boardroom-data-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data/history data/officials data/matches data/ratings 2>/dev/null || true
+            git diff --cached --quiet || (git commit -m "data snapshot $today [skip ci]" && git pull --rebase && git push)
+          fi
