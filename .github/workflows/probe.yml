@@ -1,5 +1,5 @@
 name: Probe a source
-# Manual only. Fetches the splits sources from a GitHub runner and pushes the raw pages to the 'probe' branch, to check
+# Manual only. Fetches sources from a GitHub runner and pushes the raw pages to the 'probe' branch, to check
 # a source's format; run with "cleanup" ticked to delete that branch again.
 on:
   workflow_dispatch:
@@ -9,6 +9,7 @@ permissions: { contents: write }
 jobs:
   probe:
     runs-on: ubuntu-latest
+    env: { CF_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CF_ACCOUNT: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" }
     steps:
       - if: inputs.cleanup
         run: git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" --delete probe || true
@@ -17,9 +18,22 @@ jobs:
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          get ea_api.json "https://drop-api.ea.com/rating/ea-sports-fc?locale=en&limit=100&offset=0"
-          get ea_api_team.json "https://drop-api.ea.com/rating/ea-sports-fc?locale=en&limit=100&offset=0&team=243"
-          get ea_page.html "https://www.ea.com/games/ea-sports-fc/ratings"
+          D0=$(TZ=America/New_York date +%Y%m%d); D6=$(TZ=America/New_York date -d "+6 days" +%Y%m%d)
+          B=https://site.api.espn.com/apis/site/v2/sports
+          get nfl_range.json "$B/football/nfl/scoreboard?dates=$D0-$D6"
+          get nba_range.json "$B/basketball/nba/scoreboard?dates=$D0-$D6"
+          get cbb_range.json "$B/basketball/mens-college-basketball/scoreboard?dates=$D0-$D6&groups=50&limit=500"
+          get epl_range.json "$B/soccer/eng.1/scoreboard?dates=$D0-$D6"
+          get atp_range.json "$B/tennis/atp/scoreboard?dates=$D0-$D6"
+          get atp_day.json "$B/tennis/atp/scoreboard?dates=$D0"
+          get ufc_range.json "$B/mma/ufc/scoreboard?dates=$D0-$D6"
+          # Cloudflare: can the deploy key make a D1 database? (status + success flag only; no secrets written)
+          for path in "d1/database" "storage/kv/namespaces"; do
+            code=$(curl -sS -m 30 -o cf.json -w "%{http_code}" -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/$path")
+            echo "$path $code $(jq -c '{success, errors, n: (.result|length?), names: [.result[]?.name // .result[]?.title]}' cf.json)" >> out/cloudflare.txt
+          done
+          curl -sS -m 30 -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/user/tokens/verify" | jq -c '{success, status: .result.status}' >> out/cloudflare.txt
+          curl -sS -m 30 -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/access/organizations" | jq -c '{success, auth_domain: .result.auth_domain, errors}' >> out/cloudflare.txt
           cd out && git init -q -b probe && git add -A
           git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
