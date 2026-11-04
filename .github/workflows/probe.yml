@@ -1,0 +1,20 @@
+name: Probe a source
+# Manual only: fetches a few pages from a GitHub runner and keeps them as a run artifact, to check a data source.
+on: { workflow_dispatch: {} }
+permissions: { contents: read }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          mkdir out
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+          get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
+          get dk.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
+          get dk_nba.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=42648&tb_edate=today"
+          get dk_p2.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=88808&tb_edate=n7days&tb_page=2"
+          get an_v1.json "https://api.actionnetwork.com/web/v1/scoreboard/ncaab?period=game&date=$(TZ=America/New_York date +%Y%m%d)"
+          get an_v2.json "https://api.actionnetwork.com/web/v2/scoreboard/ncaab?bookIds=15,30,68,69,71,75,76,79&periods=event&date=$(TZ=America/New_York date +%Y%m%d)"
+          get an_v2_nfl.json "https://api.actionnetwork.com/web/v2/scoreboard/nfl?bookIds=15,30&periods=event&week=10&seasonType=reg"
+      - uses: actions/upload-artifact@v4
+        with: { name: probe, path: out }
