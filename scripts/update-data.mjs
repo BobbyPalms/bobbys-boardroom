@@ -50,7 +50,7 @@ async function history(sport) {
     let empty = 0;
     for (const y of years) {
       const key = `${league}:${y}`;
-      if (H.done[key] && y < now - 1) { empty = 0; continue; }
+      if (H.done[key] && y < now - 1 && !FORCE_BACKFILL) { empty = 0; continue; }   // a backfill re-pulls every season
       const teams = parseStandings(await get(standingsUrl(sport, league, espnSeason(sport, y))));
       const ids = Object.keys(teams);
       if (!ids.length) { if (++empty >= 3) break; continue; }
