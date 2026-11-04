@@ -486,3 +486,42 @@ export function probableLineup(last, injuries, sport) {
   const adj = hoops && tot > 0 ? Math.max(0.96, 1 - 0.25 * lost / tot) : 1;   // others absorb most of it; at most 4%
   return { players: lineup, moves, out, adj, lostShare: tot > 0 ? lost / tot : 0 };
 }
+
+// ---------- player ratings from season stats (core athlete statistics route), 45-99 with ~72 a regular starter ----------
+export const athleteSeasonUrl = (sport, league, espnYear, id) => `${CORE}/${ROUTES[sport].sport}/leagues/${league}/seasons/${espnYear}/types/${sport === "Soccer" ? 1 : 2}/athletes/${id}/statistics`;
+const r1 = x => Math.round(x * 10) / 10;
+export function playerRating(j, sport, pos = "") {
+  const m = {};
+  for (const c of j?.splits?.categories || []) for (const s of c.stats || []) if (s?.name && !(s.name in m) && Number.isFinite(Number(s.value))) m[s.name] = Number(s.value);
+  if (!Object.keys(m).length) return null;
+  const gk = /^G/.test(String(pos));
+  let raw = null, n = 0, why = "", keeper = null;
+  if (/NBA|WNBA|CBB/.test(sport)) {
+    n = m.gamesPlayed || 0; if (!n) return null;
+    raw = m.PER > 0 ? 60 + 1.2 * m.PER : 58 + 1.1 * ((m.avgPoints || 0) + (m.avgRebounds || 0) + (m.avgAssists || 0) + (m.avgSteals || 0) + (m.avgBlocks || 0) - (m.avgTurnovers || 0));
+    why = `${r1(m.avgPoints || 0)} pts · ${r1(m.avgRebounds || 0)} reb · ${r1(m.avgAssists || 0)} ast${m.PER > 0 ? ` · PER ${r1(m.PER)}` : ""} (${n} gp)`;
+  } else if (sport === "NHL") {
+    n = m.games || m.gamesPlayed || 0; if (!n) return null;
+    if (gk && m.savePct > 0.5) { raw = 75 + (m.savePct - 0.905) * 600; why = `${m.savePct.toFixed(3).replace(/^0/, "")} SV%${m.avgGoalsAgainst ? ` · ${m.avgGoalsAgainst.toFixed(2)} GAA` : ""} (${n} gp)`; }
+    else { const p = (m.goals || 0) + (m.assists || 0); raw = 62 + 30 * p / n + 0.15 * (m.plusMinus || 0); why = `${m.goals || 0} G · ${m.assists || 0} A in ${n} gp${m.plusMinus ? ` · ${m.plusMinus > 0 ? "+" : ""}${m.plusMinus}` : ""}`; }
+  } else if (sport === "Soccer") {
+    const min = m.minutes || 0, apps = m.appearances || 0; n = min / 90; if (min < 45) return null;
+    if (gk) {
+      const sv = (m.saves || 0) + (m.goalsConceded || 0) > 0 ? (m.saves || 0) / ((m.saves || 0) + (m.goalsConceded || 0)) : null, ga90 = (m.goalsConceded || 0) * 90 / min;
+      raw = 72 + (sv != null ? (sv - 0.68) * 80 : 0) - (ga90 - 1.3) * 5;
+      keeper = { sv, ga90, apps }; why = `${m.saves || 0} saves, ${m.goalsConceded || 0} conceded in ${apps} apps${sv != null ? ` (${Math.round(sv * 100)}% saved)` : ""}`;
+    } else {
+      const p90 = k => (m[k] || 0) * 90 / min;
+      raw = 66 + 16 * p90("totalGoals") + 11 * p90("goalAssists") + 2.5 * p90("shotsOnTarget") + 1.2 * (p90("totalTackles") + p90("interceptions")) + ((m.passPct || 0.8) - 0.8) * 25;
+      why = `${m.totalGoals || 0} G · ${m.goalAssists || 0} A in ${apps} apps${m.passPct ? ` · ${Math.round(m.passPct * 100)}% passing` : ""}`;
+    }
+  } else if (sport === "MLB") {
+    n = m.gamesPlayed || m.games || 0; if (!n) return null;
+    if (m.OPS > 0 && !/^(SP|RP|P)$/.test(pos)) { raw = 40 + 45 * m.OPS; why = `${m.OPS.toFixed(3).replace(/^0/, "")} OPS${m.homeRuns ? ` · ${m.homeRuns} HR` : ""} (${n} g)`; }
+    else if (m.ERA > 0) { raw = 92 - 4 * m.ERA; why = `${m.ERA.toFixed(2)} ERA (${n} g)`; }
+    else return null;
+  } else return null;
+  // a few games are a thin sample: pulled toward a regular starter's 72
+  const rating = Math.round(Math.max(45, Math.min(99, 72 + (raw - 72) * n / (n + 3))));
+  return { rating, why, keeper };
+}

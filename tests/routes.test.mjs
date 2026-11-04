@@ -1,4 +1,4 @@
-import { parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { playerRating, athleteSeasonUrl, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -165,6 +165,16 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
   check("lineup: nothing posted yet is not official", !Object.values(parseLineups({ boxscore: { players: [] } })).length);
   const ev = lastCompletedEvent({ events: [{ id: "1", date: "2026-10-30T23:00Z", competitions: [{ status: { type: { completed: true } } }] }, { id: "2", date: "2026-11-02T23:00Z", competitions: [{ status: { type: { completed: true } } }] }, { id: "3", date: "2026-11-05T00:00Z", competitions: [{ status: { type: { completed: false } } }] }] }, "2026-11-04T00:00Z");
   check("lineup: the team's last finished game before this one", ev && ev.id === "2", ev);
+  const cat = (name, stats) => ({ name, stats: Object.entries(stats).map(([k, v]) => ({ name: k, value: v })) });
+  const sga = playerRating({ splits: { categories: [cat("general", { PER: 26.4, gamesPlayed: 7 }), cat("offensive", { avgPoints: 31.2, avgAssists: 6 })] } }, "NBA", "G");
+  const bench = playerRating({ splits: { categories: [cat("general", { PER: 9, gamesPlayed: 7 }), cat("offensive", { avgPoints: 4 })] } }, "NBA", "F");
+  check("ratings: an MVP-level season rates far above a bench player", sga && bench && sga.rating >= 85 && bench.rating < 72 && /PER 26\.4/.test(sga.why), { sga, bench });
+  const keeper = playerRating({ splits: { categories: [cat("general", { minutes: 270, appearances: 3 }), cat("goalKeeping", { saves: 16, goalsConceded: 5 })] } }, "Soccer", "G");
+  check("ratings: a keeper from saves and goals conceded, with his save share", keeper && keeper.keeper && Math.abs(keeper.keeper.sv - 16 / 21) < 1e-9 && Math.abs(keeper.keeper.ga90 - 5 / 3) < 1e-9 && /16 saves, 5 conceded in 3 apps/.test(keeper.why), keeper);
+  const striker = playerRating({ splits: { categories: [cat("general", { minutes: 900, appearances: 10, passPct: 0.82 }), cat("offensive", { totalGoals: 9, goalAssists: 3, shotsOnTarget: 20 })] } }, "Soccer", "F");
+  check("ratings: a scoring striker rates well", striker && striker.rating >= 85, striker);
+  check("ratings: no stats, no rating", playerRating({}, "NBA") === null && playerRating({ splits: { categories: [cat("general", { minutes: 10 })] } }, "Soccer", "F") === null);
+  check("athlete season url (soccer uses the competition's season type)", athleteSeasonUrl("Soccer", "uefa.champions", 2026, "134283").endsWith("/soccer/leagues/uefa.champions/seasons/2026/types/1/athletes/134283/statistics") && /types\/2\//.test(athleteSeasonUrl("NBA", "nba", 2027, "1")));
   check("team schedule url", teamScheduleUrl("NBA", "nba", "15").endsWith("/basketball/nba/teams/15/schedule"));
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { liveBoard, matchSplit, teamQueryScore, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, matchSplit, teamQueryScore, athleteSeasonUrl, playerRating, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -365,7 +365,28 @@ async function applyLineups(g, sport, league, raw, sum) {
       if (pl.adj < 1) t.lineupAdj = pl.adj;
     } catch (_) { /* no lineup: the team is rated from its scoring */ }
   }));
+  await rateLineups(g, sport, league);
 }
+// Every player in a lineup gets a rating from his season numbers (this season, else last season), and the keeper's
+// season numbers go to the keeper panels (and, in soccer, into the engine as the keeper's goals allowed).
+const _pr = {};
+async function rateLineups(g, sport, league) {
+  const y = espnSeason(sport, seasonYear(sport));
+  const one = (yy, p) => { const k = `${sport}:${league}:${yy}:${p.id}`; return (_pr[k] = _pr[k] || getJSON(athleteSeasonUrl(sport, league, yy, p.id)).then(j => playerRating(j, sport, p.pos)).catch(() => null)); };
+  await Promise.all(["away", "home"].map(async side => {
+    const t = g[side], li = t?.lineupInfo;
+    if (!li?.players?.length) return;
+    await Promise.all(li.players.filter(p => /^\d+$/.test(String(p.id))).map(async p => {
+      const r = (await one(y, p)) || (await one(y - 1, p));
+      if (r) { p.rating = r.rating; p.why = r.why; p.keeper = r.keeper; }
+    }));
+    // basketball: the "star" slot is the best-rated player in the lineup
+    if (/NBA|WNBA|CBB/.test(sport) && (!t.gk || t.gk === "TBD")) { const top = li.players.filter(p => p.rating != null).sort((a, b) => b.rating - a.rating)[0]; if (top) { t.gk = top.name; t.gkNote = `rated ${top.rating} · ${top.why}`; } }
+    const kp = li.players.find(p => p.keeper && t.gk && nameEq(p.name, t.gk));
+    if (kp && sport === "Soccer") { if (t.gks == null) t.gks = kp.keeper.ga90; if (t.gkn == null) t.gkn = kp.keeper.apps; t.gkSv = kp.keeper.sv; }
+  }));
+}
+const nameEq = (a, b) => String(a || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") === String(b || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
@@ -1210,7 +1231,8 @@ function slateGameToMatchData(g, sport) {
   const missing = [];
   // the day's starter in the shape the engine reads: pitcher ERA + IP, goalie save % + starts, keeper goals/match, QB rating
   const starter = t => {
-    if (sport === "MLB" || sport === "Soccer") return { gaa: nn(t.gks), n: nn(t.gkn) };
+    if (sport === "MLB") return { gaa: nn(t.gks), n: nn(t.gkn) };
+    if (sport === "Soccer") return { gaa: nn(t.gks), n: nn(t.gkn), svPct: nn(t.gkSv) };
     if (sport === "NHL") { const sv = nn(t.gks); return { svPct: sv != null && sv > 1 && sv < 100 ? sv / 100 : sv, n: nn(t.gkn), prevSvPct: nn(t.gkPrevSv) }; }
     if (sport === "NFL" || sport === "CFB") return { rating: nn(t.gkr) };
     return {};
@@ -1833,9 +1855,13 @@ function LineupBlock({ team, col, sport }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, color: p.note ? col : T.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
         {p.note && <div style={{ fontSize: 10, color: T.faint, marginTop: 1 }}>{p.note}</div>}
+        {p.why && <div style={{ fontSize: 10, color: T.faint, marginTop: 1 }}>season: {p.why}</div>}
       </div>
-      {(li.status === "official" ? p.line : stat(p)) && <div style={{ fontSize: 10, color: li.live ? NEON.green : T.dim, flexShrink: 0, maxWidth: "48%", textAlign: "right" }}>{li.status === "official" ? p.line : stat(p)}</div>}
-      {li.live && !p.starter && <div style={{ fontSize: 9, color: T.faint, flexShrink: 0 }}>SUB</div>}
+      <div style={{ flexShrink: 0, maxWidth: "55%", textAlign: "right" }}>
+        {(li.status === "official" ? p.line : stat(p)) && <div style={{ fontSize: 10, color: li.live ? NEON.green : T.dim }}>{li.live && !p.starter ? "SUB · " : ""}{li.status === "official" ? p.line : stat(p)}</div>}
+        {p.rating != null && <><div style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: col, textShadow: `0 0 8px ${col}77` }}>{p.rating}</div>
+          <div style={{ display: "flex", gap: 1, justifyContent: "flex-end", marginTop: 2 }}>{Array.from({ length: 10 }, (_, i) => { const lit = Math.max(1, Math.min(10, Math.round((p.rating - 60) / 3.7))); return <i key={i} style={{ width: 4, height: 4, background: i < lit ? col : T.faint, opacity: i < lit ? 1 : .4 }} />; })}</div></>}
+      </div>
     </div>)}
     {li.out?.length > 0 && <div style={{ fontSize: 11, color: "#FF8095", marginTop: 6 }}>Out of last game's lineup: {li.out.map(o => `${o.name} (${o.status})`).join(", ")}{li.adj < 1 ? ` · about ${((1 - li.adj) * 100).toFixed(1)}% off their scoring` : ""}</div>}
     {li.status !== "official" && <div style={{ fontSize: 10, color: T.faint, marginTop: 4 }}>Switches to the posted lineup automatically when it's announced.</div>}
@@ -2294,7 +2320,7 @@ function gkTiles(t, sport) {
   const g = t.goalie, out = [];
   if (sport === "MLB") { if (g.gaa != null) out.push([g.gaa.toFixed(2), "ERA"]); if (g.n != null) out.push([Math.round(g.n), "IP"]); }
   else if (sport === "NHL") { if (g.svPct != null) out.push([dec3(g.svPct), "SV%"]); if (g.gaa != null) out.push([g.gaa.toFixed(2), "GAA"]); if (g.n != null) out.push([Math.round(g.n), "GS"]); }
-  else if (sport === "Soccer") { if (g.gaa != null) out.push([g.gaa.toFixed(2), "GA/G"]); if (g.n != null) out.push([Math.round(g.n), "MP"]); }
+  else if (sport === "Soccer") { if (g.gaa != null) out.push([g.gaa.toFixed(2), "GA/G"]); if (g.svPct != null) out.push([`${Math.round(g.svPct * 100)}%`, "SAVED"]); if (g.n != null) out.push([Math.round(g.n), "MP"]); }
   else if (g.svPct != null) out.push([`${(g.svPct * 100).toFixed(1)}%`, sport === "NFL" || sport === "CFB" ? "comp" : "FG%"]);
   if (t.has.rating) out.push([g.rating, "rtg"]);
   return out;
@@ -2492,7 +2518,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNot
             <div style={{fontSize:11,color:T.dim,marginBottom:3}}>{cfg.gkLabel}</div>
             <div style={{display:"flex",alignItems:"center",gap:8,padding:"7px 2px",borderBottom:`1px solid ${T.line}`,marginBottom:8}}>
               <div style={{width:26,fontSize:11,color:T.dim}}>{gk.role}</div>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:T.ink}}>{gk.name}</div><div style={{fontSize:10,color:T.faint}}>{starterStat(team,sport)||"no stats found"}</div></div>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:T.ink}}>{gk.name}</div><div style={{fontSize:10,color:T.faint}}>{starterStat(team,sport)||(gk.note?"":"no season stats found")}</div>{gk.note&&<div style={{fontSize:10,color:team.lineupInfo?.live?NEON.green:T.faint}}>{gk.note}</div>}</div>
               <div style={{fontFamily:F.d,fontSize:15,fontWeight:700,color:col,textShadow:`0 0 8px ${col}77`}}>{team.has?.rating?gk.rating:"—"}</div>
             </div>
             <LineupBlock team={team} col={col} sport={sport}/>
