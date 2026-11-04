@@ -1,6 +1,6 @@
 # Bobby's Boardroom
 
-Monte Carlo sports simulator, slate ranker and results tracker. Runs entirely on its own: every number comes from the public routes documented in [pseudo-r/Public-ESPN-API](https://github.com/pseudo-r/Public-ESPN-API). No AI calls, no API keys.
+Monte Carlo sports simulator, slate ranker, live scoreboard and background results tracker. Runs entirely on its own: every number comes from the public routes documented in [pseudo-r/Public-ESPN-API](https://github.com/pseudo-r/Public-ESPN-API). No AI calls, no API keys.
 
 **Tabs:** MLB · NFL · CFB · NBA · WNBA · NCAA men's (CBB) · NCAA women's (NCAAW) · NHL · Soccer (EPL, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Liga MX, Champions League, Europa League, World Cup + UEFA qualifiers, friendlies) · Tennis (ATP + WTA singles) · MMA (UFC)
 
@@ -20,19 +20,19 @@ Team sports: pooled multi-season ratings (Kalman across every season, older seas
 One workflow, `.github/workflows/site.yml`, every 15 minutes:
 1. restores the previous run's data from the live site,
 2. refreshes `data/` from the routes (`scripts/update-data.mjs`; the first run backfills every season / match),
-3. builds the app and deploys it with the data to GitHub Pages,
-4. once a day commits the long-term records (history, matches, ratings, officials) to the repo.
+3. tracks results (`scripts/track.mjs`): prices every game on today's board with the site's own engine and logs it before it starts, grades every started game from the final score, and learns from every graded game (scoring level, home edge, weight against the closing line) into `data/learned.json`,
+4. builds the app and deploys it with the data to GitHub Pages,
+5. once a day commits the long-term records (history, matches, ratings, officials, results) to the repo.
 
-The site reads the live routes straight from the browser and the data files from itself. The results tracker is saved in your browser (export it from the Results screen to keep a copy).
+Nobody has to open the site for tracking or learning to happen. The site reads the live routes straight from the browser (picks, and the home screen's live scores: games in progress for the chosen sport, otherwise every game today) and `learned.json` from itself.
 
-**One-time setup:** Settings → Pages → Source: **GitHub Actions**.
 
 ## Run locally
 ```
 npm install
 npm run build      # -> dist/
 npm run data       # refresh data/ (--backfill re-pulls every season)
-npm test           # parsers, ratings, data job (no network)
+npm test           # parsers, ratings, data job, background tracker (no network)
 ```
 
 Data credits: MLB 1901–2025 baked history from the Lahman Baseball Database (CC BY-SA 3.0); NFL 1999–2025 from nflverse/nfldata (CC BY 4.0).

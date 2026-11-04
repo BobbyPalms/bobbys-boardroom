@@ -219,3 +219,42 @@ export function finalsFrom(j) {
   }
   return out;
 }
+
+// ---------- live scores: every game on one scoreboard, as plain rows for the home screen ----------
+// Team sports: away / home with scores. Tennis: each singles match with its set scores. MMA: each bout on the card.
+export function liveBoard(j, sport) {
+  const out = [], lg = j?.leagues?.[0], league = lg?.abbreviation || lg?.name || "";
+  const stOf = (c, e) => { const t = c?.status?.type || e?.status?.type || {}; return { state: t.state || "pre", detail: t.shortDetail || t.detail || t.description || "", done: t.completed === true }; };
+  for (const e of j?.events || []) {
+    if (sport === "Tennis") {
+      for (const g of e.groupings || []) {
+        const slug = g.grouping?.slug || "";
+        if (!/singles/.test(slug)) continue;
+        for (const c of g.competitions || []) {
+          const cs = [...(c.competitors || [])].sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
+          if (cs.length !== 2) continue;
+          const side = x => ({ name: x.athlete?.displayName || x.athlete?.fullName || "TBD", abbr: "", score: (x.linescores || []).map(s => s.value).join(" "), win: x.winner === true });
+          out.push({ id: String(c.id), date: c.date || e.date, league: e.name || "", note: c.round?.displayName || "", ...stOf(c, e), away: side(cs[0]), home: side(cs[1]) });
+        }
+      }
+      continue;
+    }
+    if (sport === "MMA") {
+      for (const c of e.competitions || []) {
+        const cs = [...(c.competitors || [])].sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
+        if (cs.length !== 2) continue;
+        const side = x => ({ name: x.athlete?.displayName || x.athlete?.fullName || "TBD", abbr: "", score: "", win: x.winner === true });
+        out.push({ id: String(c.id), date: c.date || e.date, league: e.name || "", note: c.type?.abbreviation || c.type?.text || "", ...stOf(c, e), away: side(cs[0]), home: side(cs[1]) });
+      }
+      continue;
+    }
+    const c = e.competitions?.[0];
+    if (!c) continue;
+    const H = (c.competitors || []).find(x => x.homeAway === "home"), A = (c.competitors || []).find(x => x.homeAway === "away");
+    if (!H || !A) continue;
+    const s = stOf(c, e);
+    const side = x => ({ name: x.team?.shortDisplayName || x.team?.displayName || "", abbr: x.team?.abbreviation || "", score: s.state === "pre" ? "" : String(x.score ?? ""), win: x.winner === true });
+    out.push({ id: String(e.id), date: e.date, league, note: "", ...s, away: side(A), home: side(H) });
+  }
+  return out;
+}

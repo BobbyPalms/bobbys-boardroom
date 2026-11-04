@@ -1,4 +1,4 @@
-import { parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -76,4 +76,19 @@ check("BPI list + FPI predictives", list["24"].net === 8.309 && list["87"].off =
 const pr = powerRatios({ off: 3.7, def: 4.6 }, 115);
 check("power -> ratios (better defence = lower ratio)", Math.abs(pr.offRating - 118.7 / 115) < 1e-12 && pr.defRating < 1);
 check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seasons/2027/powerindex") && powerTeamUrl("CBBW", 2027, "2287").endsWith("womens-college-basketball/seasons/2027/powerindex/2287") && powerUrl("MLB", 2026) === null);
+// live scores
+{
+  const b = realNBA(); const c = b.events[0].competitions[0];
+  c.status.type = { state: "in", completed: false, shortDetail: "Q3 5:12" }; c.competitors.forEach((x, i) => { x.score = i ? "71" : "68"; });
+  const L = liveBoard(b, "NBA"), r = L.find(x => x.id === b.events[0].id);
+  check("live: team game row", L.length === b.events.length && r.state === "in" && r.detail === "Q3 5:12" && r.away.abbr === "PHI" && r.home.abbr === "DET" && r.away.score !== "" && r.home.score !== "", r);
+  check("live: no score before the start", L.filter(x => x.state === "pre").every(x => x.away.score === "" && x.home.score === ""));
+  const t = liveBoard({ events: [{ name: "Paris", groupings: [{ grouping: { slug: "mens-singles" }, competitions: [{ id: "m1", date: "2026-11-03T15:00Z", round: { displayName: "Round 2" }, status: { type: { state: "in", shortDetail: "3rd Set" } },
+    competitors: [{ order: 0, athlete: { displayName: "A Player" }, linescores: [{ value: 6 }, { value: 3 }] }, { order: 1, athlete: { displayName: "B Player" }, linescores: [{ value: 4 }, { value: 6 }] }] }] },
+    { grouping: { slug: "mens-doubles" }, competitions: [{ id: "d1", competitors: [{}, {}] }] }] }] }, "Tennis");
+  check("live: tennis singles with set scores, doubles skipped", t.length === 1 && t[0].away.score === "6 3" && t[0].home.score === "4 6" && t[0].league === "Paris" && t[0].note === "Round 2", t);
+  const m = liveBoard({ events: [{ name: "UFC 999", competitions: [{ id: "f1", date: "2026-11-07T22:00Z", type: { abbreviation: "LW" }, status: { type: { state: "post", completed: true, shortDetail: "Final" } },
+    competitors: [{ order: 1, winner: true, athlete: { displayName: "Fighter One" } }, { order: 2, winner: false, athlete: { displayName: "Fighter Two" } }] }] }] }, "MMA");
+  check("live: MMA bout with the winner", m.length === 1 && m[0].away.win && !m[0].home.win && m[0].state === "post" && m[0].note === "LW", m);
+}
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

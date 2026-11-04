@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -1180,7 +1180,7 @@ function buildWhy(rec, sport) {
 function rankSlate(rawGames, sport) {
   const recs = rawGames.map((g, idx) => {
     const x = slateGameToMatchData(g, sport);
-    const rec = { idx, id: `${x.md.away.abbr}@${x.md.home.abbr}#${idx}`, md: x.md, mkt: x.mkt, dq: x.dq, missing: x.missing, used: x.used, neutral: x.neutral,
+    const rec = { idx, date: g.date || null, id: `${x.md.away.abbr}@${x.md.home.abbr}#${idx}`, md: x.md, mkt: x.mkt, dq: x.dq, missing: x.missing, used: x.used, neutral: x.neutral,
       time: x.md.matchInfo.time, venue: x.md.matchInfo.venue, note: x.md.matchInfo.injuryNote, sim: null };
     if (x.usable) {
       rec.sim = runSimulations(x.md.home, x.md.away, sport, x.md, 10000, { neutral: x.neutral });
@@ -1228,7 +1228,8 @@ function rankSlate(rawGames, sport) {
 }
 
 // ─── RESULTS TRACKER: every priced game is logged, graded on the final score, and learned from ───────────
-// Saved on this device (browser storage; EXPORT keeps a copy). Learning is deliberately slow and bounded: it only
+// Run in the background by the GitHub data job (scripts/track.mjs); records live in data/track/, what's learned in
+// data/learned.json, which every visitor's page reads. Learning is deliberately slow and bounded: it only
 // starts after 20 graded games in a sport, is shrunk toward "no change", and can never move scoring by more than
 // 6% or the home edge by more than 10% of a typical margin. Projections are stored BEFORE any learned change, so
 // the correction is always learned from the raw algo and can't feed on itself.
@@ -1260,7 +1261,6 @@ function trackSave(st) {
   }
   return put();
 }
-function trackStorageOK() { try { localStorage.setItem("__bb_probe", "1"); localStorage.removeItem("__bb_probe"); return true; } catch (_) { return false; } }
 function dayISO(label) {                                   // "Tue Nov 3" -> "2026-11-03" (falls back to today, ET)
   const now = new Date(), y = now.getFullYear();
   let t = Date.parse(`${label} ${y}`);
@@ -1301,22 +1301,13 @@ function trackUpsert(rec) {
   if (old && old.source === "slate" && rec.source === "deep") return false;   // keep the priced slate snapshot
   st.games[rec.key] = rec; trackSave(st); return true;
 }
+// Each game is logged under its own day (a football slate spans the coming week).
+const etISO = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 function trackSlate(ranked, sport, slateDate) {
-  const day = dayISO(slateDate || "");
+  const fallback = dayISO(slateDate || "");
   let n = 0;
-  for (const r of ranked.rows) if (r.sim) n += trackUpsert(snapRecord(sport, day, r, "slate")) ? 1 : 0;
+  for (const r of ranked.rows) if (r.sim) n += trackUpsert(snapRecord(sport, r.date && Number.isFinite(Date.parse(r.date)) ? etISO(r.date) : fallback, r, "slate")) ? 1 : 0;
   return n;
-}
-// A full sim is priced the same way as a slate row, from its market numbers.
-function trackDeep(md, sim, sport, neutral) {
-  const pb = md.publicBetting || {}, ml = pb.ml || {}, ats = pb.ats || {}, ou = pb.ou || {};
-  const n = v => (Number.isFinite(Number(v)) && v !== null && v !== "" ? Number(v) : null);
-  const mkt = { homeML: n(ml.homeML), awayML: n(ml.awayML), drawML: null, awaySpread: n(ats.awaySpread), total: n(ou.total) };
-  const r = { md, sim, mkt, neutral, time: md.matchInfo?.time || "" };
-  try { r.bets = candidates(r, priceGame(sim.plan, sport, 1), sport, true); } catch (_) { r.bets = []; }
-  const pos = r.bets.filter(b => b.ev > 0).sort((a, b) => b.kelly - a.kelly);
-  if (pos.length) { r.status = "bet"; r.pick = pos[0]; r.grade = "deep"; }
-  return trackUpsert(snapRecord(sport, etDay(), r, "deep"));
 }
 // One play against a final score: W / L / P and units at the recorded price (1 unit staked; quarter lines split).
 function gradePlay(pl, as, hs) {
@@ -1339,7 +1330,6 @@ function trackGrade(key, as, hs) {
   g.plays.forEach(pl => Object.assign(pl, gradePlay(pl, as, hs)));
   trackSave(st); return true;
 }
-function trackUngrade(key) { const st = trackLoad(), g = st.games[key]; if (!g) return; g.result = null; g.plays.forEach(pl => { delete pl.u; delete pl.res; }); trackSave(st); }
 const isPending = g => !g.result && g.day <= etDay();
 function trackStats(games, sport) {
   const gs = Object.values(games).filter(g => !sport || g.sport === sport), done = gs.filter(g => g.result);
@@ -1390,6 +1380,12 @@ function learnFrom(games, sport) {
 }
 let LEARNED = {};
 const learnedFor = sport => { const x = LEARNED[sport]; return x && !x.inactive && (x.s !== 1 || x.h !== 0) ? x : null; };   // scoring/home edge only; the blend weight is read by blendW
+// The page reads what the background tracker (GitHub data job) has learned from every graded game.
+async function loadLearned() {
+  const j = await dataFile("learned.json");
+  if (j && j.sports && typeof j.sports === "object") LEARNED = j.sports;
+  return LEARNED;
+}
 function refreshLearned() {
   const st = trackLoad();
   LEARNED = st.learnOn === false ? {} : Object.fromEntries(Object.keys(SPORT_CFG).map(sp => [sp, learnFrom(st.games, sp)]));
@@ -1420,17 +1416,8 @@ async function fetchFinals(sport, games) {
   }
   return n;
 }
-function trackImport(text) {
-  const j = safeParseJSON(text), games = j && (j.games || j);
-  if (!games || typeof games !== "object") throw new Error("That isn't a Boardroom results export.");
-  const st = trackLoad(); let n = 0;
-  for (const [k, g] of Object.entries(games)) {
-    if (!validGame(g) || g.key !== k) continue;
-    const old = st.games[k];
-    if (!old || (!old.result && g.result)) { st.games[k] = g; n++; }
-  }
-  trackSave(st); return n;
-}
+// The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
+export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, SPORT_KEYS, TRACK_LS };
 // <<< SLATE ENGINE
 
 // ─── JARVIS / MATRIX THEME ───────────────────────────────────────────────────
@@ -1632,13 +1619,59 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 }
 
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,slateInfo,slateBusy,slateErr,onResults,track}){
+// ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
+const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
+function LiveScores({ sport }) {
+  const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
+  useEffect(() => {
+    let alive = true, timer = null;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
+      const R = ROUTES[sport], day = ymd(new Date()), today = etDay();
+      const res = await Promise.all((R?.leagues || []).map(lg => getJSON(scoreboardUrl(sport, lg, day)).then(j => liveBoard(j, sport)).catch(() => null)));
+      if (!alive) return;
+      const ok = res.filter(Boolean), seen = new Set();
+      const rows = ok.flat().filter(r => !seen.has(r.id) && seen.add(r.id) && (!r.date || etISO(r.date) === today || r.state === "in"))
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      setSt({ sport, rows, err: ok.length ? null : "Couldn't reach the scores routes. Retrying.", at: Date.now() });
+      timer = setTimeout(pull, rows.some(r => r.state === "in") ? 30000 : 120000);
+    };
+    setSt({ sport, rows: null, err: null, at: 0 });
+    pull();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [sport]);
+  const cfg = SPORT_CFG[sport], rows = st.sport === sport ? st.rows : null;
+  const live = (rows || []).filter(r => r.state === "in"), show = live.length ? live : rows || [];
+  const what = sport === "Tennis" ? "matches" : sport === "MMA" ? "fights" : "games", one = { matches: "match", fights: "fight", games: "game" }[what];
+  const side = (x, r) => <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+    <span style={{ fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      {x.abbr ? <span style={{ fontFamily: F.d, fontWeight: 700, letterSpacing: 1, marginRight: 6 }}>{x.abbr}</span> : null}{x.abbr ? <span style={{ color: T.dim }}>{x.name}</span> : x.name}{x.win && r.state === "post" && !x.abbr ? " ✓" : ""}
+    </span>
+    <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim, whiteSpace: "nowrap" }}>{x.score}</span>
+  </div>;
+  return <Panel title={live.length ? "LIVE NOW" : "TODAY'S " + what.toUpperCase()} right={`${cfg.label}${rows ? ` · ${show.length}` : ""}`} color={live.length ? NEON.red : T.chrome}>
+    {!rows && !st.err && <div style={{ fontSize: 12, color: T.dim }}>Loading the {cfg.label} scoreboard…</div>}
+    {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
+    {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {what} today.</div>}
+    {show.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
+      {show.map(r => <div key={r.id} style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : T.line}`, background: "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, letterSpacing: 1 }}>
+          <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? T.faint : T.chrome, fontFamily: F.d }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
+          <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "60%" }}>{[sport === "Soccer" || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
+        </div>
+        {side(r.away, r)}
+        {side(r.home, r)}
+      </div>)}
+    </div>}
+    {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? "Updates every 30 seconds." : "Updates every 2 minutes."}{live.length && rows.length > live.length ? ` ${rows.length - live.length} more ${rows.length - live.length === 1 ? one : what} today.` : ""}</div>}
+  </Panel>;
+}
+function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,slateInfo,slateBusy,slateErr}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
   const indiv=isIndiv(sport);
   const ph=sport==="Tennis"?["Jannik Sinner","Carlos Alcaraz"]:sport==="MMA"?["Fighter one","Fighter two"]:["Dallas Cowboys","San Francisco 49ers"];
-  const pull=indiv?[["Every match on record",sport==="Tennis"?"ATP + WTA singles since 2015":"every UFC card since 1993"],["Elo ratings","fitted, then tested on later results"],["Set scores","best of 3 / best of 5 (tennis)"],["Today's draw","rounds, seeds, cards"],["Results","graded automatically"]]:[["Season stats","scored + allowed, games played"],["Every past season","MLB back to 1901, NFL 1999; older years fade"],["xG","NHL and soccer"],["Starters","pitcher, goalie, QB"],["Weather","game-time conditions"],["Rest","days off, back-to-backs"],["Travel","miles and time zones"],["Form","last 5 + 3-week trend"],["Officials","tendencies, home bias"],["Market","lines, sharp money, RLM"],["Advanced","efficiency ratings, trend"],["H2H","season series, ATS"]];
   return <Shell status="standing by">
     <div style={{textAlign:"center",padding:"34px 0 22px"}}>
       <div role="heading" aria-level={1} aria-label="Bobby's Boardroom">
@@ -1658,10 +1691,6 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <div style={{fontSize:10,color:T.dim,marginTop:8}}>{slateInfo?`● scan ready (${slateInfo.age} min old): opens instantly`:"Pulled live from the scores routes (free), then cached for 20 minutes."}</div>
       {slateErr&&<div style={{marginTop:10,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{slateErr}</div>}
     </Panel>
-    <Panel title="RESULTS TRACKER" right={track?`${track.graded} graded`:""}>
-      <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>Every game the algo prices is logged. Add final scores (or auto-fill them) and the algo learns from what actually happened.</div>
-      <button onClick={()=>onResults&&onResults()} style={{width:"100%",marginTop:12,padding:"12px 10px",border:`1px solid ${T.chrome}`,background:"rgba(143,0,255,0.16)",color:"#fff",fontFamily:F.d,fontSize:12,letterSpacing:2,cursor:"pointer"}}>▦ RESULTS{track&&track.pending?` · ${track.pending} TO GRADE`:""}</button>
-    </Panel>
     <Panel title="MATCHUP INPUT" right={SPORT_CFG[sport].label}>
       <div style={{display:"flex",alignItems:"flex-end",gap:10}}>
         <div style={{flex:1}}>
@@ -1678,11 +1707,7 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <button onClick={onFetch} disabled={!ok} style={{width:"100%",marginTop:16,padding:"14px",border:`1px solid ${ok?T.chrome:T.line}`,background:ok?"rgba(143,0,255,0.29)":"none",color:ok?"#fff":T.faint,fontFamily:F.d,fontSize:13,letterSpacing:3,cursor:ok?"pointer":"not-allowed",boxShadow:ok?"0 0 22px rgba(143,0,255,0.45),inset 0 0 18px rgba(143,0,255,0.18)":"none"}}>{loading?"LOADING…":"RUN SIMULATION"}</button>
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
     </Panel>
-    <Panel title="DATA PULLED PER GAME">
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:"8px 16px"}}>
-        {pull.map(([a,b])=><div key={a} style={{fontSize:12,color:T.dim}}><span style={{color:T.chrome}}>▸ {a}</span> {b}</div>)}
-      </div>
-    </Panel>
+    <LiveScores sport={sport}/>
   </Shell>;
 }
 
@@ -2227,132 +2252,6 @@ function IndivMatchScreen({ res, onBack }) {
 }
 const btnStyle = (on = true) => ({ padding: "9px 12px", border: `1px solid ${on ? T.chrome : T.line}`, background: on ? "rgba(143,0,255,0.2)" : "none", color: on ? "#fff" : T.faint, fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, cursor: on ? "pointer" : "not-allowed" });
 
-// ─── RESULTS SCREEN ──────────────────────────────────────────────────────────
-function ResultsScreen({ onBack, onChanged }) {
-  const [, setVer] = useState(0);
-  const [sp, setSp] = useState("ALL");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [err, setErr] = useState(null);
-  const [io, setIo] = useState(null);
-  const [imp, setImp] = useState("");
-  const [scores, setScores] = useState({});
-  const [clearArm, setClearArm] = useState(false);
-  const st = trackLoad(), storageOK = trackStorageOK();
-  const bump = () => { refreshLearned(); setVer(v => v + 1); if (onChanged) onChanged(); };
-  // Finals are free from the scoreboard route, so every pending game is checked as soon as this page opens.
-  useEffect(() => {
-    let live = true;
-    (async () => {
-      const pend = Object.values(trackLoad().games).filter(isPending), by = {};
-      for (const g of pend) (by[g.sport] = by[g.sport] || []).push(g);
-      let n = 0;
-      for (const [k, gs] of Object.entries(by)) { try { n += await fetchFinals(k, gs.slice(0, 60)); } catch (_) { /* offline: leave for later */ } }
-      if (live && n) { setMsg(`${n} game${n > 1 ? "s" : ""} graded from final scores.`); bump(); }
-    })();
-    return () => { live = false; };
-  }, []);
-  const all = Object.values(st.games).sort((a, b) => (b.day + b.time).localeCompare(a.day + a.time));
-  const sportsIn = SPORT_KEYS.filter(k => all.some(g => g.sport === k));
-  const list = sp === "ALL" ? all : all.filter(g => g.sport === sp);
-  const pending = list.filter(isPending), graded = list.filter(g => g.result), upcoming = list.filter(g => !g.result && !isPending(g));
-  const S = trackStats(st.games, sp === "ALL" ? null : sp);
-  const btn = (on = true) => ({ padding: "9px 12px", border: `1px solid ${on ? T.chrome : T.line}`, background: on ? "rgba(143,0,255,0.2)" : "none", color: on ? "#fff" : T.faint, fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, cursor: on ? "pointer" : "not-allowed" });
-  const vs = g => `${g.away.abbr} ${g.neutral ? "vs" : "@"} ${g.home.abbr}`;
-  const pickOf = g => g.plays.find(p => p.key === g.pick);
-  const save = g => {
-    const v = scores[g.key] || {}, a = Number(v.a), h = Number(v.h);
-    if (!Number.isInteger(a) || !Number.isInteger(h) || a < 0 || h < 0) { setErr("Enter both final scores as whole numbers."); return; }
-    trackGrade(g.key, a, h); setErr(null); setMsg(null); bump();
-  };
-  const auto = async () => {
-    const ps = pending.filter(g => g.sport === sp).slice(0, 25);
-    if (!ps.length) return;
-    setBusy(true); setErr(null); setMsg(null);
-    try { const n = await fetchFinals(sp, ps); setMsg(`${n} of ${ps.length} game${ps.length > 1 ? "s" : ""} graded from confirmed final scores.`); bump(); }
-    catch (e) { setErr(e.message || "Auto-fill failed. Enter the scores by hand."); }
-    finally { setBusy(false); }
-  };
-  const Tile = ({ v, l, sub, c }) => <div style={{ flex: "1 1 120px", border: `1px solid ${T.line}`, padding: "10px 8px", textAlign: "center", background: "rgba(14,4,26,.55)" }}>
-    <div style={{ fontFamily: F.d, fontSize: 18, fontWeight: 700, color: c || "#fff" }}>{v}</div>
-    <div style={{ fontSize: 10, color: T.dim, letterSpacing: 1, marginTop: 3 }}>{l}</div>
-    {sub && <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{sub}</div>}</div>;
-  const units = S.picks.units, pos = "#39FF88", neg = "#FF8095";
-  const learnRows = (sp === "ALL" ? sportsIn : [sp]).map(k => [k, learnFrom(st.games, k)]);
-  return <Shell status="results tracker">
-    <Panel title="RESULTS TRACKER" right={sp === "ALL" ? "all sports" : SPORT_CFG[sp].label}>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-        {["ALL", ...sportsIn].map(k => <button key={k} onClick={() => { setSp(k); setMsg(null); setErr(null); }} aria-pressed={sp === k} style={{ ...btn(true), background: sp === k ? "rgba(143,0,255,0.35)" : "rgba(14,4,26,.6)", color: sp === k ? "#fff" : T.dim, border: `1px solid ${sp === k ? T.chrome : T.line}` }}>{k === "ALL" ? "ALL" : SPORT_CFG[k].label}</button>)}
-      </div>
-      {!all.length && <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7 }}>Nothing logged yet. Run a SLATE or a full sim: every game the algo prices is saved here automatically, with its pick and price.</div>}
-      {all.length > 0 && <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Tile v={S.graded} l="GRADED" sub={`${S.logged} logged · ${S.pending} to grade`} />
-        <Tile v={`${S.picks.w}-${S.picks.l}${S.picks.p ? "-" + S.picks.p : ""}`} l="TOP PICKS W-L" sub={S.picks.n ? `${(S.picks.w / Math.max(1, S.picks.w + S.picks.l) * 100).toFixed(0)}% won` : "none graded"} />
-        <Tile v={`${units >= 0 ? "+" : ""}${units.toFixed(2)}u`} c={S.picks.n ? (units >= 0 ? pos : neg) : "#fff"} l="UNITS (1u PER PICK)" sub={S.picks.n ? `ROI ${(S.picks.roi * 100).toFixed(1)}%` : ""} />
-        <Tile v={S.ml ? S.ml.brier.toFixed(3) : "—"} l="WIN-PROB SCORE" sub={S.ml ? (S.ml.brierMkt != null ? `market ${S.ml.brierMkt.toFixed(3)} · lower is better` : "lower is better") : ""} />
-        <Tile v={S.total ? `${S.total.bias >= 0 ? "+" : ""}${S.total.bias.toFixed(1)}` : "—"} l="TOTALS VS ALGO" sub={S.total ? `actual minus projected · off by ${S.total.mae.toFixed(1)} avg` : ""} />
-      </div>}
-      {S.allEV.n > 0 && <div style={{ marginTop: 12, fontSize: 11, color: T.dim, lineHeight: 1.8 }}>
-        Every +EV play the algo priced: {S.allEV.w}-{S.allEV.l}{S.allEV.p ? `-${S.allEV.p}` : ""}, {S.allEV.units >= 0 ? "+" : ""}{S.allEV.units.toFixed(2)}u ({(S.allEV.roi * 100).toFixed(1)}% ROI).
-        <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 6 }}>
-          {S.calib.filter(b => b.n).map(b => <div key={b.lo} style={{ border: `1px solid ${T.line}`, padding: "6px 8px" }}>
-            <div style={{ color: T.chrome }}>algo {Math.round(b.lo * 100)}–{b.hi > 1 ? "100" : Math.round(b.hi * 100)}%</div>
-            <div>won {(b.act * 100).toFixed(0)}% of {b.n} (said {(b.pred * 100).toFixed(0)}%)</div></div>)}
-        </div></div>}
-    </Panel>
-    <Panel title="WHAT THE ALGO HAS LEARNED" right={st.learnOn === false ? "OFF" : "ON"}>
-      <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7 }}>From graded games only, starting at {LEARN_MIN} per sport. It corrects the scoring level and home edge slowly, within tight limits, and never touches a game already graded.</div>
-      {learnRows.length > 0 && <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-        {learnRows.map(([k, lf]) => <div key={k} style={{ fontSize: 12, color: T.ink }}>
-          <span style={{ color: T.chrome }}>{SPORT_CFG[k].label}</span>{" "}
-          {lf.inactive ? <span style={{ color: T.dim }}>needs {LEARN_MIN} graded games (has {lf.n})</span>
-            : <>scoring ×{lf.s.toFixed(3)} · home edge {lf.h >= 0 ? "+" : ""}{lf.h.toFixed(2)} {SPORT_CFG[k].unit} · from {lf.n} games</>}
-        </div>)}</div>}
-      <button onClick={() => { st.learnOn = st.learnOn === false; trackSave(st); bump(); }} aria-pressed={st.learnOn !== false} style={{ ...btn(true), marginTop: 12 }}>{st.learnOn === false ? "TURN LEARNING ON" : "TURN LEARNING OFF"}</button>
-    </Panel>
-    <Panel title="TO GRADE" right={`${pending.length}`}>
-      {sp !== "ALL" && pending.length > 0 && <button onClick={auto} disabled={busy} style={{ ...btn(!busy), width: "100%", marginBottom: 10 }}>{busy ? "CHECKING FINAL SCORES…" : `AUTO-FILL ${SPORT_CFG[sp].label} FINALS`}</button>}
-      {sp === "ALL" && pending.length > 0 && <div style={{ fontSize: 11, color: T.dim, marginBottom: 8 }}>Finals fill in automatically when you open this page. You can also type a score in.</div>}
-      {msg && <div style={{ fontSize: 12, color: pos, marginBottom: 8 }}>{msg}</div>}
-      {err && <ErrorLine text={err} />}
-      {!pending.length && <div style={{ fontSize: 12, color: T.dim }}>Nothing waiting. Games show up here once their day has come.</div>}
-      {pending.slice(0, 60).map(g => { const p = pickOf(g), v = scores[g.key] || {}; const box = { width: 54, background: "rgba(9,2,17,.8)", border: `1px solid ${T.line}`, color: "#fff", fontFamily: F.d, fontSize: 14, padding: "7px 6px", textAlign: "center" };
-        return <div key={g.key} style={{ borderTop: `1px solid ${T.line}`, padding: "10px 0", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          <div style={{ flex: "1 1 170px", minWidth: 0 }}>
-            <div style={{ fontFamily: F.d, fontSize: 13, color: "#fff" }}>{g.proj ? vs(g) : `${g.away.name} vs ${g.home.name}`} <span style={{ fontSize: 10, color: T.dim }}>{SPORT_CFG[g.sport].label} · {g.day}{g.time ? " · " + g.time : ""}</span></div>
-            <div style={{ fontSize: 11, color: T.dim, marginTop: 2 }}>{p ? `pick ${p.label}` : "no value play"}{g.proj ? ` · algo total ${g.proj.total.toFixed(1)}` : ` · ${Math.round(Math.max(g.p.a, g.p.h) * 100)}% to win`}</div>
-          </div>
-          <input aria-label={`${g.away.abbr} final score`} inputMode="numeric" placeholder={g.away.abbr} value={v.a ?? ""} onChange={e => setScores({ ...scores, [g.key]: { ...v, a: e.target.value.replace(/\D/g, "") } })} style={box} />
-          <span style={{ color: T.dim }}>–</span>
-          <input aria-label={`${g.home.abbr} final score`} inputMode="numeric" placeholder={g.home.abbr} value={v.h ?? ""} onChange={e => setScores({ ...scores, [g.key]: { ...v, h: e.target.value.replace(/\D/g, "") } })} style={box} />
-          <button onClick={() => save(g)} style={btn(true)}>SAVE</button>
-        </div>; })}
-      {upcoming.length > 0 && <div style={{ fontSize: 11, color: T.faint, marginTop: 8 }}>{upcoming.length} more logged for later dates.</div>}
-    </Panel>
-    {graded.length > 0 && <Panel title="GRADED" right={`${graded.length}`}>
-      {graded.slice(0, 40).map(g => { const p = pickOf(g), c = p ? (p.res === "W" ? pos : p.res === "L" ? neg : T.dim) : T.dim;
-        return <div key={g.key} style={{ borderTop: `1px solid ${T.line}`, padding: "8px 0", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 170px", minWidth: 0, fontSize: 12, color: T.ink }}>{vs(g)} <b>{g.result.as}–{g.result.hs}</b> <span style={{ color: T.dim, fontSize: 10 }}>{SPORT_CFG[g.sport].label} · {g.day}{g.proj ? ` · algo total ${g.proj.total.toFixed(1)}` : ""}</span></div>
-          <div style={{ fontSize: 11, color: c }}>{p ? `${p.label}: ${p.res}${p.odds != null ? ` ${p.u >= 0 ? "+" : ""}${p.u.toFixed(2)}u` : ""}` : "no pick"}</div>
-          <button onClick={() => { trackUngrade(g.key); bump(); }} style={{ ...btn(true), padding: "4px 8px", fontSize: 10 }}>EDIT</button>
-        </div>; })}
-    </Panel>}
-    <Panel title="BACKUP">
-      <div style={{ fontSize: 12, color: storageOK ? T.dim : "#FFB3C0", lineHeight: 1.7 }}>{storageOK ? "Saved in this browser. Export a copy to move it to another device or keep it safe." : "This browser isn't letting the app save, so the log lasts only while this page is open. Export it before you leave."}</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-        <button onClick={() => setIo(io === "export" ? null : "export")} style={btn(true)}>EXPORT</button>
-        <button onClick={() => setIo(io === "import" ? null : "import")} style={btn(true)}>IMPORT</button>
-        <button onClick={() => { if (!clearArm) { setClearArm(true); return; } trackSave({ v: 1, games: {}, learnOn: st.learnOn }); setClearArm(false); bump(); }} style={{ ...btn(true), borderColor: clearArm ? "#FF5577" : T.chrome }}>{clearArm ? "TAP AGAIN TO ERASE ALL" : "CLEAR LOG"}</button>
-      </div>
-      {io === "export" && <textarea readOnly aria-label="results export" value={JSON.stringify({ v: 1, games: st.games })} onFocus={e => e.target.select()} style={{ width: "100%", height: 110, marginTop: 10, background: "rgba(9,2,17,.8)", color: T.ink, border: `1px solid ${T.line}`, fontSize: 11, boxSizing: "border-box" }} />}
-      {io === "import" && <div style={{ marginTop: 10 }}>
-        <textarea aria-label="results import" value={imp} onChange={e => setImp(e.target.value)} placeholder="Paste an export here" style={{ width: "100%", height: 90, background: "rgba(9,2,17,.8)", color: T.ink, border: `1px solid ${T.line}`, fontSize: 11, boxSizing: "border-box" }} />
-        <button onClick={() => { try { const n = trackImport(imp); setMsg(`Imported ${n} game${n === 1 ? "" : "s"}.`); setErr(null); setImp(""); setIo(null); bump(); } catch (e) { setErr(e.message); } }} style={{ ...btn(!!imp.trim()), marginTop: 8 }} disabled={!imp.trim()}>LOAD</button>
-      </div>}
-    </Panel>
-    <button onClick={onBack} style={{ ...btn(true), width: "100%", marginTop: 4, padding: "12px" }}>◂ BACK</button>
-  </Shell>;
-}
 
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -2374,16 +2273,14 @@ export default function App() {
   const [trackVer,setTrackVer]=useState(0);
   const [indiv,setIndiv]=useState(null);
   const [indivMatch,setIndivMatch]=useState(null);
-  useEffect(()=>{refreshLearned();setTrackVer(v=>v+1);},[]);
+  // Results are tracked and graded in the background by the data job; the page only reads what it learned.
+  useEffect(()=>{try{localStorage.removeItem(TRACK_LS);}catch(_){/* none */}loadLearned().then(()=>setTrackVer(v=>v+1)).catch(()=>{});},[]);
 
   // One ranking per scan: SLATE, BEST OF SLATE and the way back from a full sim all read the same result.
   const ranked=useMemo(()=>{
     if(!slateRec)return null;
     try{return rankSlate(slateRec.data.games,slateRec.data.sport);}catch(e){return{error:e.message||"Could not rank the slate."};}
   },[slateRec,trackVer]);
-  // Every priced slate game goes into the results tracker (a started or graded game is never overwritten).
-  useEffect(()=>{if(slateRec&&ranked&&!ranked.error){try{trackSlate(ranked,slateRec.data.sport,slateRec.data.slateDate);}catch(_){/* logging is best effort */}}},[ranked]);
-  const track=useMemo(()=>{const S=trackStats(trackLoad().games,null);return{graded:S.graded,pending:S.pending};},[phase,trackVer,ranked]);
   const slateInfo=useMemo(()=>{const h=peekSlate(sport);return h?{age:Math.max(0,Math.round((Date.now()-h.t)/60000))}:null;},[sport,phase,slateRec]);
 
   async function openIndiv(best,force=false){
@@ -2391,7 +2288,7 @@ export default function App() {
     if(!force&&indiv&&indiv.sport===sport&&Date.now()-indiv.t<SLATE_TTL_MS){setPhase(best?"indivBest":"indiv");return;}
     const onScreen=phase==="indiv"||phase==="indivBest";
     if(onScreen)setRefreshing(true);else setPhase("slateLoading");
-    try{const r=await fetchIndiv(sport);setIndiv(r);try{trackIndiv(r);}catch(_){/* best effort */}setTrackVer(v=>v+1);setPhase(best?"indivBest":"indiv");}
+    try{const r=await fetchIndiv(sport);setIndiv(r);setPhase(best?"indivBest":"indiv");}
     catch(e){setSlateErr(e.message||"Couldn't load today's board. Try again.");setPhase(onScreen?phase:"setup");}
     finally{setRefreshing(false);}
   }
@@ -2428,7 +2325,6 @@ export default function App() {
       // Auto-simulate immediately — no button needed
       const sim = runSimulations(data.home, data.away, sp, data, 10000, { neutral: n });
       setSimResult(sim);
-      try{trackDeep(data,sim,sp,n);}catch(_){/* logging is best effort */}
       setPhase("ready");
     } catch(e) {
       setError(e.message||"Failed to load data. Check team names and try again.");
@@ -2441,7 +2337,6 @@ export default function App() {
 
   if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
   if (phase==="indivMatch"&&indivMatch) return <IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
-  if (phase==="results") return <ResultsScreen onBack={()=>setPhase("setup")} onChanged={()=>setTrackVer(v=>v+1)}/>;
   if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
   if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
   if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
@@ -2452,5 +2347,5 @@ export default function App() {
   }
   if (phase==="ready"&&matchData&&simResult) return <SimScreen matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null} onResults={()=>setPhase("results")} track={track}/>;
+    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}/>;
 }
