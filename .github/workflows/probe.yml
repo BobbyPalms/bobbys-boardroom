@@ -18,22 +18,17 @@ jobs:
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          D0=$(TZ=America/New_York date +%Y%m%d); D6=$(TZ=America/New_York date -d "+6 days" +%Y%m%d)
-          B=https://site.api.espn.com/apis/site/v2/sports
-          get nfl_range.json "$B/football/nfl/scoreboard?dates=$D0-$D6"
-          get nba_range.json "$B/basketball/nba/scoreboard?dates=$D0-$D6"
-          get cbb_range.json "$B/basketball/mens-college-basketball/scoreboard?dates=$D0-$D6&groups=50&limit=500"
-          get epl_range.json "$B/soccer/eng.1/scoreboard?dates=$D0-$D6"
-          get atp_range.json "$B/tennis/atp/scoreboard?dates=$D0-$D6"
-          get atp_day.json "$B/tennis/atp/scoreboard?dates=$D0"
-          get ufc_range.json "$B/mma/ufc/scoreboard?dates=$D0-$D6"
-          # Cloudflare: can the deploy key make a D1 database? (status + success flag only; no secrets written)
-          for path in "d1/database" "storage/kv/namespaces"; do
-            code=$(curl -sS -m 30 -o cf.json -w "%{http_code}" -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/$path")
-            echo "$path $code $(jq -c '{success, errors, n: (.result|length?), names: [.result[]?.name // .result[]?.title]}' cf.json)" >> out/cloudflare.txt
+          Y=$(TZ=America/New_York date -d "-1 day" +%Y%m%d); B=https://site.api.espn.com/apis/site/v2/sports
+          for sl in basketball/nba football/nfl hockey/nhl soccer/uefa.champions soccer/eng.1 basketball/mens-college-basketball football/college-football baseball/mlb tennis/atp mma/ufc basketball/wnba; do
+            f=$(echo $sl | tr '/.' '__')
+            curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard?dates=$Y" -o sb.json || true
+            id=$(jq -r '[.events[]? | select(.status.type.completed==true or .competitions[0].status.type.completed==true) | .id] | first // empty' sb.json)
+            [ -z "$id" ] && id=$(jq -r '[.events[]?.id] | first // empty' sb.json)
+            [ -z "$id" ] && { curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard" -o sb.json; id=$(jq -r '[.events[]? | select(.status.type.completed==true) | .id] | first // ([.events[]?.id] | first) // empty' sb.json); }
+            echo "$sl $id" >> out/ids.txt
+            [ -n "$id" ] && curl -sS --compressed -m 40 -A "$UA" "$B/$sl/summary?event=$id" -o "out/sum_$f.json" -w "$sl %{http_code} %{size_download}\n" >> out/ids.txt
+            cp sb.json "out/sb_$f.json"
           done
-          curl -sS -m 30 -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/user/tokens/verify" | jq -c '{success, status: .result.status}' >> out/cloudflare.txt
-          curl -sS -m 30 -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/access/organizations" | jq -c '{success, auth_domain: .result.auth_domain, errors}' >> out/cloudflare.txt
           cd out && git init -q -b probe && git add -A
           git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
