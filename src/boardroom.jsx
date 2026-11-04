@@ -1787,6 +1787,9 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 .bb-top{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"brand status clock"}
 .bb-top>span:nth-child(2){text-align:center}
 @media (max-width:520px){.bb-top{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"brand clock" "status status"}.bb-top>span:nth-child(2){text-align:left}}
+.bb-sports{grid-template-columns:repeat(11,minmax(0,1fr))}
+@media (max-width:720px){.bb-sports{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media (max-width:440px){.bb-sports{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
 @media (max-width:640px){.bb-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .bb-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
@@ -2098,8 +2101,8 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       </div>
       <div style={{fontSize:13,color:T.dim,marginTop:10}}>Pick a sport and two teams. Live data from the scores routes, 10,000 simulations.</div>
     </div>
-    <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center"}}>
-      {SPORT_KEYS.map(k=><button key={k} onClick={()=>setSport(k)} style={{padding:"8px 13px",border:`1px solid ${sport===k?T.chrome:T.line}`,background:sport===k?"rgba(143,0,255,0.25)":"rgba(14,4,26,.6)",color:sport===k?"#fff":T.dim,fontFamily:F.d,fontSize:11,letterSpacing:1,cursor:"pointer",boxShadow:sport===k?`0 0 14px rgba(143,0,255,0.54)`:"none"}}><Ico>{SPORT_CFG[k].icon}</Ico> {SPORT_CFG[k].label}</button>)}
+    <div className="bb-sports" style={{display:"grid",gap:6}}>
+      {SPORT_KEYS.map(k=><button key={k} onClick={()=>setSport(k)} style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,minWidth:0,padding:"9px 2px 8px",border:`1px solid ${sport===k?T.chrome:T.line}`,background:sport===k?"rgba(143,0,255,0.25)":"rgba(14,4,26,.6)",color:sport===k?"#fff":T.dim,fontFamily:F.d,fontSize:"clamp(9.5px,1.15vw,11px)",letterSpacing:.5,cursor:"pointer",whiteSpace:"nowrap",boxShadow:sport===k?`0 0 14px rgba(143,0,255,0.54)`:"none"}}><Ico>{SPORT_CFG[k].icon}</Ico><span>{SPORT_CFG[k].label}</span></button>)}
     </div>
     <button onClick={()=>onBets&&onBets()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:16,padding:"13px 14px",border:`1px solid ${T.chrome}`,background:"linear-gradient(90deg,rgba(143,0,255,.28),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left",boxShadow:`0 0 18px rgba(143,0,255,.25)`}}>
       <span style={{fontSize:18}}>🎟</span>
