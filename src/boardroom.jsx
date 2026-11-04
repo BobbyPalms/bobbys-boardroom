@@ -2417,6 +2417,21 @@ export default function App() {
   const [indiv,setIndiv]=useState(null);
   const [indivMatch,setIndivMatch]=useState(null);
   // Results are tracked and graded in the background by the data job; the page only reads what it learned.
+  // Browser back button: the home screen is the one history entry under the app; every other screen sits on a single
+  // entry above it, so Back from anywhere (however deep) lands on the home screen instead of leaving the site.
+  useEffect(()=>{
+    try{ if(!history.state||!history.state.bb) history.replaceState({bb:"home"},""); }catch(_){/* no history */}
+    const onPop=e=>{ if(!e.state||e.state.bb==="home"){ setPhase("setup"); setSlateErr(null); setError(null); setBackTo(null); } };
+    window.addEventListener("popstate",onPop);
+    return ()=>window.removeEventListener("popstate",onPop);
+  },[]);
+  useEffect(()=>{
+    try{
+      const inner=history.state&&history.state.bb==="inner";
+      if(phase!=="setup"&&!inner) history.pushState({bb:"inner"},"");
+      else if(phase==="setup"&&inner) history.back();          // went home with an in-app button: drop the extra entry
+    }catch(_){/* no history */}
+  },[phase]);
   useEffect(()=>{try{localStorage.removeItem(TRACK_LS);}catch(_){/* none */}loadLearned().then(()=>setTrackVer(v=>v+1)).catch(()=>{});},[]);
 
   // One ranking per scan: SLATE, BEST OF SLATE and the way back from a full sim all read the same result.
