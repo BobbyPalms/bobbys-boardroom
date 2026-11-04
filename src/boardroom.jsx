@@ -819,7 +819,9 @@ function scoreIndiv(m, sport, R) {
 }
 async function fetchIndiv(sport) {
   const { R, fit, ok } = await loadRatings(sport);
-  const boards = await Promise.all(ROUTES[sport].leagues.flatMap(lg => [0, 1].map(k => getJSON(scoreboardUrl(sport, lg, ymd(new Date(Date.now() + k * 864e5)))).then(j => sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j)).catch(() => []))));
+  // tennis plays every day; UFC cards are about weekly, so MMA looks a week ahead to the next card
+  const ahead = sport === "MMA" ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1];
+  const boards = await Promise.all(ROUTES[sport].leagues.flatMap(lg => ahead.map(k => getJSON(scoreboardUrl(sport, lg, ymd(new Date(Date.now() + k * 864e5)))).then(j => sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j)).catch(() => []))));
   const seen = new Set(), list = [];
   for (const m of boards.flat()) if (!seen.has(m.id) && m.state === "pre") { seen.add(m.id); list.push(scoreIndiv(m, sport, R)); }
   list.sort((x, y) => (y.known - x.known) || (y.conf - x.conf));
@@ -1649,7 +1651,7 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       {SPORT_KEYS.map(k=><button key={k} onClick={()=>setSport(k)} style={{padding:"8px 13px",border:`1px solid ${sport===k?T.chrome:T.line}`,background:sport===k?"rgba(143,0,255,0.25)":"rgba(14,4,26,.6)",color:sport===k?"#fff":T.dim,fontFamily:F.d,fontSize:11,letterSpacing:1,cursor:"pointer",boxShadow:sport===k?`0 0 14px rgba(143,0,255,0.54)`:"none"}}><Ico>{SPORT_CFG[k].icon}</Ico> {SPORT_CFG[k].label}</button>)}
     </div>
     <Panel title="TODAY'S SLATE" right={SPORT_CFG[sport].label}>
-      <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`Every ${SPORT_CFG[sport].label} ${sport==="Tennis"?"match":"fight"} today, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${SPORT_CFG[sport].label} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
+      <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${SPORT_CFG[sport].label} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
       <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
         {[["▤ SLATE",onSlate],["★ BEST OF SLATE",onBest]].map(([t,fn])=><button key={t} onClick={()=>fn&&fn()} disabled={slateOff} style={{flex:"1 1 150px",padding:"13px 10px",border:`1px solid ${T.chrome}`,background:"rgba(143,0,255,0.22)",color:"#fff",fontFamily:F.d,fontSize:12,letterSpacing:2,cursor:slateOff?"not-allowed":"pointer",opacity:slateOff?.5:1,boxShadow:"0 0 16px rgba(143,0,255,0.32)"}}>{t}</button>)}
       </div>
@@ -2208,9 +2210,9 @@ function IndivSlateScreen({ res, best, onBack, onRefresh, onToggle, refreshing }
         <button onClick={onRefresh} disabled={refreshing} style={btnStyle(!refreshing)}>{refreshing ? "REFRESHING…" : "↻ REFRESH"}</button>
       </div>
     </Panel>
-    {best ? (res.best ? <IndivCard m={res.best} sport={sp} big /> : <Panel title="NO PLAY"><div style={{ fontSize: 12, color: T.dim }}>No {sp === "Tennis" ? "match" : "fight"} today has enough history on both sides to pick.</div></Panel>)
+    {best ? (res.best ? <IndivCard m={res.best} sport={sp} big /> : <Panel title="NO PLAY"><div style={{ fontSize: 12, color: T.dim }}>No {sp === "Tennis" ? "match" : "fight"} on the board has enough history on both sides to pick.</div></Panel>)
       : res.list.length ? <div style={{ display: "grid", gap: 10 }}>{res.list.slice(0, 80).map(m => <IndivCard key={m.id} m={m} sport={sp} />)}</div>
-      : <Panel title="NOTHING SCHEDULED"><div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {sp === "Tennis" ? "matches" : "fights"} left today or tomorrow.</div></Panel>}
+      : <Panel title="NOTHING SCHEDULED"><div style={{ fontSize: 12, color: T.dim }}>{sp === "Tennis" ? "No tennis matches left today or tomorrow." : "No UFC fights in the next 8 days."}</div></Panel>}
   </Shell>;
 }
 function IndivMatchScreen({ res, onBack }) {
