@@ -523,11 +523,11 @@ export function playerRating(j, sport, pos = "") {
     if (gk) {
       const sv = (m.saves || 0) + (m.goalsConceded || 0) > 0 ? (m.saves || 0) / ((m.saves || 0) + (m.goalsConceded || 0)) : null, ga90 = (m.goalsConceded || 0) * 90 / min;
       raw = 72 + (sv != null ? (sv - 0.68) * 80 : 0) - (ga90 - 1.3) * 5;
-      keeper = { sv, ga90, apps }; why = `${m.saves || 0} saves, ${m.goalsConceded || 0} conceded in ${apps} apps${sv != null ? ` (${Math.round(sv * 100)}% saved)` : ""}`;
+      keeper = { sv, ga90, apps }; why = `${Math.round(m.saves || 0)} saves, ${Math.round(m.goalsConceded || 0)} conceded in ${Math.round(apps)} apps${sv != null ? ` (${Math.round(sv * 100)}% saved)` : ""}`;
     } else {
       const p90 = k => (m[k] || 0) * 90 / min;
       raw = 66 + 16 * p90("totalGoals") + 11 * p90("goalAssists") + 2.5 * p90("shotsOnTarget") + 1.2 * (p90("totalTackles") + p90("interceptions")) + ((m.passPct || 0.8) - 0.8) * 25;
-      why = `${m.totalGoals || 0} G · ${m.goalAssists || 0} A in ${apps} apps${m.passPct ? ` · ${Math.round(m.passPct * 100)}% passing` : ""}`;
+      why = `${Math.round(m.totalGoals || 0)} G · ${Math.round(m.goalAssists || 0)} A in ${Math.round(apps)} apps${m.passPct ? ` · ${Math.round(m.passPct * 100)}% passing` : ""}`;
     }
   } else if (sport === "NFL" || sport === "CFB") {
     n = m.gamesPlayed || 0; if (!n) return null;
@@ -556,4 +556,34 @@ export function playerRating(j, sport, pos = "") {
   // a few games are a thin sample: pulled toward a regular starter's 72
   const rating = Math.round(Math.max(45, Math.min(99, 72 + (raw - 72) * n / (n + 3))));
   return { rating, why, keeper };
+}
+
+// ---------- soccer: one overall rating from every competition a player plays in (league, cups, Europe, his country) ----------
+// The athlete's statistics log lists each competition per season; this season counts in full and last season at half,
+// the way a FIFA-style rating reflects more than the last few matches.
+export const athleteLogUrl = id => `${CORE}/soccer/athletes/${id}/statisticslog`;
+export function logRefs(log, years, weights) {
+  const out = [];
+  for (const e of log?.entries || []) {
+    const y = Number((String(e.season?.$ref || "").match(/seasons\/(\d{4})/) || [])[1]);
+    const i = years.indexOf(y);
+    if (i < 0) continue;
+    const tot = (e.statistics || []).find(s => s.type === "total") || (e.statistics || [])[0];
+    const ref = tot?.statistics?.$ref, lg = (String(tot?.league?.$ref || e.season?.$ref || "").match(/leagues\/([^/?]+)/) || [])[1] || "";
+    if (ref) out.push({ url: ref.replace(/^http:/, "https:"), w: weights[i], league: lg, year: y });
+  }
+  return out;
+}
+// Sum the counting stats across competitions (weighted); pass completion is minutes-weighted.
+const SUMMED = ["minutes", "appearances", "starts", "totalGoals", "goalAssists", "shotsOnTarget", "totalShots", "totalTackles", "interceptions", "saves", "goalsConceded"];
+export function combineStats(parts) {
+  const m = {}, wp = { v: 0, w: 0 };
+  for (const { json, w } of parts) {
+    const s = {};
+    for (const c of json?.splits?.categories || []) for (const x of c.stats || []) if (x?.name && !(x.name in s) && Number.isFinite(Number(x.value))) s[x.name] = Number(x.value);
+    for (const k of SUMMED) if (s[k] > 0) m[k] = (m[k] || 0) + w * s[k];
+    if (s.passPct > 0 && s.minutes > 0) { wp.v += s.passPct * s.minutes * w; wp.w += s.minutes * w; }
+  }
+  if (wp.w > 0) m.passPct = wp.v / wp.w;
+  return { splits: { categories: [{ name: "combined", stats: Object.entries(m).map(([name, value]) => ({ name, value })) }] } };
 }

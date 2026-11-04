@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { liveBoard, matchSplit, teamQueryScore, athleteSeasonUrl, playerRating, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, matchSplit, teamQueryScore, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -388,11 +388,26 @@ const _pr = {};
 async function rateLineups(g, sport, league) {
   const y = espnSeason(sport, seasonYear(sport));
   const one = (yy, p) => { const k = `${sport}:${league}:${yy}:${p.id}`; return (_pr[k] = _pr[k] || getJSON(athleteSeasonUrl(sport, league, yy, p.id)).then(j => playerRating(j, sport, p.pos)).catch(() => null)); };
+  // soccer: every competition (league, cups, Europe, national team), this season in full and last season at half
+  const overall = p => { const k = `soc:${p.id}`; return (_pr[k] = _pr[k] || (async () => {
+    const refs = logRefs(await getJSON(athleteLogUrl(p.id)), [y, y - 1], [1, 0.5]);
+    if (!refs.length) return null;
+    const parts = (await Promise.all(refs.map(r => getJSON(r.url).then(json => ({ ...r, json })).catch(() => null)))).filter(Boolean);
+    const r = playerRating(combineStats(parts), "Soccer", p.pos);
+    if (!r) return null;
+    const cur = parts.filter(x => x.year === y), cs = {};
+    for (const c of combineStats(cur.map(x => ({ ...x, w: 1 }))).splits.categories[0].stats) cs[c.name] = c.value;
+    const comps = new Set(cur.map(x => x.league)).size;
+    const kpr = /^G/.test(String(p.pos)) ? `${Math.round(cs.saves || 0)} saves, ${Math.round(cs.goalsConceded || 0)} conceded` : `${Math.round(cs.totalGoals || 0)} G · ${Math.round(cs.goalAssists || 0)} A`;
+    if (r.keeper) r.keeper.apps = Math.round(cs.appearances || 0);
+    r.why = `${kpr} in ${Math.round(cs.appearances || 0)} apps across ${comps} competition${comps === 1 ? "" : "s"} this season${parts.some(x => x.year === y - 1) ? " (last season counted at half)" : ""}`;
+    return r;
+  })().catch(() => null)); };
   await Promise.all(["away", "home"].map(async side => {
     const t = g[side], li = t?.lineupInfo;
     if (!li?.players?.length) return;
     await Promise.all(li.players.filter(p => /^\d+$/.test(String(p.id))).map(async p => {
-      const r = (await one(y, p)) || (await one(y - 1, p));
+      const r = sport === "Soccer" ? (await overall(p)) || (await one(y, p)) : (await one(y, p)) || (await one(y - 1, p));
       if (r) { p.rating = r.rating; p.why = r.why; p.keeper = r.keeper; }
     }));
     // basketball: the "star" slot is the best-rated player in the lineup

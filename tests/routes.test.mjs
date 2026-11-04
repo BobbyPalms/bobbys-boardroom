@@ -1,4 +1,4 @@
-import { playerRating, athleteSeasonUrl, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { logRefs, combineStats, athleteLogUrl, playerRating, athleteSeasonUrl, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -185,6 +185,19 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
   const qbR = playerRating({ splits: { categories: [cat("general", { gamesPlayed: 5 }), cat("passing", { completionPct: 70.9, netPassingYards: 1267, passingAttempts: 158, passingTouchdownPct: 3.8, interceptionPct: 0.63, interceptions: 1 })] } }, "NFL", "QB");
   const defR = playerRating({ splits: { categories: [cat("general", { gamesPlayed: 8 }), cat("defensive", { totalTackles: 44, sacks: 2, tacklesForLoss: 5 })] } }, "NFL", "DEF");
   check("football ratings: QB from yards per attempt, TD / INT rates and completions; defender from tackles and sacks", qbR && qbR.rating > 72 && /8 yds\/att/.test(qbR.why) && defR && defR.rating > 60, { qbR, defR });
+  const log = { entries: [
+    { season: { $ref: "http://x/soccer/leagues/esp.1/seasons/2026?lang=en" }, statistics: [{ type: "total", statistics: { $ref: "http://x/esp.1/2026/total" }, league: { $ref: "http://x/soccer/leagues/esp.1?lang=en" } }, { type: "team", statistics: { $ref: "http://x/esp.1/2026/team" } }] },
+    { season: { $ref: "http://x/soccer/leagues/uefa.champions/seasons/2026" }, statistics: [{ type: "total", statistics: { $ref: "http://x/ucl/2026" }, league: { $ref: "http://x/soccer/leagues/uefa.champions" } }] },
+    { season: { $ref: "http://x/soccer/leagues/fifa.world/seasons/2026" }, statistics: [{ type: "total", statistics: { $ref: "http://x/wc/2026" }, league: { $ref: "http://x/soccer/leagues/fifa.world" } }] },
+    { season: { $ref: "http://x/soccer/leagues/esp.1/seasons/2025" }, statistics: [{ type: "total", statistics: { $ref: "http://x/esp.1/2025" }, league: { $ref: "http://x/soccer/leagues/esp.1" } }] },
+    { season: { $ref: "http://x/soccer/leagues/esp.1/seasons/2019" }, statistics: [{ type: "total", statistics: { $ref: "http://x/esp.1/2019" } }] }] };
+  const refs = logRefs(log, [2026, 2025], [1, 0.5]);
+  check("overall rating: every competition this season (league, Europe, country) plus last season at half", refs.length === 4 && refs.filter(r => r.w === 1).map(r => r.league).join() === "esp.1,uefa.champions,fifa.world" && refs.find(r => r.year === 2025).w === 0.5 && refs.every(r => r.url.startsWith("https://")), refs);
+  const S2 = o => ({ splits: { categories: [cat("general", o)] } });
+  const comb = combineStats([{ json: S2({ minutes: 900, appearances: 10, totalGoals: 8, passPct: 0.8 }), w: 1 }, { json: S2({ minutes: 270, appearances: 3, totalGoals: 3, passPct: 0.9 }), w: 1 }, { json: S2({ minutes: 1800, appearances: 20, totalGoals: 10, passPct: 0.8 }), w: 0.5 }]);
+  const cm = Object.fromEntries(comb.splits.categories[0].stats.map(x => [x.name, x.value]));
+  check("overall rating: counting stats summed across competitions, passing weighted by minutes", cm.minutes === 2070 && cm.appearances === 23 && cm.totalGoals === 16 && Math.abs(cm.passPct - (0.8 * 900 + 0.9 * 270 + 0.8 * 900) / 2070) < 1e-9, cm);
+  check("athlete statistics log url", athleteLogUrl("291281").endsWith("/soccer/athletes/291281/statisticslog"));
   check("team schedule url", teamScheduleUrl("NBA", "nba", "15").endsWith("/basketball/nba/teams/15/schedule"));
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
