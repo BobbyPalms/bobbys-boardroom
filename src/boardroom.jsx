@@ -1783,6 +1783,8 @@ const CSS = `@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght
 @keyframes boot{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px solid #C27BFF;outline-offset:2px}
 ::-webkit-scrollbar{display:none}
+.bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media (max-width:640px){.bb-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}`;
 
 // ─── TEAM COLORS: always distinct, one color per team everywhere ─────────────
@@ -2041,12 +2043,20 @@ function LiveScores({ sport, onPick }) {
   const live = (rows || []).filter(r => r.state === "in"), byT = (a, b) => String(a.date).localeCompare(String(b.date));
   const show = [...live, ...(rows || []).filter(r => r.state === "pre").sort(byT), ...(rows || []).filter(r => r.state === "post").sort(byT)];
   const what = sport === "Tennis" ? "matches" : sport === "MMA" ? "fights" : "games", one = { matches: "match", fights: "fight", games: "game" }[what];
-  const side = (x, r) => <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-    <span style={{ fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-      {x.abbr ? <span style={{ fontFamily: F.d, fontWeight: 700, letterSpacing: 1, marginRight: 6 }}>{x.abbr}</span> : null}{x.abbr ? <span style={{ color: T.dim }}>{x.name}</span> : x.name}{x.win && r.state === "post" && !x.abbr ? " ✓" : ""}
-    </span>
-    <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim, whiteSpace: "nowrap" }}>{x.score}</span>
-  </div>;
+  // one side of a game: the name takes the room left and trims with "…"; the score (or each set) never moves or overlaps
+  const side = (x, r) => {
+    const sets = String(x.score || "").split(" ").filter(Boolean), tennis = sport === "Tennis" && sets.length > 1;
+    return <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0, fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400 }}>
+        {x.abbr && <span style={{ fontFamily: F.d, fontWeight: 700, letterSpacing: 1, flexShrink: 0 }}>{x.abbr}</span>}
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: x.abbr ? T.dim : undefined }} title={x.full || x.name}>{x.name}</span>
+        {x.win && r.state === "post" && <span style={{ color: NEON.green, flexShrink: 0 }}>✓</span>}
+      </div>
+      {tennis
+        ? <div style={{ display: "grid", gridAutoFlow: "column", gridAutoColumns: "16px", gap: 2, fontFamily: F.d, fontSize: 13, fontWeight: 700, textAlign: "center", color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim }}>{sets.map((v, i) => <span key={i}>{v}</span>)}</div>
+        : <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim, whiteSpace: "nowrap", textAlign: "right" }}>{x.score}</span>}
+    </div>;
+  };
   return <Panel title={live.length ? `LIVE NOW · ${live.length}` : "TODAY'S " + what.toUpperCase()} right={`${cfg.label}${rows ? ` · ${show.length} today` : ""}`} color={live.length ? NEON.red : T.chrome}>
     {!rows && !st.err && <div style={{ fontSize: 12, color: T.dim }}>Loading the {cfg.label} scoreboard…</div>}
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
@@ -2056,9 +2066,9 @@ function LiveScores({ sport, onPick }) {
         return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={can ? "Open the full simulation" : undefined}
         onClick={can ? () => onPick(r) : undefined} onKeyDown={can ? e => { if (e.key === "Enter") onPick(r); } : undefined}
         style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : r.state === "post" ? NEON.green + "88" : T.line}`, background: r.state === "post" ? "rgba(43,255,136,.05)" : "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, letterSpacing: 1 }}>
-          <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, fontFamily: F.d }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
-          <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "60%" }}>{[sport === "Soccer" || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
+        <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", gap: 8, fontSize: 10, letterSpacing: 1 }}>
+          <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, fontFamily: F.d, whiteSpace: "nowrap" }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
+          <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, textAlign: "right" }}>{[sport === "Soccer" || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
         </div>
         {side(r.away, r)}
         {side(r.home, r)}
@@ -2465,8 +2475,8 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNot
     </Panel>
 
     {/* TABS */}
-    <nav style={{display:"flex",marginTop:14,border:`1px solid ${T.line}`,background:T.panel,overflowX:"auto"}}>
-      {TABS.map(t=><button key={t} onClick={()=>setActiveTab(t)} style={{flex:"1 0 auto",padding:"12px 14px",border:"none",borderBottom:`2px solid ${activeTab===t?T.chrome:"transparent"}`,background:activeTab===t?"rgba(143,0,255,0.18)":"none",color:activeTab===t?"#fff":T.dim,fontFamily:F.d,fontSize:11,letterSpacing:1,cursor:"pointer"}}>{t}</button>)}
+    <nav className="bb-tabs" style={{display:"grid",marginTop:14,border:`1px solid ${T.line}`,background:T.panel}}>
+      {TABS.map(t=><button key={t} onClick={()=>setActiveTab(t)} style={{minWidth:0,padding:"12px 6px",border:"none",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",borderBottom:`2px solid ${activeTab===t?T.chrome:"transparent"}`,background:activeTab===t?"rgba(143,0,255,0.18)":"none",color:activeTab===t?"#fff":T.dim,fontFamily:F.d,fontSize:11,letterSpacing:1,cursor:"pointer"}}>{t}</button>)}
     </nav>
 
     {/* OVERVIEW */}
