@@ -1,30 +1,25 @@
 name: Probe a source
-# Manual only: fetches a few pages from a GitHub runner and pushes them to the 'probe' branch, to check a data source.
-on: { workflow_dispatch: {} }
+# Manual only. Fetches the splits sources from a GitHub runner and pushes the raw pages to the 'probe' branch, to check
+# a source's format; run with "cleanup" ticked to delete that branch again.
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup: { description: "Delete the probe branch instead", type: boolean, default: false }
 permissions: { contents: write }
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - if: inputs.cleanup
+        run: git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" --delete probe || true
+      - if: ${{ !inputs.cleanup }}
+        run: |
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          D=$(TZ=America/New_York date +%Y%m%d); D2=$(TZ=America/New_York date -d tomorrow +%Y%m%d); D5=$(TZ=America/New_York date -d "+5 days" +%Y%m%d)
-          for L in nba nhl mlb wnba; do get an_$L.json "https://api.actionnetwork.com/web/v2/scoreboard/$L?bookIds=15&periods=event&date=$D2"; done
-          get an_ncaab_d1.json "https://api.actionnetwork.com/web/v2/scoreboard/ncaab?bookIds=15&periods=event&division=D1&date=$D"
-          get an_ncaaw.json "https://api.actionnetwork.com/web/v2/scoreboard/ncaaw?bookIds=15&periods=event&division=D1&date=$D"
-          get an_ncaaf.json "https://api.actionnetwork.com/web/v2/scoreboard/ncaaf?bookIds=15&periods=event&division=FBS&date=$D5"
-          get an_nfl_date.json "https://api.actionnetwork.com/web/v2/scoreboard/nfl?bookIds=15&periods=event&date=$D5"
-          get an_soccer.json "https://api.actionnetwork.com/web/v2/scoreboard/soccer?bookIds=15&periods=event&date=$D2"
-          get an_ufc.json "https://api.actionnetwork.com/web/v2/scoreboard/ufc?bookIds=15&periods=event"
-          get dk_cbb1.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=92483&tb_edate=today&tb_page=1"
-          get dk_cbb3.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=92483&tb_edate=today&tb_page=3"
-          get dk_nba_tm.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=42648&tb_edate=tomorrow"
-          get dk_epl.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=40253&tb_edate=n7days"
-          get dk_ufc.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=9034&tb_edate=n7days"
-          get dk_ncaaw.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=36647&tb_edate=today"
-      - run: |
+          D=$(TZ=America/New_York date +%Y%m%d)
+          for L in nfl ncaaf nba ncaab nhl mlb wnba soccer; do get an_$L.json "https://api.actionnetwork.com/web/v2/scoreboard/$L?bookIds=15&periods=event&date=$D"; done
+          for E in 88808 87637 42648 92483 42133; do get dk_$E.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=$E&tb_edate=n7days"; done
           cd out && git init -q -b probe && git add -A
           git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe

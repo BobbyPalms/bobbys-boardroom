@@ -274,6 +274,14 @@ export const dkSplitsUrl = (eg, when, page = 1) => `https://dknetwork.draftkings
 const pctOf = v => { const x = Number(v); return Number.isFinite(x) && x >= 0 && x <= 100 ? Math.round(x) : null; };
 const pair = (b, m) => (b == null && m == null ? null : [b, m]);
 const nonEmpty = s => !!s && [s.ml?.a, s.ml?.h, s.sp?.a, s.sp?.h, s.tot?.o, s.tot?.u].some(p => p && (p[0] || p[1]));
+// a market where every side reads 0% bets and 0% money hasn't been posted yet: drop it rather than show 0 / 100
+function clean(s) {
+  for (const [k, sides] of [["ml", ["a", "h", "d"]], ["sp", ["a", "h"]], ["tot", ["o", "u"]]]) {
+    const m = s[k]; if (!m) continue;
+    if (!sides.some(x => m[x] && ((m[x][0] || 0) + (m[x][1] || 0)) > 0)) for (const x of sides) m[x] = null;
+  }
+  return s;
+}
 
 export function parseANSplits(j) {
   const out = [];
@@ -290,7 +298,7 @@ export function parseANSplits(j) {
       ml: { a: ma?.p || null, h: mh?.p || null, d: md?.p || null },
       sp: { line: sa?.line ?? null, a: sa?.p || null, h: sh?.p || null },
       tot: { line: to?.line ?? tu?.line ?? null, o: to?.p || null, u: tu?.p || null } };
-    if (nonEmpty(s)) out.push(s);
+    if (nonEmpty(clean(s))) out.push(s);
   }
   return out;
 }
@@ -335,7 +343,7 @@ export function parseDKSplits(html, now = new Date()) {
       else { const v = n((x.match(/([+-]\d+(?:\.\d+)?)\s*$/) || [])[1]); if (isT(x, a)) { s.sp.a = p; if (v != null) s.sp.line = v; } else if (isT(x, h)) { s.sp.h = p; if (v != null && s.sp.line == null) s.sp.line = -v; } }
       i += 3;
     }
-    if (nonEmpty(s)) out.push(s);
+    if (nonEmpty(clean(s))) out.push(s);
   }
   return out;
 }
@@ -352,16 +360,23 @@ function teamScore(t, s) {
   return k;
 }
 export function matchSplit(game, list) {
-  const t0 = Date.parse(game.date);
-  let best = null;
-  for (const s of list || []) {
-    if (s.t && Number.isFinite(t0) && Math.abs(Date.parse(s.t) - t0) > 4 * 3600e3) continue;
+  const t0 = Date.parse(game.date), hits = [];
+  (list || []).forEach((s, i) => {
+    if (s.t && Number.isFinite(t0) && Math.abs(Date.parse(s.t) - t0) > 4 * 3600e3) return;
     const st = Math.min(teamScore(game.away, s.a), teamScore(game.home, s.h)), fl = Math.min(teamScore(game.away, s.h), teamScore(game.home, s.a));
     const k = Math.max(st, fl);
-    if (k >= 2 && (!best || k > best.k)) best = { k, s, flip: fl > st };
+    if (k >= 2) hits.push({ k, i, s, flip: fl > st });
+  });
+  if (!hits.length) return null;
+  // best match first (Action Network ahead of DraftKings on a tie); each market comes from the first source that posted it
+  hits.sort((x, y) => y.k - x.k || x.i - y.i);
+  const one = ({ s, flip }) => { const sw = (x, y) => (flip ? y : x);
+    return { src: s.src, ml: { a: sw(s.ml.a, s.ml.h), h: sw(s.ml.h, s.ml.a), d: s.ml.d }, sp: { a: sw(s.sp.a, s.sp.h), h: sw(s.sp.h, s.sp.a), line: s.sp.line == null ? null : flip ? -s.sp.line : s.sp.line }, tot: { ...s.tot } }; };
+  const all = hits.filter(h => h.s.src !== hits[0].s.src || h === hits[0]).map(one).slice(0, 2), out = { ...all[0] }, used = new Set();
+  for (const [k, sides] of [["ml", ["a", "h"]], ["sp", ["a", "h"]], ["tot", ["o", "u"]]]) {
+    const pick = all.find(x => sides.some(sd => x[k][sd])) || all[0];
+    out[k] = pick[k]; if (sides.some(sd => pick[k][sd])) used.add(pick.src);
   }
-  if (!best) return null;
-  const { s, flip } = best, sw = (x, y) => (flip ? y : x);
-  return { src: s.src, ml: { a: sw(s.ml.a, s.ml.h), h: sw(s.ml.h, s.ml.a), d: s.ml.d }, sp: { a: sw(s.sp.a, s.sp.h), h: sw(s.sp.h, s.sp.a), line: s.sp.line == null ? null : flip ? -s.sp.line : s.sp.line },
-    tot: { ...s.tot } };
+  out.src = [...used].join(" + ") || all[0].src;
+  return out;
 }

@@ -868,7 +868,7 @@ async function fetchRundown(md, sim, signals, sport) {
   const sp = pb.ats || {}, ou = pb.ou || {}, ml = pb.ml || {};
   const split = (name, b, m, sideA, sideB) => b == null ? "" : `${name}: ${b}% of bets on ${sideA} (${100 - b}% on ${sideB})${m != null ? `, ${m}% of the money on ${sideA}` : ""}.${m != null && Math.abs(m - b) >= 10 ? ` The money is ${Math.abs(m - b)} points ${m > b ? "heavier" : "lighter"} than the ticket count on ${sideA}, which usually means ${m > b ? "bigger, sharper bets on" : "the big bets are against"} ${sideA}.` : ""}`;
   add("Where the public and the money are",
-    pb.source ? `Splits from ${pb.source}${pb.source === "DraftKings" ? " (bets and handle at DraftKings Sportsbook)" : " (consensus tickets and money across books)"}.` : "Neither Action Network nor DraftKings has posted splits for this game yet; they usually appear a day or two before the start.",
+    pb.source ? `Splits from ${splitNote(pb.source)}.` : "Neither Action Network nor DraftKings has posted splits for this game yet; they usually appear a day or two before the start.",
     split("Spread", sp.awayBetsPct, sp.awayDollarsPct, `${A.abbr} ${aS != null ? sg(aS) : ""}`.trim(), `${H.abbr}`),
     split("Total", ou.overBetsPct, ou.overDollarsPct, `the over`, `the under`),
     split("Moneyline", ml.awayBetsPct, ml.awayDollarsPct, A.abbr, H.abbr) + (ml.drawBetsPct != null ? ` Draw: ${ml.drawBetsPct}% of bets.` : ""),
@@ -1716,6 +1716,7 @@ function SignalList({list}){
     {!sharp&&<div style={{fontSize:12,color:T.dim,padding:"4px 2px"}}>No sharp signals firing{list.length?"":" (no sourced market data found)"}.</div>}
   </div>;
 }
+const splitNote = src => src === "DraftKings" ? "DraftKings (bets and handle at DraftKings Sportsbook)" : src === "Action Network" ? "Action Network (consensus tickets and money across books)" : `${src} (each market from whichever posted it first)`;
 function PublicBetting({md,signals,AWAY_C,HOME_C}){
   const [mk,setMk]=useState("ats");
   const pb=md.publicBetting||{},A=md.away.abbr,H=md.home.abbr,d=pb[mk];
@@ -1742,7 +1743,7 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
         {Ld!=null&&<><div style={lab}>dollars</div><SplitBar l={Ld} lc={lc} rc={rc}/></>}
         <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontFamily:F.d,marginTop:10}}><span style={{color:labs[0][2]}}>{labs[0][1]}</span><span style={{color:labs[1][2]}}>{labs[1][1]}</span></div>
         {mk==="ml"&&d.drawBetsPct!=null&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4}}>draw: {d.drawBetsPct}% of bets{d.drawDollarsPct!=null?` · ${d.drawDollarsPct}% of money`:""} (bars split the rest between the two sides)</div>}
-        {pb.source&&<div style={{fontSize:10,color:T.faint,textAlign:"center",marginTop:4}}>splits: {pb.source}{pb.source==="DraftKings"?" (bets and handle at DraftKings Sportsbook)":" (consensus tickets and money)"}</div>}
+        {pb.source&&<div style={{fontSize:10,color:T.faint,textAlign:"center",marginTop:4}}>splits: {splitNote(pb.source)}</div>}
         <div style={{...lab,marginTop:18}}>line movement <span style={{color:T.faint}}>open → now</span></div>
         <MoveChart series={series}/>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center",fontSize:11,color:T.dim,marginTop:4}}>{legend.map(([c,t],i)=><span key={i}><span style={{color:c}}>● </span>{t}</span>)}</div>

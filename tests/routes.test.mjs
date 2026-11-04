@@ -118,6 +118,13 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
   check("match: sides swapped when the source lists them the other way", flip && flip.sp.h.join() === "81,90" && flip.sp.line === 10, flip);
   check("match: a different day doesn't match", matchSplit({ ...g, date: "2026-11-09T01:15Z" }, dk) === null);
   check("match: different teams don't match", matchSplit({ ...g, away: { abbr: "NE", name: "New England Patriots" } }, dk) === null);
+  const z = parseANSplits({ games: [{ start_time: "2026-11-05T00:00:00.000Z", away_team_id: 1, home_team_id: 2, teams: [{ id: 1, abbr: "CHI" }, { id: 2, abbr: "FLA" }],
+    markets: { "15": { event: { moneyline: [{ side: "away", bet_info: bi(21, 26) }, { side: "home", bet_info: bi(79, 74) }], spread: [{ side: "away", value: 1.5, bet_info: bi(0, 0) }, { side: "home", value: -1.5, bet_info: bi(0, 0) }] } } } }] });
+  check("splits: a market with no posted numbers (all 0%) is left empty, not shown as 0 / 100", z.length === 1 && z[0].sp.a === null && z[0].sp.h === null && z[0].ml.a.join() === "21,26", z);
+  const mix = matchSplit({ date: "2026-11-05T00:30Z", away: { abbr: "CHI", name: "Chicago Blackhawks" }, home: { abbr: "FLA", name: "Florida Panthers" } },
+    [...z.map(x => ({ ...x, a: { abbr: "CHI", name: "Chicago Blackhawks", nick: "Blackhawks", loc: "Chicago" }, h: { abbr: "FLA", name: "Florida Panthers", nick: "Panthers", loc: "Florida" }, src: "Action Network", t: "2026-11-05T00:30:00.000Z", tot: { line: null, o: null, u: null } })),
+     { src: "DraftKings", t: "2026-11-05T00:40:00.000Z", a: { abbr: "CHI", name: "CHI Blackhawks", nick: "Blackhawks" }, h: { abbr: "FLA", name: "FLA Panthers", nick: "Panthers" }, ml: { a: [15, 6], h: [85, 94], d: null }, sp: { line: 1.5, a: [17, 0], h: [83, 100] }, tot: { line: 5.5, o: [60, 70], u: [40, 30] } }]);
+  check("match: a market one source hasn't posted comes from the other", mix && mix.ml.a.join() === "21,26" && mix.sp.a.join() === "17,0" && mix.tot.o.join() === "60,70" && mix.src === "Action Network + DraftKings", mix);
   check("splits urls", anSplitsUrl("CBB", "20261103").includes("ncaab?bookIds=15&periods=event&date=20261103&division=D1") && dkSplitsUrl("42648", "today", 2).endsWith("tb_eg=42648&tb_edate=today&tb_page=2") && anSplitsUrl("Tennis", "x") === null);
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
