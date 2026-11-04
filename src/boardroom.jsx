@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { liveBoard, matchSplit, teamQueryScore, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, matchSplit, teamQueryScore, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -316,6 +316,30 @@ async function applySplits(games, sport) {
   if (!f?.games?.length) return;
   for (const g of games) { const s = matchSplit(g, f.games); if (s) g.splits = s; }
 }
+// Each side's lineup: the posted one if it's out (soccer XIs, box-score starters once a game is on); otherwise the
+// team's last game, with any starter now Out / Doubtful replaced by the next man up. Football is left to the QB rating.
+async function applyLineups(g, sport, league, raw, sum) {
+  if (!g?.id || sport === "NFL" || sport === "CFB") return;
+  const today = raw ? parseLineups(raw) : {};
+  await Promise.all(["away", "home"].map(async side => {
+    const t = g[side];
+    if (!t?.id) return;
+    const posted = today[t.id];
+    if (posted?.official) {
+      t.lineupInfo = { status: "official", formation: posted.formation, players: posted.players.filter(p => p.starter).sort((a, b) => a.order - b.order), moves: [], out: [] };
+      return;
+    }
+    try {
+      const ev = lastCompletedEvent(await getJSON(teamScheduleUrl(sport, league, t.id)), g.date);
+      if (!ev) return;
+      const L = parseLineups(await getJSON(summaryUrl(sport, league, ev.id)))[t.id];
+      if (!L?.players?.some(p => p.starter)) return;
+      const pl = probableLineup(L, (sum.injuries || []).filter(i => i.team === t.abbr), sport);
+      t.lineupInfo = { status: "last", from: ev, formation: L.formation, players: pl.players, moves: pl.moves, out: pl.out, adj: pl.adj, lostShare: pl.lostShare };
+      if (pl.adj < 1) t.lineupAdj = pl.adj;
+    } catch (_) { /* no lineup: the team is rated from its scoring */ }
+  }));
+}
 async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
@@ -352,8 +376,9 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   await applyGoalies([found], sport);
   await applyPower([found], sport);
   await applySplits([found], sport);
-  let sum = {};
-  if (found.id) { try { sum = parseSummary(await getJSON(summaryUrl(sport, foundLeague, found.id))); } catch (_) { sum = {}; } }
+  let sum = {}, raw = null;
+  if (found.id) { try { raw = await getJSON(summaryUrl(sport, foundLeague, found.id)); sum = parseSummary(raw); } catch (_) { sum = {}; } }
+  await applyLineups(found, sport, foundLeague, raw, sum);
   const x = slateGameToMatchData(found, sport), md = x.md, m = found.mkt;
   const ref = await officialImpact(sport, sum.officials);
   md.matchInfo = { ...md.matchInfo, league: SPORT_CFG[sport].label, game: found.noGame ? "No game scheduled this week: season numbers only" : (found.dayLabel || ""), venue: found.venue || "",
@@ -369,6 +394,8 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   }
   md.sources = ["Live scoreboard, standings, odds & game summary routes (Public-ESPN-API)", "GitHub data job: past seasons, line snapshots, officials log"];
   if (found.splits) md.sources.push(`Public bets / money %: ${found.splits.src}`);
+  md.gameRef = { id: found.id || "", league: foundLeague, sport, state: found.state || "pre", q: { away: awayName, home: homeName, neutral: !!isNeutral },
+    posted: { away: found.away?.lineupInfo?.status === "official", home: found.home?.lineupInfo?.status === "official" } };
   return md;
 }
 
@@ -607,7 +634,7 @@ function starterRatio(t, sport) {
 // Today's lineup vs a typical one. Half-elasticity: the team's scoring already reflects its usual lineup.
 function lineupFactor(t, sport) {
   const sk = t.skaters || [];
-  if (!sk.length) return 1;
+  if (!sk.length) return t.lineupAdj > 0 && t.lineupAdj <= 1 ? t.lineupAdj : 1;   // starters missing from the last lineup
   return clampTo(Math.pow(sk.reduce((a, p) => a + p.rating, 0) / sk.length / SPORT_CFG[sport].rRef, 0.5), 0.9, 1.1);
 }
 // NFL/CFB: the QB changes his OWN team's scoring (never the opponent's).
@@ -771,6 +798,48 @@ function engineInputs(plan){
   const r=x=>Math.round(x*1000)/1000,side=p=>({offense:r(p.off.r),defenseVsLeague:r(p.def.r),starterRate:p.sp==null?null:r(p.sp),lineupFactor:r(p.lu),qbFactor:r(p.qb)});
   return {leagueAvgPerTeam:r(plan.L),neutralSite:plan.neutral,home:side(plan.parts.home),away:side(plan.parts.away),note:"ratios are vs league average; defense below 1 allows less than average"};
 }
+// Every priced market for a deep dive, the same way a slate row is priced (used by the rundown and the overview).
+function pricedBets(md, sim, sport) {
+  const plan = sim?.plan;
+  if (!plan?.muH) return { px: null, bets: [], pm: {} };
+  const pb = md.publicBetting || {}, px = priceGame(plan, sport, 1);
+  const pm = md.priced || { homeML: num(pb.ml?.homeML, null), awayML: num(pb.ml?.awayML, null), drawML: null, awaySpread: num(pb.ats?.awaySpread, null), total: num(pb.ou?.total, null) };
+  let bets = [];
+  try { bets = candidates({ md, sim, mkt: pm, neutral: plan.neutral }, px, sport, true); } catch (_) { bets = []; }
+  return { px, bets, pm };
+}
+// The short version of the rundown for the overview: why the model lands where it does, in a few sentences.
+function miniRundown(md, sim, sport) {
+  const cfg = SPORT_CFG[sport], A = md.away, H = md.home, plan = sim.plan || {}, u = cfg.unitFull, out = [];
+  const f1 = x => Number(x).toFixed(1), sg = x => (x > 0 ? "+" : "") + x, pctd = r => `${Math.abs((r - 1) * 100).toFixed(0)}%`;
+  const homeFav = sim.homeWin >= sim.awayWin, fav = homeFav ? H : A, dog = homeFav ? A : H, fp = Math.max(sim.homeWin, sim.awayWin);
+  const tot = sim.avgHome + sim.avgAway, mm = Math.abs(sim.avgHome - sim.avgAway);
+  out.push(`${fav.name} win ${fp.toFixed(1)}% of 10,000 simulations${cfg.hasDraw ? ` (draw ${sim.drawPct.toFixed(1)}%)` : ""}, with an average result of ${A.abbr} ${f1(sim.avgAway)}, ${H.abbr} ${f1(sim.avgHome)}: ${fav.abbr} by ${f1(mm)} and ${f1(tot)} ${u} in all.`);
+  const P = plan.parts;
+  if (P) {
+    const fs = homeFav ? P.home : P.away, ds = homeFav ? P.away : P.home;
+    const attack = fs.off.r - 1, leaky = ds.def.r - 1, stout = 1 - fs.def.r, blunt = 1 - ds.off.r;
+    const [why] = [[attack, `${poss2(fav.abbr)} attack (${pctd(fs.off.r)} ${fs.off.r >= 1 ? "above" : "below"} average)`], [leaky, `${poss2(dog.abbr)} defence, which allows ${pctd(ds.def.r)} ${ds.def.r >= 1 ? "more" : "less"} than average`],
+      [stout, `${poss2(fav.abbr)} defence (${pctd(fs.def.r)} ${fs.def.r <= 1 ? "better" : "worse"} than average)`], [blunt, `${poss2(dog.abbr)} attack, ${pctd(ds.off.r)} ${ds.off.r >= 1 ? "above" : "below"} average`]].sort((a, b) => b[0] - a[0]);
+    out.push(`The biggest driver is ${why[1]}${plan.neutral ? "" : `, plus the home edge for ${H.abbr}`}.`);
+  }
+  const fx = (sim.factors?.display || []).filter(f => f.label !== "Official" && (Math.abs((f.hm ?? 1) - 1) >= 0.01 || Math.abs((f.am ?? 1) - 1) >= 0.01));
+  if (fx.length) out.push(`Also in play: ${fx.slice(0, 2).map(f => `${f.label.toLowerCase()} (${f.desc})`).join("; ")}.`);
+  for (const t of [A, H]) { const li = t.lineupInfo; if (li?.moves?.length) out.push(`${t.abbr} are without ${li.moves.map(m => `${m.out} (${m.status})`).join(", ")}; ${li.moves.map(m => m.in).join(", ")} ${li.moves.length > 1 ? "move" : "moves"} into the lineup${li.adj < 1 ? `, about ${((1 - li.adj) * 100).toFixed(1)}% off their scoring` : ""}.`); }
+  const { bets, pm } = pricedBets(md, sim, sport);
+  if (pm.total != null || pm.awaySpread != null) {
+    const bits = [];
+    if (pm.total != null) bits.push(`${f1(tot)} against a total of ${pm.total} (${Math.abs(tot - pm.total) < 0.5 ? "right on it" : `${f1(Math.abs(tot - pm.total))} ${tot > pm.total ? "over" : "under"}`})`);
+    if (pm.awaySpread != null) bits.push(`${fav.abbr} by ${f1(mm)} where the line says ${pm.awaySpread > 0 ? H.abbr : A.abbr} by ${Math.abs(pm.awaySpread)}`);
+    out.push(`Against the market: ${bits.join(", and ")}.`);
+  }
+  const best = bets.filter(b => b.ev > 0).sort((a, b) => b.kelly - a.kelly)[0];
+  out.push(best ? `Best value: ${best.label}, the algo's ${(best.wc * 100).toFixed(1)}% against ${(best.fair * 100).toFixed(1)}% priced (${sg(f1(best.edge))} pts).` : bets.length ? "No side clears its price after the vig, so the play is to pass." : "No odds are posted yet, so this is a lean, not a priced bet.");
+  const pb = md.publicBetting || {};
+  if (pb.ats?.awayBetsPct != null) { const b = pb.ats.awayBetsPct, m = pb.ats.awayDollarsPct; out.push(`Public: ${Math.max(b, 100 - b)}% of spread bets on ${b >= 50 ? A.abbr : H.abbr}${m != null ? `, ${b >= 50 ? m : 100 - m}% of the money` : ""}${md.market?.sharpSide ? `; sharp side reads ${md.market.sharpSide === "home" ? H.abbr : A.abbr}` : ""}.`); }
+  return out;
+}
+const poss2 = nm => /s$/i.test(nm) ? `${nm}'` : `${nm}'s`;
 // The rundown is written from the numbers on screen (no AI call). It walks through everything the algo used, in
 // order: the setup, how each side is rated and why, the matchup math, every situational factor, personnel, officials,
 // what 10,000 simulations produced, each market against its price, where the public and the money sit, what the algo
@@ -1087,6 +1156,7 @@ function slateGameToMatchData(g, sport) {
     if (lu == null && !(Array.isArray(t.hist) && t.hist.length >= 3)) missing.push(`${ab} lineup rating or past seasons`);
     return {
       name: String(t.name).trim(), abbr: ab, record: t.rec ? String(t.rec) : "", color: "", espnId: t.id || null, hist: Array.isArray(t.hist) ? t.hist : [],
+      lineupInfo: t.lineupInfo || null, lineupAdj: nn(t.lineupAdj),
       gp: nn(t.gp), gpg, gaa: ga, prev: { gpg: nn(t.pgpg), gaa: nn(t.pga) }, xg: { f: nn(t.xgf), a: nn(t.xga) },
       goalie: { name: t.gk ? String(t.gk) : "TBD", role: cfg.gkLabel, ...starter(t) },
       skaters: lu == null ? [] : [0, 1, 2].map(() => ({ name: "Lineup avg", pos: "", rating: lu, pts: 0, note: "" })),
@@ -1677,6 +1747,26 @@ function FactorRow({factor,awayColor,homeColor,awayAbbr,homeAbbr}){
     {factor.note&&<div style={{fontSize:11,color:T.faint,marginTop:2}}>{factor.note}</div>}
   </div>;
 }
+function LineupBlock({ team, col, sport }) {
+  const li = team.lineupInfo;
+  if (!li) return null;
+  const when = li.from?.date ? new Date(li.from.date).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "";
+  const head = li.status === "official" ? "OFFICIAL LINEUP · posted" : `PROBABLE LINEUP · last game${when ? ` (${when}${li.from?.name ? `, ${li.from.name}` : ""})` : ""}${li.moves?.length ? ", adjusted for injuries" : ""}`;
+  const stat = p => [p.min != null ? `${Math.round(p.min)} min` : "", p.pts != null ? `${p.pts} ${SPORT_CFG[sport].unit === "G" ? "pts" : SPORT_CFG[sport].unit}` : ""].filter(Boolean).join(" · ");
+  return <div style={{ marginBottom: 10 }}>
+    <div style={{ fontSize: 10, color: li.status === "official" ? NEON.green : T.chrome, letterSpacing: 1.5, marginBottom: 4 }}>{head}{li.formation ? ` · ${li.formation}` : ""}</div>
+    {li.players.map((p, j) => <div key={p.id || j} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 2px", borderBottom: `1px solid ${T.line}` }}>
+      <div style={{ width: 26, fontSize: 11, color: T.dim }}>{p.pos}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: p.note ? col : T.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+        {p.note && <div style={{ fontSize: 10, color: T.faint, marginTop: 1 }}>{p.note}</div>}
+      </div>
+      {li.status !== "official" && stat(p) && <div style={{ fontSize: 10, color: T.dim, flexShrink: 0 }}>{stat(p)}</div>}
+    </div>)}
+    {li.out?.length > 0 && <div style={{ fontSize: 11, color: "#FF8095", marginTop: 6 }}>Out of last game's lineup: {li.out.map(o => `${o.name} (${o.status})`).join(", ")}{li.adj < 1 ? ` · about ${((1 - li.adj) * 100).toFixed(1)}% off their scoring` : ""}</div>}
+    {li.status !== "official" && <div style={{ fontSize: 10, color: T.faint, marginTop: 4 }}>Switches to the posted lineup automatically when it's announced.</div>}
+  </div>;
+}
 function SkaterRow({player,color,sport}){
   const cfg=SPORT_CFG[sport],lit=Math.max(1,Math.min(10,Math.round((player.rating-60)/3.7)));
   return <div style={{display:"flex",alignItems:"center",gap:8,padding:"7px 2px",borderBottom:`1px solid ${T.line}`}}>
@@ -1769,7 +1859,7 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
 // ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
 const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
-function LiveScores({ sport }) {
+function LiveScores({ sport, onPick }) {
   const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
   useEffect(() => {
     let alive = true, timer = null;
@@ -1804,19 +1894,23 @@ function LiveScores({ sport }) {
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
     {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {what} today.</div>}
     {show.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
-      {show.map(r => <div key={r.id} style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : T.line}`, background: "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3 }}>
+      {show.map(r => { const can = onPick && r.state !== "post";
+        return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={can ? "Open the full simulation" : undefined}
+        onClick={can ? () => onPick(r) : undefined} onKeyDown={can ? e => { if (e.key === "Enter") onPick(r); } : undefined}
+        style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : T.line}`, background: "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, letterSpacing: 1 }}>
           <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? T.faint : T.chrome, fontFamily: F.d }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
           <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "60%" }}>{[sport === "Soccer" || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
         </div>
         {side(r.away, r)}
         {side(r.home, r)}
-      </div>)}
+        {can && <div style={{ fontSize: 9, color: T.faint, letterSpacing: 1.5, textAlign: "right" }}>SIMULATE ▸</div>}
+      </div>; })}
     </div>}
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,slateInfo,slateBusy,slateErr}){
+function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
@@ -1857,7 +1951,7 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <button onClick={onFetch} disabled={!ok} style={{width:"100%",marginTop:16,padding:"14px",border:`1px solid ${ok?T.chrome:T.line}`,background:ok?"rgba(143,0,255,0.29)":"none",color:ok?"#fff":T.faint,fontFamily:F.d,fontSize:13,letterSpacing:3,cursor:ok?"pointer":"not-allowed",boxShadow:ok?"0 0 22px rgba(143,0,255,0.45),inset 0 0 18px rgba(143,0,255,0.18)":"none"}}>{loading?"LOADING…":"RUN SIMULATION"}</button>
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
     </Panel>
-    <LiveScores sport={sport}/>
+    <LiveScores sport={sport} onPick={onPick}/>
   </Shell>;
 }
 
@@ -2138,11 +2232,31 @@ function gkQuality(t, sport, sp) {
   return t.has.rating ? (t.goalie.rating >= 85 ? "elite" : t.goalie.rating >= 72 ? "solid" : "shaky") : "—";
 }
 
-function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
+// The current lines under the projection: total, spread and the favourite's price, each next to the model's number.
+function MarketLines({ md, sim, sport, A, H, AWAY_C, HOME_C }) {
+  const m = md.priced || {}, pb = md.publicBetting || {}, cfg = SPORT_CFG[sport];
+  const tot = m.total ?? num(pb.ou?.total, null), aS = m.awaySpread ?? num(pb.ats?.awaySpread, null), aML = m.awayML ?? num(pb.ml?.awayML, null), hML = m.homeML ?? num(pb.ml?.homeML, null);
+  const fo = o => o == null ? "" : fmtOdds(o), sg = x => (x > 0 ? "+" : "") + x;
+  const xT = sim.avgHome + sim.avgAway, mm = sim.avgHome - sim.avgAway;
+  if (tot == null && aS == null && aML == null && hML == null) return <div style={{ fontSize: 11, color: T.dim, textAlign: "center", marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.line}` }}>No lines posted for this game yet.</div>;
+  const homeFav = aML != null && hML != null ? hML < aML : aS != null ? aS > 0 : mm >= 0;
+  const cell = (label, main, sub, col) => <div style={{ flex: "1 1 150px", padding: "10px 8px", border: `1px solid ${T.line}`, background: "rgba(143,0,255,0.06)", textAlign: "center" }}>
+    <div style={{ fontSize: 10, color: T.dim, letterSpacing: 1.5 }}>{label}</div>
+    <div style={{ fontFamily: F.d, fontSize: 16, fontWeight: 700, color: col, marginTop: 4 }}>{main}</div>
+    {sub && <div style={{ fontSize: 10, color: T.faint, marginTop: 3, lineHeight: 1.5 }}>{sub}</div>}
+  </div>;
+  return <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.line}` }}>
+    {tot != null && cell("OVER / UNDER", `${tot}`, `o ${fo(m.overOdds) || "—"} · u ${fo(m.underOdds) || "—"} · model ${xT.toFixed(1)}`, T.ink)}
+    {aS != null && cell("SPREAD", `${A.abbr} ${sg(aS)} · ${H.abbr} ${sg(-aS)}`, `${fo(m.awaySpreadOdds) || "—"} / ${fo(m.homeSpreadOdds) || "—"} · model ${mm >= 0 ? H.abbr : A.abbr} by ${Math.abs(mm).toFixed(1)}`, T.ink)}
+    {(aML != null || hML != null) && cell("FAVORITE", `${homeFav ? H.abbr : A.abbr} ${fo(homeFav ? hML : aML)}`, `${homeFav ? A.abbr : H.abbr} ${fo(homeFav ? aML : hML)}${cfg.hasDraw && m.drawML != null ? ` · draw ${fo(m.drawML)}` : ""} · model ${(homeFav ? sim.homeWin : sim.awayWin).toFixed(1)}%`, homeFav ? HOME_C : AWAY_C)}
+  </div>;
+}
+function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNote}){
   const [activeTab,setActiveTab]=useState("overview");
   const [rd,setRd]=useState(null),[rdErr,setRdErr]=useState(null),[rdStatus,setRdStatus]=useState("");
   const rdStarted=useRef(false);
   const signals=computeSignals(matchData,simResult,sport);
+  const mini=useMemo(()=>{try{return miniRundown(matchData,simResult,sport);}catch(_){return [];}},[matchData,simResult,sport]);
   const loadRundown=()=>{
     setRd(null);setRdErr(null);setRdStatus("");
     fetchRundown(matchData,simResult,signals,sport,r=>setRdStatus(`API busy or rate limited. Retrying in ${Math.round(r.waitMs/1000)}s (${r.attempt}/${r.retries})`))
@@ -2166,6 +2280,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
     {banner&&<div style={{fontSize:11,color:c,marginTop:3}}>{banner}</div>}
   </div>;
   const TABS=["overview","betting","rundown","factors","rosters","scorelines"];
+  const noteEl=lineupNote?<div style={{marginTop:10,padding:"8px 12px",border:`1px solid ${NEON.green}66`,background:"rgba(43,255,136,.08)",fontSize:12,color:NEON.green}}>{lineupNote}</div>:null;
 
   return <Shell status="simulation complete">
     {/* HEADER */}
@@ -2196,6 +2311,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
     </nav>
 
     {/* OVERVIEW */}
+    {noteEl}
     {activeTab==="overview"&&<div>
       <Panel title="MATCHUP CONTEXT">
         <div style={{fontSize:13,color:T.dim,lineHeight:1.8}}>
@@ -2216,6 +2332,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
           <div style={{textAlign:"center"}}><div style={{fontSize:11,color:T.dim}}>projected margin</div><div style={{fontFamily:F.d,fontSize:15,color:favC}}>{sim.avgHome>=sim.avgAway?home.abbr:away.abbr} -{Math.abs(sim.avgHome-sim.avgAway).toFixed(1)}</div><div style={{fontSize:11,color:T.faint}}>xTotal {(sim.avgHome+sim.avgAway).toFixed(1)}</div></div>
           <div style={{textAlign:"center"}}><div style={{fontFamily:F.d,fontSize:30,fontWeight:700,color:HOME_C,textShadow:`0 0 12px ${HOME_C}77`}}>{sim.avgHome.toFixed(2)}</div><div style={{fontSize:11,color:T.dim}}>{home.abbr} x{cfg.unit}</div></div>
         </div>
+        <MarketLines md={matchData} sim={sim} sport={sport} A={away} H={home} AWAY_C={AWAY_C} HOME_C={HOME_C}/>
       </Panel>
       <Panel title="TEAM COMPARISON" right={<span><span style={{color:AWAY_C}}>■ {away.abbr}</span>  <span style={{color:HOME_C}}>■ {home.abbr}</span></span>}>
         {away.skaters?.length>0&&home.skaters?.length>0&&<><StatBar label="avg skater rating" valA={awayStr.avg} valB={homeStr.avg} colorA={AWAY_C} colorB={HOME_C} fmtA={awayStr.avg.toFixed(1)} fmtB={homeStr.avg.toFixed(1)}/>
@@ -2241,11 +2358,8 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
         })}
       </div>
       <Panel title="MODEL PREDICTION" right={<span style={{color:confC}}>{sim.confidence} confidence</span>} color={favC}>
-        <div style={{fontSize:13,color:T.ink,lineHeight:1.8}}>
-          {sim.homeWin>sim.awayWin
-            ?<><b style={{color:HOME_C}}>{home.name}</b> lead the model{sim.factors.display.length>0?", with real-world factors pushing their edge":""}. {home.goalie.note.split("·")[0].trim()}. Net factor edge: <span style={{color:HOME_C}}>{home.abbr} {pct(sim.factors.homeMult)}</span>.</>
-            :<><b style={{color:AWAY_C}}>{away.name}</b> hold the analytical edge on the road{sim.factors.display.length>0?", sharpened by real-world data":""}. {away.goalie.note.split("·")[0].trim()}. Net factor edge: <span style={{color:AWAY_C}}>{away.abbr} {pct(sim.factors.awayMult)}</span>.</>}
-        </div>
+        <div style={{fontSize:13,color:T.ink,lineHeight:1.8}}>{mini.map((x,i)=><p key={i} style={{margin:i?"8px 0 0":0}}>{x}</p>)}</div>
+        <div style={{fontSize:10,color:T.faint,marginTop:10}}>The full walkthrough is on the rundown tab.</div>
       </Panel>
       <Panel title="MOST LIKELY FINAL SCORE">
         <div style={{textAlign:"center"}}>
@@ -2306,9 +2420,10 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:T.ink}}>{gk.name}</div><div style={{fontSize:10,color:T.faint}}>{starterStat(team,sport)||"no stats found"}</div></div>
               <div style={{fontFamily:F.d,fontSize:15,fontWeight:700,color:col,textShadow:`0 0 8px ${col}77`}}>{team.has?.rating?gk.rating:"—"}</div>
             </div>
-            <div style={{fontSize:11,color:T.dim,marginBottom:3}}>roster</div>
+            <LineupBlock team={team} col={col} sport={sport}/>
+            <div style={{fontSize:11,color:T.dim,marginBottom:3}}>{team.lineupInfo?"":"roster"}</div>
             {(team.skaters||[]).map((p,j)=><SkaterRow key={j} player={p} color={col} sport={sport}/>)}
-            {!(team.skaters||[]).length&&<div style={{fontSize:11,color:T.dim,lineHeight:1.6}}>Lineups and player ratings aren't in the routes before a game, so the algo rates the team from its scoring and every past season instead.</div>}
+            {!(team.skaters||[]).length&&!team.lineupInfo&&<div style={{fontSize:11,color:T.dim,lineHeight:1.6}}>Lineups and player ratings aren't in the routes before a game, so the algo rates the team from its scoring and every past season instead.</div>}
             <div style={{display:"flex",justifyContent:"space-between",marginTop:12,padding:"10px 12px",border:`1px solid ${col}44`,background:`${col}0D`}}>
               {[...((team.skaters||[]).length?[["avg rtg",str.avg.toFixed(1)],["top 3",str.topAvg.toFixed(1)]]:[]),[cfg.gLabel,team.gpg.toFixed(1)],[cfg.dLabel||"allowed",team.gaa.toFixed(1)]].map(([l,v])=><div key={l}><div style={{fontSize:10,color:T.dim}}>{l}</div><div style={{fontFamily:F.d,fontSize:16,fontWeight:700,color:col}}>{v}</div></div>)}
             </div>
@@ -2423,6 +2538,29 @@ export default function App() {
   const [trackVer,setTrackVer]=useState(0);
   const [indiv,setIndiv]=useState(null);
   const [indivMatch,setIndivMatch]=useState(null);
+  // Lineups: while a game hasn't started and a side's lineup isn't posted yet, check the game every 90 seconds;
+  // the moment it's posted, the matchup is re-pulled with it and re-simulated.
+  const [lineupNote,setLineupNote]=useState(null);
+  useEffect(()=>{
+    const ref=matchData?.gameRef;
+    if(phase!=="ready"||!ref?.id||ref.state!=="pre"||(ref.posted.away&&ref.posted.home))return;
+    let stop=false;
+    const tick=async()=>{
+      try{
+        const L=parseLineups(await getJSON(summaryUrl(ref.sport,ref.league,ref.id)));
+        const fresh=[["away",matchData.away],["home",matchData.home]].some(([k,t])=>!ref.posted[k]&&L[t.espnId]?.official);
+        if(!fresh||stop)return;
+        const data=await fetchMatchup(ref.sport,ref.q.away,ref.q.home,ref.q.neutral);
+        if(stop)return;
+        const sim=runSimulations(data.home,data.away,ref.sport,data,10000,{neutral:ref.q.neutral});
+        setMatchData(data);setSimResult(sim);
+        setLineupNote(`Lineups posted at ${new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}: the simulation was re-run with them.`);
+      }catch(_){/* try again next tick */}
+    };
+    const iv=setInterval(tick,90000);
+    return()=>{stop=true;clearInterval(iv);};
+  },[phase,matchData]);
+  useEffect(()=>{if(phase!=="ready")setLineupNote(null);},[phase]);
   // Results are tracked and graded in the background by the data job; the page only reads what it learned.
   // Browser back button: the home screen is the one history entry under the app; every other screen sits on a single
   // entry above it, so Back from anywhere (however deep) lands on the home screen instead of leaving the site.
@@ -2510,7 +2648,8 @@ export default function App() {
       onRefresh:()=>openSlate(phase,true),onRunFull:r=>runFull(r,phase),onBack:()=>{setPhase("setup");setSlateErr(null);setError(null);}};
     return phase==="slate"?<SlateScreen {...common} onBest={()=>setPhase("best")}/>:<BestPickScreen {...common} onSlate={()=>setPhase("slate")}/>;
   }
-  if (phase==="ready"&&matchData&&simResult) return <SimScreen matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
+  if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}/>;
+    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
+    onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport})}/>;
 }

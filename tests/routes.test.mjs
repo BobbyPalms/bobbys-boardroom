@@ -1,4 +1,4 @@
-import { teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -144,5 +144,24 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
     S("pointsFor", "homerecord_pointsfor", 106), S("wins", "homerecord_wins", 2), S("losses", "homerecord_losses", 0), S("losses", "awayrecord_losses", 4)] }] } }] };
   const m = parseStandings(j)["113"];
   check("college standings: games from the overall record, per-game from season totals", m && m.gp === 8 && m.w === 4 && m.l === 4 && Math.abs(m.gpg - 26.5) < 1e-9 && Math.abs(m.gaa - 21.125) < 1e-9, m);
+}
+// lineups
+{
+  const ath = (id, name, pos, starter, min, pts, dnp = false) => ({ athlete: { id, displayName: name, position: { abbreviation: pos } }, starter, didNotPlay: dnp, stats: [String(min), String(pts)] });
+  const box = { boxscore: { players: [{ team: { id: "15", abbreviation: "MIL" }, statistics: [{ labels: ["MIN", "PTS"], athletes: [
+    ath("1", "Star Player", "F", true, 36, 31), ath("2", "Guard One", "G", true, 34, 18), ath("3", "Guard Two", "G", true, 30, 12), ath("4", "Big Man", "C", true, 28, 10), ath("5", "Wing Four", "F", true, 26, 9),
+    ath("6", "Bench Forward", "F", false, 22, 8), ath("7", "Bench Guard", "G", false, 18, 6), ath("8", "Deep Bench", "F", false, 0, 0, true)] }] }] } };
+  const L = parseLineups(box)["15"];
+  check("lineup: box-score starters with minutes and points", L && L.players.filter(p => p.starter).length === 5 && L.players[0].min === 36 && L.players[0].pts === 31, L);
+  const pl = probableLineup(L, [{ team: "MIL", name: "Star Player", status: "Out" }, { team: "MIL", name: "Guard Two", status: "Questionable" }], "NBA");
+  check("lineup: an Out starter is replaced by the bench player at his position who played most", pl.players.length === 5 && pl.players[0].name === "Bench Forward" && /Star Player \(Out\)/.test(pl.players[0].note) && pl.players.some(p => p.name === "Guard Two"), pl.players.map(p => p.name));
+  check("lineup: the missing scoring lowers the team's scoring a little (capped)", pl.adj < 1 && pl.adj >= 0.96 && Math.abs(pl.lostShare - 31 / 94) < 1e-9, pl);
+  check("lineup: nobody hurt, nothing changes", probableLineup(L, [], "NBA").adj === 1 && probableLineup(L, [], "NBA").moves.length === 0);
+  const soc = parseLineups({ rosters: [{ team: { id: "86", abbreviation: "RMA" }, formation: "4-2-3-1", roster: [{ athlete: { id: "a", displayName: "Thibaut Courtois" }, position: { abbreviation: "G" }, starter: true, formationPlace: "1" }, { athlete: { id: "b", displayName: "Sub One" }, position: { abbreviation: "F" }, starter: false }] }] })["86"];
+  check("lineup: a posted soccer XI is official", soc && soc.official && soc.formation === "4-2-3-1" && soc.players[0].name === "Thibaut Courtois", soc);
+  check("lineup: nothing posted yet is not official", !Object.values(parseLineups({ boxscore: { players: [] } })).length);
+  const ev = lastCompletedEvent({ events: [{ id: "1", date: "2026-10-30T23:00Z", competitions: [{ status: { type: { completed: true } } }] }, { id: "2", date: "2026-11-02T23:00Z", competitions: [{ status: { type: { completed: true } } }] }, { id: "3", date: "2026-11-05T00:00Z", competitions: [{ status: { type: { completed: false } } }] }] }, "2026-11-04T00:00Z");
+  check("lineup: the team's last finished game before this one", ev && ev.id === "2", ev);
+  check("team schedule url", teamScheduleUrl("NBA", "nba", "15").endsWith("/basketball/nba/teams/15/schedule"));
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

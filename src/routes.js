@@ -257,7 +257,7 @@ export function liveBoard(j, sport) {
     const H = (c.competitors || []).find(x => x.homeAway === "home"), A = (c.competitors || []).find(x => x.homeAway === "away");
     if (!H || !A) continue;
     const s = stOf(c, e);
-    const side = x => ({ name: x.team?.shortDisplayName || x.team?.displayName || "", abbr: x.team?.abbreviation || "", score: s.state === "pre" ? "" : String(x.score ?? ""), win: x.winner === true });
+    const side = x => ({ name: x.team?.shortDisplayName || x.team?.displayName || "", full: x.team?.displayName || "", abbr: x.team?.abbreviation || "", score: s.state === "pre" ? "" : String(x.score ?? ""), win: x.winner === true });
     out.push({ id: String(e.id), date: e.date, league, note: "", ...s, away: side(A), home: side(H) });
   }
   return out;
@@ -409,4 +409,68 @@ export function teamQueryScore(t, q) {
     else if (vw.includes(full.split(" ").pop())) best = Math.max(best, 1);
   }
   return best;
+}
+
+// ---------- lineups: the posted one when it's out, otherwise the team's last one with injured starters replaced ----------
+export const teamScheduleUrl = (sport, league, teamId) => `${SITE}/${ROUTES[sport].sport}/${league}/teams/${teamId}/schedule`;
+// the team's most recent finished game before `before` (ISO), from its schedule
+export function lastCompletedEvent(j, before = new Date().toISOString()) {
+  const done = (j?.events || []).filter(e => (e.competitions?.[0]?.status?.type?.completed || e.status?.type?.completed) && String(e.date) < before);
+  done.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const e = done[done.length - 1];
+  return e ? { id: String(e.id), date: e.date, name: e.shortName || e.name || "" } : null;
+}
+const minutesOf = v => { const s = String(v ?? ""); const m = s.match(/^(\d+):(\d{2})$/); if (m) return +m[1] + +m[2] / 60; const x = Number(s); return Number.isFinite(x) ? x : null; };
+// One summary -> each team's players: who started, position, minutes and points from that game (when played).
+// Soccer posts its XI under "rosters" about an hour before kick-off; other sports show starters in the box score.
+export function parseLineups(j) {
+  const teams = {};
+  for (const r of j?.rosters || []) {
+    const id = String(r.team?.id || ""); if (!id) continue;
+    const players = (r.roster || []).map((x, i) => ({ id: String(x.athlete?.id || i), name: x.athlete?.displayName || "", pos: x.position?.abbreviation || "", starter: x.starter === true, min: null, pts: null, order: Number(x.formationPlace) || 99 + i }))
+      .filter(p => p.name);
+    teams[id] = { abbr: r.team?.abbreviation || "", formation: r.formation || "", players };
+  }
+  for (const p of j?.boxscore?.players || []) {
+    const id = String(p.team?.id || ""); if (!id) continue;
+    const seen = new Map();
+    let k = 0;
+    for (const g of p.statistics || []) {
+      const lab = g.labels || g.names || [];
+      for (const a of g.athletes || []) {
+        const aid = String(a.athlete?.id || a.athlete?.displayName || k);
+        if (seen.has(aid)) continue;
+        const st = Object.fromEntries(lab.map((l, i) => [l, (a.stats || [])[i]]));
+        seen.set(aid, { id: aid, name: a.athlete?.displayName || "", pos: a.athlete?.position?.abbreviation || "", starter: a.starter === true, dnp: a.didNotPlay === true,
+          min: minutesOf(st.MIN ?? st.TOI), pts: Number.isFinite(Number(st.PTS)) ? Number(st.PTS) : null, order: k++ });
+      }
+    }
+    if (seen.size && !(teams[id]?.players?.some(x => x.starter))) teams[id] = { abbr: p.team?.abbreviation || teams[id]?.abbr || "", formation: teams[id]?.formation || "", players: [...seen.values()].filter(x => x.name) };
+  }
+  for (const t of Object.values(teams)) t.official = t.players.some(x => x.starter);
+  return teams;
+}
+const nameKey = s => norm(s).replace(/\b(jr|sr|ii|iii|iv)\b/g, "").trim();
+const OUT = /out|doubtful|suspend|injured reserve/i;
+// The last game's starters, with any starter now listed Out / Doubtful replaced by the bench player at the same
+// position who played the most that game, the way a coach would slide the next man up.
+export function probableLineup(last, injuries, sport) {
+  const ps = (last?.players || []).filter(p => !p.dnp);
+  const hurt = new Map((injuries || []).filter(i => OUT.test(i.status)).map(i => [nameKey(i.name), i.status]));
+  const starters = ps.filter(p => p.starter).sort((a, b) => a.order - b.order);
+  const bench = ps.filter(p => !p.starter && !hurt.has(nameKey(p.name))).sort((a, b) => (b.min ?? -1) - (a.min ?? -1) || a.order - b.order);
+  const used = new Set(), moves = [], out = [];
+  const lineup = starters.map(p => {
+    if (!hurt.has(nameKey(p.name))) return { ...p };
+    out.push({ ...p, status: hurt.get(nameKey(p.name)) });
+    const g = String(p.pos || "")[0], pick = bench.find(b => !used.has(b.id) && String(b.pos || "")[0] === g) || bench.find(b => !used.has(b.id));
+    if (!pick) return null;
+    used.add(pick.id); moves.push({ out: p.name, in: pick.name, status: hurt.get(nameKey(p.name)) });
+    return { ...pick, starter: true, note: `up from the bench for ${p.name} (${hurt.get(nameKey(p.name))})` };
+  }).filter(Boolean);
+  // basketball: the scoring the missing starters produced last game, as a share of the team's points
+  const tot = ps.reduce((a, p) => a + (p.pts || 0), 0), lost = out.reduce((a, p) => a + (p.pts || 0), 0);
+  const hoops = /NBA|WNBA|CBB/.test(sport);
+  const adj = hoops && tot > 0 ? Math.max(0.96, 1 - 0.25 * lost / tot) : 1;   // others absorb most of it; at most 4%
+  return { players: lineup, moves, out, adj, lostShare: tot > 0 ? lost / tot : 0 };
 }
