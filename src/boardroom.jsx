@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { parseFinal, finalRundown, teamStatRows, colOrder, groupTitle } from "./postgame.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE } from "./bets.js";
@@ -771,6 +772,10 @@ function buildPlan(home, away, sport, md, opts = {}) {
   // Learned from graded results (results tracker): a bounded scoring-level and home-edge correction per sport.
   const learn = opts.learn !== undefined ? opts.learn : learnedFor(sport);
   if (learn) { const e = neutral ? 0 : learn.h / (2 * L); muH *= learn.s * Math.exp(e); muA *= learn.s * Math.exp(-e); }
+  // ...and per team: how each side's scoring and scoring allowed have run against what the algo projected for them
+  const TL = learn && learn.teams ? learn.teams : null, tH = TL ? TL[home.abbr] : null, tA = TL ? TL[away.abbr] : null;
+  const teamAdj = { h: (tH ? tH[0] : 1) * (tA ? tA[1] : 1), a: (tA ? tA[0] : 1) * (tH ? tH[1] : 1), home: tH || null, away: tA || null };
+  muH *= teamAdj.h; muA *= teamAdj.a;
   // The expected scores above are final scores, which already contain overtime. The sim adds a point to the OT
   // winner, so take that point out of the regulation means to keep the expected total where it belongs.
   if (!SPORT_CFG[sport].hasDraw) { const c = 1 - tieProb(muH, muA, P) / (muH + muA); muH *= c; muA *= c; }
@@ -778,7 +783,7 @@ function buildPlan(home, away, sport, md, opts = {}) {
   const lv = opts.live !== undefined ? opts.live : md?.live || null;
   const otP = otHomeProb(muH, muA, P);
   if (lv && lv.rem < 1) { muH *= Math.max(0.005, lv.rem); muA *= Math.max(0.005, lv.rem); }
-  return { L, muH, muA, otP, neutral, factors, learn: learn || null, parts: { home: H, away: A }, live: lv && lv.rem < 1 ? lv : null };
+  return { L, muH, muA, otP, neutral, factors, learn: learn || null, teamAdj, parts: { home: H, away: A }, live: lv && lv.rem < 1 ? lv : null };
 }
 
 function randn() { let u = 0; while (u === 0) u = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); }
@@ -1630,7 +1635,7 @@ function snapRecord(sport, day, r, source) {
   return {
     key: trackKey(sport, day, r.md.away.abbr, r.md.home.abbr), sport, day, time: r.time || "", source, at: Date.now(),
     away: { name: r.md.away.name, abbr: r.md.away.abbr }, home: { name: r.md.home.name, abbr: r.md.home.abbr }, neutral: !!r.neutral,
-    proj: { total, margin, rawTotal: total / (ln ? ln.s : 1), rawMargin: margin - (ln && !r.neutral ? ln.h : 0) },
+    proj: { total, margin, rawTotal: total / (ln ? ln.s : 1), rawMargin: margin - (ln && !r.neutral ? ln.h : 0), tf: plan.teamAdj ? { h: plan.teamAdj.h, a: plan.teamAdj.a } : null },
     p: { h: px.ml.pH, a: px.ml.pA, d: px.ml.pD || 0 },
     mkt: r.mkt ? { homeML: r.mkt.homeML ?? null, awayML: r.mkt.awayML ?? null, drawML: r.mkt.drawML ?? null, awaySpread: r.mkt.awaySpread ?? null, total: r.mkt.total ?? null } : null,
     plays: (r.bets || []).map(PLAY_FIELDS), pick: r.status === "bet" && r.pick ? r.pick.key : null, grade: r.grade || null, result: null,
@@ -1726,10 +1731,21 @@ function learnFrom(games, sport) {
     }
     const w0 = startBlend(sport); bw = clampTo(w0 + (best.w - w0) * ml.length / (ml.length + 100), 0.05, 0.9);
   }
-  return { s, h, n, bw, nMl: ml.length };
+  // per team: actual vs projected points scored (attack) and allowed (defence), as log ratios net of the sport-wide
+  // level, shrunk by games played (k/(k+12)) and capped at ±4%. Projections are taken back to before any team
+  // adjustment was applied, so a team's correction never feeds on itself.
+  const acc = {}, add = (abbr, i, v) => { if (!abbr) return; const t = (acc[abbr] = acc[abbr] || [0, 0, 0]); t[i] += v; if (i === 0) t[2]++; };
+  for (const g of gs) {
+    const tf = g.proj.tf || { h: 1, a: 1 }, ph = Math.max(0.5, (g.proj.rawTotal + g.proj.rawMargin) / 2 / (tf.h || 1)), pa = Math.max(0.5, (g.proj.rawTotal - g.proj.rawMargin) / 2 / (tf.a || 1));
+    const rh = Math.log((g.result.hs + 0.5) / (ph + 0.5)) - mlog, ra = Math.log((g.result.as + 0.5) / (pa + 0.5)) - mlog;
+    add(g.home.abbr, 0, rh); add(g.home.abbr, 1, ra); add(g.away.abbr, 0, ra); add(g.away.abbr, 1, rh);
+  }
+  const teams = {};
+  for (const [abbr, [o, d, k]] of Object.entries(acc)) if (k >= 3) { const w = 1 / (k + 12); teams[abbr] = [+clampTo(Math.exp(o * w), 0.96, 1.04).toFixed(4), +clampTo(Math.exp(d * w), 0.96, 1.04).toFixed(4), k]; }
+  return { s, h, n, bw, nMl: ml.length, teams };
 }
 let LEARNED = {};
-const learnedFor = sport => { const x = LEARNED[sport]; return x && !x.inactive && (x.s !== 1 || x.h !== 0) ? x : null; };   // scoring/home edge only; the blend weight is read by blendW
+const learnedFor = sport => { const x = LEARNED[sport]; return x && !x.inactive && (x.s !== 1 || x.h !== 0 || (x.teams && Object.keys(x.teams).length)) ? x : null; };   // scoring/home edge only; the blend weight is read by blendW
 // The page reads what the background tracker (GitHub data job) has learned from every graded game.
 async function loadLearned() {
   const j = await dataFile("learned.json");
@@ -1767,7 +1783,7 @@ async function fetchFinals(sport, games) {
   return n;
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
-export const engine = { runSimulations, priceGame, liveState, LEAGUE };   // for the tests
+export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan };   // for the tests
 export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, SPORT_KEYS, TRACK_LS };
 // <<< SLATE ENGINE
 
@@ -2028,14 +2044,14 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
 // ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
 const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
-function LiveScores({ sport, onPick }) {
+function LiveScores({ sport, onPick, onFinal }) {
   const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
   useEffect(() => {
     let alive = true, timer = null;
     const pull = async () => {
       if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
       const R = ROUTES[sport], day = ymd(new Date()), today = etDay();
-      const res = await Promise.all((R?.leagues || []).map(lg => getJSON(scoreboardUrl(sport, lg, day)).then(j => liveBoard(j, sport)).catch(() => null)));
+      const res = await Promise.all((R?.leagues || []).map(lg => getJSON(scoreboardUrl(sport, lg, day)).then(j => liveBoard(j, sport).map(x => ({ ...x, slug: lg }))).catch(() => null)));
       if (!alive) return;
       const ok = res.filter(Boolean), seen = new Set();
       const rows = ok.flat().filter(r => !seen.has(r.id) && seen.add(r.id) && (!r.date || etISO(r.date) === today || r.state === "in"))
@@ -2071,9 +2087,9 @@ function LiveScores({ sport, onPick }) {
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
     {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {what} today.</div>}
     {show.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
-      {show.map(r => { const can = onPick && r.state !== "post";
-        return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={can ? "Open the full simulation" : undefined}
-        onClick={can ? () => onPick(r) : undefined} onKeyDown={can ? e => { if (e.key === "Enter") onPick(r); } : undefined}
+      {show.map(r => { const fin = r.state === "post" && !!onFinal, can = (onPick && r.state !== "post") || fin, go = () => (fin ? onFinal(r) : onPick(r));
+        return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={fin ? "Open the final report" : can ? "Open the full simulation" : undefined}
+        onClick={can ? go : undefined} onKeyDown={can ? e => { if (e.key === "Enter") go(); } : undefined}
         style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : r.state === "post" ? NEON.green + "88" : T.line}`, background: r.state === "post" ? "rgba(43,255,136,.05)" : "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
         <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", gap: 8, fontSize: 10, letterSpacing: 1 }}>
           <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, fontFamily: F.d, whiteSpace: "nowrap" }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
@@ -2081,13 +2097,13 @@ function LiveScores({ sport, onPick }) {
         </div>
         {side(r.away, r)}
         {side(r.home, r)}
-        {can && <div style={{ fontSize: 9, color: T.faint, letterSpacing: 1.5, textAlign: "right" }}>SIMULATE ▸</div>}
+        {can && <div style={{ fontSize: 9, color: fin ? NEON.green : T.faint, letterSpacing: 1.5, textAlign: "right" }}>{fin ? "FINAL REPORT ▸" : "SIMULATE ▸"}</div>}
       </div>; })}
     </div>}
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,slateInfo,slateBusy,slateErr,onPick}){
+function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onFinal,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
@@ -2133,7 +2149,7 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <button onClick={onFetch} disabled={!ok} style={{width:"100%",marginTop:16,padding:"14px",border:`1px solid ${ok?T.chrome:T.line}`,background:ok?"rgba(143,0,255,0.29)":"none",color:ok?"#fff":T.faint,fontFamily:F.d,fontSize:13,letterSpacing:3,cursor:ok?"pointer":"not-allowed",boxShadow:ok?"0 0 22px rgba(143,0,255,0.45),inset 0 0 18px rgba(143,0,255,0.18)":"none"}}>{loading?"LOADING…":"RUN SIMULATION"}</button>
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
     </Panel>
-    <LiveScores sport={sport} onPick={onPick}/>
+    <LiveScores sport={sport} onPick={onPick} onFinal={onFinal}/>
   </Shell>;
 }
 
@@ -2960,6 +2976,175 @@ function Leaderboard({ onOpen }) {
   </>;
 }
 
+// ─── FINAL REPORT: tap a finished game. Score by period, a rundown from the numbers, the algo's pre-game call and
+// what it learned, team stats, how it was scored, and every player's line. ──────────────────────────────────────
+const keepScores = t => String(t).replace(/(\d)-(\d)/g, "$1\u2060-\u2060$2");   // a score like 21-14 never splits across lines
+const initialName = n => { const p = String(n || "").trim().split(/\s+/); return p.length > 1 ? `${p[0][0]}. ${p.slice(1).join(" ")}` : n; };
+async function trackRecordFor(sport, row) {
+  const day = etISO(row.date), f = await dataFile(`track/${sport}/${day.slice(0, 7)}.json`), gs = f?.games || {};
+  if (isIndiv(sport)) return Object.values(gs).find(g => String(g.eid) === String(row.id)) || null;
+  return gs[`${sport}|${day}|${row.away.abbr}@${row.home.abbr}`] || Object.values(gs).find(g => g.day === day && g.away.abbr === row.away.abbr && g.home.abbr === row.home.abbr) || null;
+}
+// tennis / MMA have no summary route: the board row is the report
+function indivFinal(sport, row) {
+  const sa = String(row.away.score || "").split(" ").filter(Boolean).map(Number), sh = String(row.home.score || "").split(" ").filter(Boolean).map(Number);
+  const won = (x, y) => x.reduce((k, v, i) => k + (v > (y[i] ?? -1) ? 1 : 0), 0);
+  const W = row.away.win ? "away" : row.home.win ? "home" : null;
+  const setText = sa.length ? sa.map((v, i) => (W === "home" ? `${sh[i]}-${v}` : `${v}-${sh[i]}`)).join(", ") : "";
+  const t = (x, s, o) => ({ id: "", abbr: "", name: x.name, short: x.name, score: sa.length ? won(s, o) : null, win: !!x.win, rec: "", lines: s });
+  return { sport, id: row.id, detail: row.detail || "Final", done: true, away: t(row.away, sa, sh), home: t(row.home, sh, sa), venue: "", city: "", attendance: null,
+    teamStats: [], players: { away: [], home: [] }, leaders: { away: [], home: [] }, scoring: [], lines: null, wp: null, setText: setText ? `in ${sport === "Tennis" ? "sets" : "rounds"}: ${setText}` : "" };
+}
+function FinalScreen({ sport, row, onBack }) {
+  const [d, setD] = useState(null), [err, setErr] = useState(null), [side, setSide] = useState("away");
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      const rec = await trackRecordFor(sport, row).catch(() => null);
+      let F = null;
+      if (isIndiv(sport)) F = indivFinal(sport, row);
+      else { const j = await getJSON(summaryUrl(sport, row.slug, row.id)).catch(() => null); F = j ? parseFinal(j, sport) : null; }
+      if (!on) return;
+      if (!F) { setErr("Couldn't load this game's box score from the scores routes. Try again in a minute."); return; }
+      setD({ F, rec, R: finalRundown(F, sport, rec, LEARNED) });
+    })();
+    return () => { on = false; };
+  }, [sport, row.id]);
+  const cfg = SPORT_CFG[sport];
+  return <Shell status="final report">
+    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
+      <button onClick={onBack} style={btnStyle()}>◂ BACK</button>
+      <div style={{ textAlign: "right", fontFamily: F.d, fontSize: "clamp(14px,4vw,18px)", letterSpacing: 3, color: "#fff", textShadow: `0 0 14px ${NEON.green}66` }}>FINAL REPORT</div>
+    </div>
+    {err && <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>}
+    {!d && !err && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading the box score…</div></Panel>}
+    {d && <>
+      <ScorePanel F={d.F} sport={sport} row={row}/>
+      <Panel title="GAME RUNDOWN" right={cfg.label}>
+        {d.R.paras.map((p, i) => <p key={i} style={{ margin: i ? "10px 0 0" : 0, fontSize: 13, lineHeight: 1.7, color: T.ink }}>{keepScores(p)}</p>)}
+      </Panel>
+      <Panel title="THE ALGO'S CALL" right={d.rec?.result ? "graded" : d.rec ? "grading soon" : "not logged"} color={T.chrome}>
+        {d.rec && <AlgoTiles F={d.F} rec={d.rec} sport={sport}/>}
+        {d.R.algo.map((p, i) => <p key={i} style={{ margin: i || d.rec ? "10px 0 0" : 0, fontSize: 12, lineHeight: 1.7, color: i === d.R.algo.length - 1 && /^What it learns/.test(p) ? T.chrome : T.ink }}>{keepScores(p)}</p>)}
+      </Panel>
+      {teamStatRows(d.F, sport).length > 0 && <TeamStatsPanel F={d.F} sport={sport}/>}
+      {d.F.scoring.length > 0 && !["NBA", "WNBA", "CBB", "CBBW"].includes(sport) && <ScoringPanel F={d.F} sport={sport}/>}
+      {(d.F.players.away.length > 0 || d.F.players.home.length > 0) && <Panel title="PLAYER STATS" right="tap a player for every stat">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", border: `1px solid ${T.line}` }}>
+          {[["away", d.F.away], ["home", d.F.home]].map(([k, t]) => <button key={k} onClick={() => setSide(k)} style={{ padding: "10px 6px", border: "none", borderBottom: `2px solid ${side === k ? T.chrome : "transparent"}`, background: side === k ? "rgba(143,0,255,0.18)" : "none", color: side === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 12, letterSpacing: 1, cursor: "pointer", overflowWrap: "anywhere" }}>{t.abbr || initialName(t.name)}</button>)}
+        </div>
+        {d.F.players[side].map((g, i) => <BoxTable key={`${side}${i}`} g={g} sport={sport}/>)}
+        {!d.F.players[side].length && <div style={{ fontSize: 12, color: T.dim, marginTop: 10 }}>No player stats posted for this side.</div>}
+      </Panel>}
+    </>}
+  </Shell>;
+}
+function ScorePanel({ F: G, sport, row }) {
+  const A = G.away, H = G.home, n = Math.max(A.lines.length, H.lines.length), mlb = sport === "MLB", ind = isIndiv(sport);
+  const extra = mlb ? [["R", "score"], ["H", "hits"], ["E", "errors"]] : [["T", "score"]];
+  const cols = `minmax(44px,auto) repeat(${n},minmax(0,1fr))${ind ? "" : ` repeat(${extra.length},minmax(22px,auto))`}`;
+  const cell = (v, bold, c) => <span style={{ textAlign: "center", fontFamily: F.d, fontSize: 12, fontWeight: bold ? 700 : 500, color: c || (bold ? "#fff" : T.dim), whiteSpace: "nowrap" }}>{v ?? ""}</span>;
+  const team = (t, k) => <div key={k} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "center", padding: "6px 0" }}>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: t.win ? "#fff" : T.dim, overflowWrap: "anywhere" }}>{t.abbr ? <>{t.abbr} <span style={{ fontFamily: F.m, fontSize: 12, fontWeight: 400, color: T.dim }}>{t.name}</span></> : t.name}{t.win && <span style={{ color: NEON.green }}> ✓</span>}</div>
+      {t.rec && <div style={{ fontSize: 11, color: T.faint, marginTop: 2 }}>{t.rec}</div>}
+    </div>
+    <span style={{ fontFamily: F.d, fontSize: 30, fontWeight: 900, color: t.win ? "#fff" : T.dim, textShadow: t.win ? `0 0 12px ${NEON.green}66` : "none" }}>{t.score ?? ""}</span>
+  </div>;
+  return <Panel title={`FINAL${G.detail && !/^(final|ft)$/i.test(G.detail) ? ` · ${G.detail.replace(/^final\s*\/?\s*/i, "").toUpperCase()}` : ""}`} right={[ind || sport === "Soccer" ? row.league : cfgLabel(sport), etDayLabel(row.date)].filter(Boolean).join(" · ")} color={NEON.green}>
+    {team(A, "a")}{team(H, "h")}
+    {n > 0 && <div style={{ marginTop: 10, borderTop: `1px solid ${T.line}`, paddingTop: 10, display: "grid", gridTemplateColumns: cols, rowGap: 6, columnGap: 4, alignItems: "center" }}>
+      <span style={{ fontSize: 10, color: T.faint }}>{ind ? (sport === "Tennis" ? "SET" : "RD") : ""}</span>
+      {Array.from({ length: n }, (_, i) => <span key={i} style={{ textAlign: "center", fontSize: 10, color: T.faint }}>{i + 1}</span>)}
+      {!ind && extra.map(([l]) => <span key={l} style={{ textAlign: "center", fontSize: 10, color: T.faint }}>{l}</span>)}
+      {[A, H].map((t, r) => [
+        <span key={`n${r}`} style={{ fontFamily: F.d, fontSize: 11, color: t.win ? "#fff" : T.dim, overflowWrap: "anywhere" }}>{t.abbr || initialName(t.name).split(" ").slice(-1)[0]}</span>,
+        ...Array.from({ length: n }, (_, i) => <Fragment key={`c${r}${i}`}>{cell(t.lines[i], false)}</Fragment>),
+        ...(!ind ? extra.map(([l, f]) => <Fragment key={`e${r}${l}`}>{cell(t[f], l === "R" || l === "T", t.win && (l === "R" || l === "T") ? "#fff" : undefined)}</Fragment>) : []),
+      ])}
+    </div>}
+  </Panel>;
+}
+const cfgLabel = sp => SPORT_CFG[sp]?.label || sp;
+function AlgoTiles({ F: G, rec, sport }) {
+  const tot = rec.p.a + rec.p.h + (rec.p.d || 0), pH = rec.p.h / tot, pA = rec.p.a / tot, W = G.away.win ? "away" : G.home.win ? "home" : null;
+  const likes = pH >= pA ? "home" : "away", right = W && W === likes;
+  const proj = rec.proj && rec.proj.total > 0 ? { h: (rec.proj.total + rec.proj.margin) / 2, a: (rec.proj.total - rec.proj.margin) / 2 } : null;
+  const pick = rec.pick ? rec.plays.find(x => x.key === rec.pick) : null;
+  const lab = t => t.abbr || initialName(t.name).split(" ").slice(-1)[0];
+  const tiles = [
+    ["WINNER CALL", `${lab(likes === "home" ? G.home : G.away)} ${Math.round(Math.max(pH, pA) * 100)}%`, W ? (right ? NEON.green : NEON.red) : T.ink, W ? (right ? "right" : "wrong") : ""],
+    proj ? ["PROJECTED", `${lab(G.away)} ${proj.a.toFixed(1)} – ${lab(G.home)} ${proj.h.toFixed(1)}`, T.ink, `actual ${G.away.score}-${G.home.score}`] : null,
+    pick ? ["ITS PICK", pick.label, pick.res === "W" ? NEON.green : pick.res === "L" ? NEON.red : T.ink, pick.res ? (pick.res === "W" ? "won" : pick.res === "L" ? "lost" : "push") : "grading"] : ["ITS PICK", "no bet", T.dim, "nothing cleared the bar"],
+  ].filter(Boolean);
+  return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
+    {tiles.map(([k, v, c, sub]) => <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, background: "rgba(9,2,17,.5)", padding: "9px 10px" }}>
+      <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div>
+      <div style={{ fontFamily: F.d, fontSize: 13, fontWeight: 700, color: c, marginTop: 4, overflowWrap: "anywhere", lineHeight: 1.35 }}>{v}</div>
+      {sub && <div style={{ fontSize: 10, color: T.dim, marginTop: 3 }}>{sub}</div>}
+    </div>)}
+  </div>;
+}
+function TeamStatsPanel({ F: G, sport }) {
+  const rows = teamStatRows(G, sport), lab = t => t.abbr || initialName(t.name);
+  return <Panel title="TEAM STATS" right={`${lab(G.away)} · ${lab(G.home)}`}>
+    {rows.map((r, i) => <div key={r.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.6fr) minmax(0,1fr)", gap: 8, alignItems: "baseline", padding: "6px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+      <span style={{ fontFamily: F.d, fontSize: 13, color: AWAY_DEF, overflowWrap: "anywhere" }}>{r.a}</span>
+      <span style={{ fontSize: 11, color: T.dim, textAlign: "center", lineHeight: 1.4 }}>{r.label}</span>
+      <span style={{ fontFamily: F.d, fontSize: 13, color: HOME_DEF, textAlign: "right", overflowWrap: "anywhere" }}>{r.h}</span>
+    </div>)}
+  </Panel>;
+}
+function ScoringPanel({ F: G, sport }) {
+  const lab = s => (s === "away" ? G.away.abbr || G.away.short : G.home.abbr || G.home.short);
+  const per = sport === "NHL" ? "P" : sport === "MLB" ? "" : "Q";
+  return <Panel title={sport === "Soccer" ? "GOALS & CARDS" : "SCORING"} right={`${G.scoring.length} ${sport === "Soccer" ? "events" : "plays"}`}>
+    {G.scoring.map((e, i) => <div key={i} style={{ display: "grid", gridTemplateColumns: "auto auto minmax(0,1fr)", gap: 10, alignItems: "baseline", padding: "6px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+      <span style={{ fontFamily: F.d, fontSize: 11, color: e.side === "away" ? AWAY_DEF : HOME_DEF, whiteSpace: "nowrap" }}>{lab(e.side)}</span>
+      <span style={{ fontSize: 11, color: T.faint, whiteSpace: "nowrap" }}>{sport === "Soccer" ? e.when : `${e.period ? (per ? `${per}${e.period}` : ord2(e.period)) : ""}${e.when ? ` ${e.when}` : ""}`}</span>
+      <span style={{ fontSize: 12, color: T.ink, lineHeight: 1.5, overflowWrap: "anywhere" }}>{sport === "Soccer" ? `${e.kind === "red card" ? "🟥 " : "⚽ "}${e.who}${e.kind === "own goal" ? " (own goal)" : e.kind === "penalty" ? " (pen)" : e.kind === "penalty missed" ? " (pen missed)" : ""}` : e.text}{e.as != null && e.hs != null ? <span style={{ color: T.dim }}> · {e.as}-{e.hs}</span> : null}</span>
+    </div>)}
+  </Panel>;
+}
+const ord2 = k => `${k}${k % 100 >= 11 && k % 100 <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[k % 10] || "th"}`;
+// one stat group: as many columns as fit the screen, most telling first; tap a player for the full line
+function BoxTable({ g, sport }) {
+  const ref = useRef(null), [w, setW] = useState(360), [open, setOpen] = useState(null);
+  useEffect(() => { const el = ref.current; if (!el) return; const fit = () => setW(el.clientWidth || 360); fit(); if (typeof ResizeObserver === "undefined") return; const ro = new ResizeObserver(fit); ro.observe(el); return () => ro.disconnect(); }, []);
+  const order = colOrder(sport, g.name, g.labels);
+  const width = i => Math.ceil(Math.max(String(g.labels[i]).length, ...g.rows.map(r => String(r.stats[i] ?? "").length), g.totals ? String(g.totals[i] ?? "").length : 0) * 7.3 + 8);
+  const nameMin = w < 400 ? 104 : 140, gap = 4;
+  const shown = [];
+  let used = nameMin;
+  for (const i of order) { const cw = width(i); if (used + cw + gap > w) break; shown.push(i); used += cw + gap; }
+  const cols = `minmax(${nameMin}px,1fr) ${shown.map(i => `${width(i)}px`).join(" ")}`;
+  const hidden = order.length - shown.length;
+  return <div ref={ref} style={{ marginTop: 14 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "baseline", marginBottom: 6 }}>
+      <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 2, color: T.chrome }}>{groupTitle(g.name).toUpperCase()}</span>
+      {hidden > 0 && <span style={{ fontSize: 10, color: T.faint }}>+{hidden} more per player</span>}
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: cols, columnGap: gap, fontSize: 10, color: T.faint, padding: "0 0 4px", borderBottom: `1px solid ${T.line}` }}>
+      <span/>{shown.map(i => <span key={i} style={{ textAlign: "right" }}>{g.labels[i]}</span>)}
+    </div>
+    {g.rows.map((r, k) => <div key={k}>
+      <button onClick={() => setOpen(open === k ? null : k)} style={{ display: "grid", gridTemplateColumns: cols, columnGap: gap, alignItems: "baseline", width: "100%", padding: "6px 0", border: "none", borderBottom: `1px solid ${T.line}`, background: open === k ? "rgba(143,0,255,.12)" : "none", cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: r.starter ? "#fff" : T.ink }}>{initialName(r.name)}{r.pos && <span style={{ color: T.faint, fontSize: 10 }}> {r.pos}</span>}</span>
+        {shown.map(i => <span key={i} style={{ textAlign: "right", fontSize: 12, color: T.ink, fontVariantNumeric: "tabular-nums" }}>{r.stats[i]}</span>)}
+      </button>
+      {open === k && <div style={{ padding: "8px 0 10px", borderBottom: `1px solid ${T.line}` }}>
+        <div style={{ fontSize: 12, color: "#fff", marginBottom: 6 }}>{r.name}{r.pos ? ` · ${r.pos}` : ""}{r.starter ? " · starter" : r.sub ? " · came on" : ""}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {order.map(i => <span key={i} style={{ padding: "3px 7px", border: `1px solid ${T.line}`, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{g.labels[i]} <b style={{ color: T.ink }}>{r.stats[i]}</b></span>)}
+        </div>
+      </div>}
+    </div>)}
+    {g.totals && g.totals.some(v => v) && <div style={{ display: "grid", gridTemplateColumns: cols, columnGap: gap, padding: "6px 0", fontSize: 12, color: T.dim }}>
+      <span>Team</span>{shown.map(i => <span key={i} style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{g.totals[i]}</span>)}
+    </div>}
+  </div>;
+}
+
 export default function App() {
   useEffect(()=>{try{document.title="Bobby's Boardroom";}catch(_){/* no document */}},[]);
   const [phase,setPhase]=useState("setup");
@@ -2979,6 +3164,7 @@ export default function App() {
   const [trackVer,setTrackVer]=useState(0);
   const [indiv,setIndiv]=useState(null);
   const [indivMatch,setIndivMatch]=useState(null);
+  const [finalRow,setFinalRow]=useState(null);
   // Lineups: while a game hasn't started and a side's lineup isn't posted yet, check the game every 90 seconds;
   // the moment it's posted, the matchup is re-pulled with it and re-simulated.
   const [lineupNote,setLineupNote]=useState(null);
@@ -3082,6 +3268,7 @@ export default function App() {
   if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
   if (phase==="indivMatch"&&indivMatch) return <IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
   if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")}/>;
+  if (phase==="final"&&finalRow) return <FinalScreen sport={finalRow.sport} row={finalRow.row} onBack={()=>setPhase("setup")}/>;
   if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
   if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
   if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
@@ -3092,6 +3279,6 @@ export default function App() {
   }
   if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
+    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
     onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport})}/>;
 }
