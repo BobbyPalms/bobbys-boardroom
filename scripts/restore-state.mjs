@@ -5,8 +5,10 @@ const base = (process.argv[2] || "").replace(/\/$/, "");
 if (!base) { console.log("no site url yet; starting from the committed data"); process.exit(0); }
 const idx = await fetch(`${base}/data/index.json`).then(r => r.ok ? r.json() : null).catch(() => null);
 if (!idx?.files) { console.log("site has no data index yet"); process.exit(0); }
+const RETIRED = /^splits\//;                       // folders the data job no longer writes
 let n = 0;
 for (const f of idx.files) {
+  if (RETIRED.test(f)) continue;
   const r = await fetch(`${base}/data/${f}`).catch(() => null);
   if (!r?.ok) continue;
   const txt = await r.text(), p = `data/${f}`;
