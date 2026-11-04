@@ -374,8 +374,9 @@ export function matchSplit(game, list) {
     return { src: s.src, ml: { a: sw(s.ml.a, s.ml.h), h: sw(s.ml.h, s.ml.a), d: s.ml.d }, sp: { a: sw(s.sp.a, s.sp.h), h: sw(s.sp.h, s.sp.a), line: s.sp.line == null ? null : flip ? -s.sp.line : s.sp.line }, tot: { ...s.tot } }; };
   const all = hits.filter(h => h.s.src !== hits[0].s.src || h === hits[0]).map(one).slice(0, 2), out = { ...all[0] }, used = new Set();
   for (const [k, sides] of [["ml", ["a", "h"]], ["sp", ["a", "h"]], ["tot", ["o", "u"]]]) {
-    const pick = all.find(x => sides.some(sd => x[k][sd])) || all[0];
-    out[k] = pick[k]; if (sides.some(sd => pick[k][sd])) used.add(pick.src);
+    const posted = x => sides.some(sd => x[k][sd] && ((x[k][sd][0] || 0) + (x[k][sd][1] || 0)) > 0);
+    const pick = all.find(posted) || all[0];
+    out[k] = posted(pick) ? pick[k] : { ...pick[k], ...Object.fromEntries(sides.map(sd => [sd, null])) }; if (posted(pick)) used.add(pick.src);
   }
   out.src = [...used].join(" + ") || all[0].src;
   return out;
