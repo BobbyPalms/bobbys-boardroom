@@ -2055,9 +2055,9 @@ function LiveScores({ sport, onPick }) {
       {show.map(r => { const can = onPick && r.state !== "post";
         return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={can ? "Open the full simulation" : undefined}
         onClick={can ? () => onPick(r) : undefined} onKeyDown={can ? e => { if (e.key === "Enter") onPick(r); } : undefined}
-        style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : T.line}`, background: "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
+        style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : r.state === "post" ? NEON.green + "88" : T.line}`, background: r.state === "post" ? "rgba(43,255,136,.05)" : "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, letterSpacing: 1 }}>
-          <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? T.faint : T.chrome, fontFamily: F.d }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
+          <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, fontFamily: F.d }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
           <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "60%" }}>{[sport === "Soccer" || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
         </div>
         {side(r.away, r)}
