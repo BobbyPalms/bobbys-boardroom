@@ -1608,7 +1608,7 @@ function Shell({children,status="online"}){
     <style>{CSS}</style><Rain/>
     <div style={{...fx,top:0,bottom:0,background:"repeating-linear-gradient(0deg,rgba(0,0,0,.26) 0 1px,transparent 1px 3px)"}}/>
     <div style={{...fx,top:0,height:140,background:"linear-gradient(180deg,transparent,rgba(143,0,255,0.13),transparent)",animation:"scan 8s linear infinite"}}/>
-    <div style={{position:"relative",zIndex:2,maxWidth:760,margin:"0 auto",padding:"0 14px 56px",animation:"boot .7s ease-out"}}>
+    <div style={{position:"relative",zIndex:2,maxWidth:940,margin:"0 auto",padding:"0 14px 56px",animation:"boot .7s ease-out"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 2px",borderBottom:`1px solid ${T.line}`,fontSize:11,color:T.dim}}>
         <span style={{fontFamily:F.d,letterSpacing:3,color:T.chrome,fontSize:11}}>BOBBY'S BOARDROOM</span>
         <span><span style={{color:T.chrome,animation:"blink 1.6s infinite"}}>●</span> {status}</span>
