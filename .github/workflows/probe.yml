@@ -17,9 +17,9 @@ jobs:
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          D=$(TZ=America/New_York date +%Y%m%d)
-          for L in nfl ncaaf nba ncaab nhl mlb wnba soccer; do get an_$L.json "https://api.actionnetwork.com/web/v2/scoreboard/$L?bookIds=15&periods=event&date=$D"; done
-          for E in 88808 87637 42648 92483 42133; do get dk_$E.html "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=$E&tb_edate=n7days"; done
+          get ea_api.json "https://drop-api.ea.com/rating/ea-sports-fc?locale=en&limit=100&offset=0"
+          get ea_api_team.json "https://drop-api.ea.com/rating/ea-sports-fc?locale=en&limit=100&offset=0&team=243"
+          get ea_page.html "https://www.ea.com/games/ea-sports-fc/ratings"
           cd out && git init -q -b probe && git add -A
           git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
