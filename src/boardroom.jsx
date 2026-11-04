@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE } from "./bets.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -1783,8 +1784,13 @@ const CSS = `@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght
 @keyframes boot{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px solid #C27BFF;outline-offset:2px}
 ::-webkit-scrollbar{display:none}
+.bb-top{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"brand status clock"}
+.bb-top>span:nth-child(2){text-align:center}
+@media (max-width:520px){.bb-top{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"brand clock" "status status"}.bb-top>span:nth-child(2){text-align:left}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
 @media (max-width:640px){.bb-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.bb-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media (max-width:560px){.bb-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}`;
 
 // ─── TEAM COLORS: always distinct, one color per team everywhere ─────────────
@@ -1821,10 +1827,10 @@ function Shell({children,status="online"}){
     <div style={{...fx,top:0,bottom:0,background:"repeating-linear-gradient(0deg,rgba(0,0,0,.26) 0 1px,transparent 1px 3px)"}}/>
     <div style={{...fx,top:0,height:140,background:"linear-gradient(180deg,transparent,rgba(143,0,255,0.13),transparent)",animation:"scan 8s linear infinite"}}/>
     <div style={{position:"relative",zIndex:2,maxWidth:940,margin:"0 auto",padding:"0 14px 56px",animation:"boot .7s ease-out"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 2px",borderBottom:`1px solid ${T.line}`,fontSize:11,color:T.dim}}>
-        <span style={{fontFamily:F.d,letterSpacing:3,color:T.chrome,fontSize:11}}>BOBBY'S BOARDROOM</span>
-        <span><span style={{color:T.chrome,animation:"blink 1.6s infinite"}}>●</span> {status}</span>
-        <Clock/>
+      <div className="bb-top" style={{display:"grid",columnGap:12,rowGap:6,alignItems:"center",padding:"12px 2px",borderBottom:`1px solid ${T.line}`,fontSize:11,color:T.dim}}>
+        <span style={{gridArea:"brand",fontFamily:F.d,letterSpacing:3,color:T.chrome,fontSize:11,whiteSpace:"nowrap"}}>BOBBY'S BOARDROOM</span>
+        <span style={{gridArea:"status",minWidth:0,lineHeight:1.4}}><span style={{color:T.chrome,animation:"blink 1.6s infinite"}}>●</span> {status}</span>
+        <span style={{gridArea:"clock",whiteSpace:"nowrap",textAlign:"right"}}><Clock/></span>
       </div>
       {children}
     </div>
@@ -2078,7 +2084,7 @@ function LiveScores({ sport, onPick }) {
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,slateInfo,slateBusy,slateErr,onPick}){
+function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
@@ -2095,6 +2101,11 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
     <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center"}}>
       {SPORT_KEYS.map(k=><button key={k} onClick={()=>setSport(k)} style={{padding:"8px 13px",border:`1px solid ${sport===k?T.chrome:T.line}`,background:sport===k?"rgba(143,0,255,0.25)":"rgba(14,4,26,.6)",color:sport===k?"#fff":T.dim,fontFamily:F.d,fontSize:11,letterSpacing:1,cursor:"pointer",boxShadow:sport===k?`0 0 14px rgba(143,0,255,0.54)`:"none"}}><Ico>{SPORT_CFG[k].icon}</Ico> {SPORT_CFG[k].label}</button>)}
     </div>
+    <button onClick={()=>onBets&&onBets()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:16,padding:"13px 14px",border:`1px solid ${T.chrome}`,background:"linear-gradient(90deg,rgba(143,0,255,.28),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left",boxShadow:`0 0 18px rgba(143,0,255,.25)`}}>
+      <span style={{fontSize:18}}>🎟</span>
+      <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>BET SLIPS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Add your slips · auto-graded · leaderboards</span></span>
+      <span style={{fontFamily:F.d,color:T.chrome}}>▸</span>
+    </button>
     <Panel title="TODAY'S SLATE" right={SPORT_CFG[sport].label}>
       <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${SPORT_CFG[sport].label} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
       <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
@@ -2690,6 +2701,262 @@ const btnStyle = (on = true) => ({ padding: "9px 12px", border: `1px solid ${on 
 
 
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
+// ─── BET SLIPS: everyone's slips, graded from the final score, ranked by record and by money ───────────────────
+// Who you are comes from the site login (Cloudflare Access); slips live on the server (functions/api), so they follow
+// you to any device. The page only reads the board to match picks to games; the server re-checks every game.
+const API = typeof location !== "undefined" && location.protocol === "file:" ? "https://bobbys-boardroom.pages.dev/api" : "/api";
+async function api(method, path, body) {
+  let r;
+  try { r = await fetch(`${API}/${path}`, { method, credentials: "same-origin", headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined }); }
+  catch (_) { const e = new Error("Couldn't reach the bet slips server. Check your connection."); e.status = 0; throw e; }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error || `Server error ${r.status}`); e.status = r.status; throw e; }
+  return j;
+}
+// every game on the board today and tomorrow (plus this week's football), as rows a typed pick can match
+let _betRows = null;
+function loadBetRows() {
+  if (_betRows && Date.now() - _betRows.t < 120000) return _betRows.p;
+  const days = [ymd(new Date()), ymd(new Date(Date.now() + 864e5))];
+  const jobs = [];
+  for (const sp of SPORT_KEYS) for (const lg of ROUTES[sp]?.leagues || []) {
+    const urls = days.map(d => scoreboardUrl(sp, lg, d));
+    if (sp === "NFL" || sp === "CFB") { const r = ROUTES[sp]; urls.push(`${SITE_BASE}/${r.sport}/${lg}/scoreboard${r.q ? "?" + r.q : ""}`); }
+    for (const u of urls) jobs.push(getJSON(u).then(j => liveBoard(j, sp).map(x => ({ ...x, sport: sp, league: lg, title: sp === "Tennis" || sp === "MMA" ? x.league : "" }))).catch(() => null));
+  }
+  const p = Promise.all(jobs).then(res => {
+    const seen = new Set(), rows = [];
+    for (const r of res) for (const x of r || []) { const k = `${x.sport}|${x.id}`; if (!seen.has(k)) { seen.add(k); rows.push(x); } }
+    return { rows, reached: res.filter(Boolean).length, tried: res.length };
+  });
+  _betRows = { t: Date.now(), p };
+  return p;
+}
+const SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports";
+const STATUS_C = { pending: T.chrome, won: NEON.green, lost: NEON.red, push: T.dim };
+const pctTxt = v => (v == null ? "–" : `${(v * 100).toFixed(1)}%`);
+const sCash = v => (v == null ? "–" : `${v > 0 ? "+" : ""}${cash(v)}`);
+const whenTxt = iso => `${etDayLabel(iso)} · ${new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })} ET`;
+const oneLine = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const fieldStyle = (c = T.chrome) => ({ width: "100%", minWidth: 0, boxSizing: "border-box", background: "rgba(9,2,17,.85)", border: `1px solid ${c}55`, color: T.ink, fontFamily: F.m, fontSize: "clamp(13px,3.6vw,14px)", padding: "11px 10px", outline: "none" });
+const shortGame = l => (l.sport === "Tennis" || l.sport === "MMA" ? gameTxt(l) : `${l.away.abbr || l.away.name} @ ${l.home.abbr || l.home.name}`);
+const gameTxt = l => (l.sport === "Tennis" || l.sport === "MMA") ? `${l.away.name} vs ${l.home.name}` : `${l.away.name} @ ${l.home.name}`;
+
+function BetSlipsScreen({ onBack }) {
+  const [me, setMe] = useState({ loading: true });
+  const [tab, setTab] = useState("slip");
+  const [who, setWho] = useState(null);                       // a username whose page is open
+  const [ver, setVer] = useState(0);                          // bump to re-read after a change
+  useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message, status: e.status })); }, []);
+  const open = u => { setWho(u); setTab("user"); };
+  return <Shell status={me.username || "bet slips"}>
+    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
+      <button onClick={onBack} style={btnStyle()}>◂ BACK</button>
+      <div style={{ ...oneLine, textAlign: "right", fontFamily: F.d, fontSize: 18, letterSpacing: 4, color: "#fff", textShadow: `0 0 14px ${T.brand}` }}>BET SLIPS</div>
+    </div>
+    {me.loading && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading…</div></Panel>}
+    {me.err && <Panel title="BET SLIPS" color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095", lineHeight: 1.6 }}>{me.err}</div></Panel>}
+    {!me.loading && !me.err && !me.username && <UsernamePanel onDone={u => setMe({ username: u })}/>}
+    {me.username && <>
+      <nav className="bb-subtabs" style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
+        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
+      </nav>
+      {tab === "slip" && <NewSlip onPlaced={() => { setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
+      {tab === "board" && <Leaderboard key={`lb${ver}`} onOpen={open}/>}
+      {tab === "user" && who && <Bettor key={`u${who}${ver}`} path={`user/${encodeURIComponent(who)}`} onBackBoard={() => setTab("board")}/>}
+    </>}
+  </Shell>;
+}
+
+function UsernamePanel({ onDone, current = "" }) {
+  const [u, setU] = useState(current), [err, setErr] = useState(null), [busy, setBusy] = useState(false);
+  const ok = USERNAME_RE.test(u.trim());
+  const save = async () => { setBusy(true); setErr(null); try { const j = await api("POST", "me", { username: u.trim() }); onDone(j.username); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  return <Panel title="PICK A USERNAME" right="shown on the leaderboards">
+    <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.6, marginBottom: 10 }}>This is the name everyone sees next to your record and winnings. Your email stays private.</div>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
+      <input value={u} onChange={e => setU(e.target.value)} onKeyDown={e => e.key === "Enter" && ok && !busy && save()} placeholder="3–16 letters, numbers or _" maxLength={16} style={fieldStyle()}/>
+      <button onClick={save} disabled={!ok || busy} style={{ ...btnStyle(ok && !busy), padding: "0 16px" }}>{busy ? "…" : "SAVE"}</button>
+    </div>
+    {err && <div style={{ marginTop: 8, fontSize: 12, color: "#FF8095" }}>{err}</div>}
+  </Panel>;
+}
+
+// ---------- the slip: one pick per line, odds on the right, + for another line; the amount underneath ----------
+let _lineId = 1;
+const blankLine = () => ({ id: _lineId++, text: "", odds: "", choice: null });
+function NewSlip({ onPlaced }) {
+  const [lines, setLines] = useState(() => [blankLine()]);
+  const [stake, setStake] = useState("");
+  const [board, setBoard] = useState(null);
+  const [busy, setBusy] = useState(false), [err, setErr] = useState(null);
+  useEffect(() => { let on = true; loadBetRows().then(b => on && setBoard(b)); return () => { on = false; }; }, []);
+  const rows = board?.rows || [];
+  const read = useMemo(() => lines.map(l => {
+    if (!l.text.trim()) return { l, empty: true };
+    const res = board ? resolvePick(parsePick(l.text), rows) : { status: "loading" };
+    const leg = l.choice || res.leg || null;
+    const odds = readOdds(l.odds);
+    return { l, res, leg, odds, ready: !!leg && leg.state === "pre" && odds != null };
+  }), [lines, board]);
+  const used = read.filter(x => !x.empty);
+  const amt = Math.round(Number(stake) * 100) / 100;
+  const price = used.length && used.every(x => x.odds != null) ? slipPrice(used.map(x => x.odds), amt) : null;
+  const canPlace = used.length > 0 && used.every(x => x.ready) && amt > 0 && !busy;
+  const set = (id, patch) => setLines(ls => ls.map(l => (l.id === id ? { ...l, ...patch } : l)));
+  const place = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api("POST", "slips", { stake: amt, legs: used.map(x => ({ pick: x.l.text.trim(), sport: x.leg.sport, league: x.leg.league, eventId: x.leg.eventId, date: x.leg.date, market: x.leg.market, side: x.leg.side, line: x.leg.line, odds: x.odds })) });
+      setLines([blankLine()]); setStake(""); onPlaced();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return <Panel title="NEW SLIP" right={board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"}>
+    <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay.</div>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8, fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}><span>PICK</span><span>ODDS</span><span/></div>
+    {read.map((x, i) => {
+      const last = i === read.length - 1;
+      return <div key={x.l.id} style={{ marginBottom: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8 }}>
+          <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={fieldStyle()}/>
+          <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: e.target.value.replace(/[^\d+-]/g, "").slice(0, 7) })} placeholder="-110" inputMode="numeric" style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>
+          {last
+            ? <button aria-label="add a line" onClick={() => setLines(ls => [...ls, blankLine()])} style={{ ...btnStyle(), padding: 0, fontSize: 18 }}>+</button>
+            : <button aria-label={`remove line ${i + 1}`} onClick={() => setLines(ls => ls.filter(l => l.id !== x.l.id))} style={{ ...btnStyle(false), padding: 0, fontSize: 16, cursor: "pointer", color: T.dim }}>×</button>}
+        </div>
+        <PickMatch x={x} onChoose={leg => set(x.l.id, { choice: leg })}/>
+      </div>;
+    })}
+    <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "4px 0 6px" }}>BET AMOUNT</div>
+    <div style={{ position: "relative" }}>
+      <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: T.dim, fontFamily: F.d }}>$</span>
+      <input aria-label="bet amount" value={stake} onChange={e => setStake(e.target.value.replace(/[^\d.]/g, "").slice(0, 10))} placeholder="10.00" inputMode="decimal" style={{ ...fieldStyle(), paddingLeft: 26, fontFamily: F.d }}/>
+    </div>
+    <div style={{ marginTop: 12, border: `1px solid ${T.line}`, background: "rgba(143,0,255,.07)", padding: "12px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
+        <span style={{ ...oneLine, fontFamily: F.d, fontSize: 11, letterSpacing: 2, color: T.chrome }}>{used.length > 1 ? `PARLAY · ${used.length} LEGS` : "STRAIGHT BET"}</span>
+        <span style={{ fontFamily: F.d, fontSize: 20, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" }}>{price ? fmtAm(price.am) : "–"}</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 10 }}>
+        {[["BET", amt > 0 ? cash(amt) : "–"], ["TO WIN", price?.profit != null ? cash(price.profit) : "–"], ["PAYOUT", price?.payout != null ? cash(price.payout) : "–"]].map(([k, v]) =>
+          <div key={k} style={{ minWidth: 0 }}><div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div><div style={{ ...oneLine, fontFamily: F.d, fontSize: 14, color: k === "TO WIN" ? NEON.green : T.ink, marginTop: 3 }}>{v}</div></div>)}
+      </div>
+    </div>
+    {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
+    <button onClick={place} disabled={!canPlace} style={{ width: "100%", marginTop: 12, padding: 14, border: `1px solid ${canPlace ? T.chrome : T.line}`, background: canPlace ? "rgba(143,0,255,0.3)" : "none", color: canPlace ? "#fff" : T.faint, fontFamily: F.d, fontSize: 13, letterSpacing: 3, cursor: canPlace ? "pointer" : "not-allowed" }}>{busy ? "PLACING…" : "PLACE SLIP"}</button>
+    {board && board.reached < board.tried && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{board.tried - board.reached} of {board.tried} scoreboards didn't answer; some games may be missing.</div>}
+  </Panel>;
+}
+// under each line: which game it matched (or why it didn't), and other games it could mean
+function PickMatch({ x, onChoose }) {
+  if (x.empty) return null;
+  const box = c => ({ marginTop: 6, padding: "7px 10px", borderLeft: `2px solid ${c}`, background: `${c}12`, fontSize: 11, lineHeight: 1.5, color: T.ink });
+  if (x.res.status === "loading") return <div style={box(T.dim)}><span style={{ color: T.dim }}>Loading today's games…</span></div>;
+  if (!x.leg) return <div style={box(NEON.red)}><span style={{ color: "#FF8095" }}>{x.res.status === "empty" ? "Type a team or player and a bet." : "No game today or tomorrow matches that. Try the team's name, city or abbreviation."}</span></div>;
+  const l = x.leg, started = l.state !== "pre";
+  return <div style={box(started ? NEON.red : NEON.green)}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
+      <span style={{ color: "#fff", overflowWrap: "anywhere" }}>{started ? "✗ " : "✓ "}{legLabel(l)}</span>
+      <span style={{ color: T.dim, whiteSpace: "nowrap" }}>{SPORT_CFG[l.sport]?.label || l.sport}</span>
+    </div>
+    <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {started ? "already started, can't bet it" : whenTxt(l.date)}</div>
+    {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>Odds look like -110 or +150.</div>}
+    {!x.l.odds && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
+    {(x.res.others || []).length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+      <span style={{ color: T.faint }}>or:</span>
+      {x.res.others.map(o => <button key={`${o.sport}${o.eventId}${o.side}`} onClick={() => onChoose(o)} style={{ ...oneLine, maxWidth: "100%", padding: "3px 8px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer" }}>{legLabel(o)} · {SPORT_CFG[o.sport]?.label}</button>)}
+    </div>}
+  </div>;
+}
+
+// ---------- a bettor's page: numbers, then every slip ----------
+function Bettor({ path, mine = false, onChange, onBackBoard, username, onRenamed }) {
+  const [d, setD] = useState(null), [err, setErr] = useState(null), [rename, setRename] = useState(false);
+  const load = () => api("GET", path).then(setD).catch(e => setErr(e.message));
+  useEffect(() => { load(); }, [path]);
+  if (err) return <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>;
+  if (!d) return <Panel><div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div></Panel>;
+  const s = d.stats;
+  return <>
+    {onBackBoard && <button onClick={onBackBoard} style={{ ...btnStyle(), marginTop: 14 }}>◂ LEADERBOARD</button>}
+    {rename && <UsernamePanel current={username} onDone={u => { setRename(false); onRenamed && onRenamed(u); }}/>}
+    <Panel title={mine ? "MY NUMBERS" : d.username.toUpperCase()} right={mine ? <button onClick={() => setRename(!rename)} style={{ background: "none", border: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer", padding: 0, textDecoration: "underline" }}>{d.username} · change</button> : `${s.pending} pending`}>
+      <StatGrid s={s}/>
+      {Object.keys(s.bySport).length > 0 && <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {Object.entries(s.bySport).map(([sp, b]) => <span key={sp} style={{ padding: "4px 8px", border: `1px solid ${T.line}`, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{SPORT_CFG[sp]?.label || sp} <b style={{ color: T.ink }}>{b.W}-{b.L}</b> <span style={{ color: b.net >= 0 ? NEON.green : NEON.red }}>{sCash(b.net)}</span></span>)}
+      </div>}
+    </Panel>
+    <Panel title={mine ? "MY SLIPS" : "SLIPS"} right={`${d.slips.length} total`}>
+      {!d.slips.length && <div style={{ fontSize: 12, color: T.dim }}>{mine ? "No slips yet. Add one on NEW SLIP." : "No slips yet."}</div>}
+      {d.slips.map(sl => <SlipCard key={sl.id} sl={sl} canTakeBack={mine} onTakeBack={async () => { try { await api("DELETE", `slips/${sl.id}`); load(); onChange && onChange(); } catch (e) { setErr(e.message); } }}/>)}
+    </Panel>
+  </>;
+}
+function StatGrid({ s }) {
+  const cells = [["RECORD", `${s.W}-${s.L}${s.P ? `-${s.P}` : ""}`, T.ink], ["WIN %", pctTxt(s.pct), T.ink], ["NET", sCash(s.net), s.net > 0 ? NEON.green : s.net < 0 ? NEON.red : T.ink],
+    ["WON", cash(s.won), NEON.green], ["STAKED", cash(s.staked), T.ink], ["ROI", s.roi == null ? "–" : `${s.roi > 0 ? "+" : ""}${(s.roi * 100).toFixed(1)}%`, T.ink],
+    ["STREAK", s.streak || "–", s.streak?.[0] === "W" ? NEON.green : s.streak?.[0] === "L" ? NEON.red : T.ink], ["BEST WIN", s.best ? cash(s.best.profit) : "–", T.ink], ["PARLAYS", `${s.parlays.W}-${s.parlays.L}`, T.ink], ["PENDING", String(s.pending), T.chrome]];
+  return <div className="bb-stats" style={{ display: "grid", gap: 8 }}>
+    {cells.map(([k, v, c]) => <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, padding: "9px 10px", background: "rgba(9,2,17,.5)" }}>
+      <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div>
+      <div style={{ ...oneLine, fontFamily: F.d, fontSize: "clamp(13px,3.4vw,15px)", fontWeight: 700, color: c, marginTop: 3 }}>{v}</div>
+    </div>)}
+  </div>;
+}
+function SlipCard({ sl, canTakeBack, onTakeBack }) {
+  const c = STATUS_C[sl.status], open = sl.status === "pending" && sl.legs.every(l => !l.res && Date.parse(l.date) > Date.now());
+  const mark = r => (r === "W" ? ["✓", NEON.green] : r === "L" ? ["✗", NEON.red] : r === "P" ? ["P", T.dim] : ["•", T.faint]);
+  return <div style={{ marginTop: 10, border: `1px solid ${c}66`, background: `${c}0d`, padding: "10px 12px" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
+      <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: c }}>{sl.status.toUpperCase()}</span>
+      <span style={{ ...oneLine, fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}</span>
+      <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{fmtAm(sl.odds)}</span>
+    </div>
+    <div style={{ marginTop: 8 }}>
+      {sl.legs.map((l, i) => { const [m, mc] = mark(l.res); return <div key={i} style={{ display: "grid", gridTemplateColumns: "14px minmax(0,1fr) auto", gap: 8, alignItems: "baseline", padding: "4px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+        <span style={{ color: mc, fontWeight: 700 }}>{m}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: T.ink, overflowWrap: "anywhere" }}>{legLabel(l)}</div>
+          <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere", marginTop: 1 }}>{shortGame(l)}{l.final && l.sport !== "Tennis" && l.sport !== "MMA" ? ` · final ${l.final.a}-${l.final.h}` : l.res ? "" : ` · ${whenTxt(l.date)}`}</div>
+        </div>
+        <span style={{ fontFamily: F.d, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{fmtAm(l.odds)}</span>
+      </div>; })}
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}` }}>
+      <span style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Bet <b style={{ color: T.ink }}>{cash(sl.stake)}</b>{sl.status === "pending" ? <> · to win <b style={{ color: NEON.green }}>{cash(sl.stake * (amToDec(sl.odds) - 1))}</b></> : sl.status === "won" ? <> · won <b style={{ color: NEON.green }}>{cash(sl.profit)}</b></> : sl.status === "lost" ? <> · lost <b style={{ color: NEON.red }}>{cash(sl.stake)}</b></> : " · refunded"}</span>
+      {canTakeBack && open ? <button onClick={onTakeBack} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 10, padding: "4px 8px", cursor: "pointer", whiteSpace: "nowrap" }}>take back</button> : <span/>}
+    </div>
+  </div>;
+}
+
+// ---------- leaderboards: by record ("5 for 7") and by money ----------
+function Leaderboard({ onOpen }) {
+  const [d, setD] = useState(null), [err, setErr] = useState(null);
+  useEffect(() => { api("GET", "board").then(setD).catch(e => setErr(e.message)); }, []);
+  if (err) return <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>;
+  if (!d) return <Panel><div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div></Panel>;
+  const row = (p, i, right, sub) => <button key={p.username} onClick={() => onOpen(p.username)} style={{ display: "grid", gridTemplateColumns: "26px minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", padding: "10px 4px", border: "none", borderTop: i ? `1px solid ${T.line}` : "none", background: p.you ? "rgba(143,0,255,.14)" : "none", cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
+    <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: i === 0 ? NEON.gold : i === 1 ? NEON.silver : i === 2 ? "#E08A4F" : T.dim, textAlign: "center" }}>{i + 1}</span>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ ...oneLine, fontSize: 13, color: "#fff" }}>{p.username}</div>
+      <div style={{ fontSize: 10, color: T.faint, lineHeight: 1.5, marginTop: 1 }}>{p.you ? <span style={{ color: T.chrome }}>you · </span> : null}{sub}</div>
+    </div>
+    <span style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", color: right.c }}>{right.v}</span>
+  </button>;
+  return <>
+    <Panel title="BY RECORD" right="win %, then wins">
+      {!d.record.length && <div style={{ fontSize: 12, color: T.dim }}>No graded bets yet. The board fills in as games finish.</div>}
+      {d.record.map((p, i) => row(p, i, { v: `${p.W}-${p.L}`, c: T.ink }, `${pctTxt(p.pct)} · ${p.W} for ${p.W + p.L}${p.P ? ` · ${p.P} push` : ""}${p.streak ? ` · streak ${p.streak}` : ""}`))}
+    </Panel>
+    <Panel title="BY MONEY" right="net winnings">
+      {!d.money.length && <div style={{ fontSize: 12, color: T.dim }}>No graded bets yet.</div>}
+      {d.money.map((p, i) => row(p, i, { v: sCash(p.net), c: p.net > 0 ? NEON.green : p.net < 0 ? NEON.red : T.ink }, `won ${cash(p.won)} · ROI ${p.roi != null ? `${p.roi > 0 ? "+" : ""}${(p.roi * 100).toFixed(1)}%` : "–"}`))}
+    </Panel>
+    {d.waiting.length > 0 && <div style={{ fontSize: 11, color: T.faint, marginTop: 10, lineHeight: 1.6 }}>Not ranked yet (no graded bets): {d.waiting.join(", ")}</div>}
+  </>;
+}
+
 export default function App() {
   useEffect(()=>{try{document.title="Bobby's Boardroom";}catch(_){/* no document */}},[]);
   const [phase,setPhase]=useState("setup");
@@ -2811,6 +3078,7 @@ export default function App() {
 
   if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
   if (phase==="indivMatch"&&indivMatch) return <IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
+  if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")}/>;
   if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
   if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
   if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
@@ -2821,6 +3089,6 @@ export default function App() {
   }
   if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
+    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
     onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport})}/>;
 }

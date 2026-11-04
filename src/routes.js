@@ -258,7 +258,7 @@ export function liveBoard(j, sport) {
     const H = (c.competitors || []).find(x => x.homeAway === "home"), A = (c.competitors || []).find(x => x.homeAway === "away");
     if (!H || !A) continue;
     const s = stOf(c, e);
-    const side = x => ({ name: x.team?.shortDisplayName || x.team?.displayName || "", full: x.team?.displayName || "", abbr: x.team?.abbreviation || "", score: s.state === "pre" ? "" : String(x.score ?? ""), win: x.winner === true });
+    const side = x => ({ name: x.team?.shortDisplayName || x.team?.displayName || "", full: x.team?.displayName || "", abbr: x.team?.abbreviation || "", nick: x.team?.name || "", loc: x.team?.location || "", score: s.state === "pre" ? "" : String(x.score ?? ""), win: x.winner === true });
     out.push({ id: String(e.id), date: e.date, league, note: "", ...s, away: side(A), home: side(H) });
   }
   return out;
