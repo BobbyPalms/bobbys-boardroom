@@ -882,7 +882,20 @@ async function fetchSlate(sport) {
 const SLATE_TTL_MS = 20 * 60 * 1000;
 const slateMem = {}, slateFlight = {};
 const etDay = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-const slateKey = sport => `boardroom.slate.v3.${sport}.${etDay()}`;
+// The build id is in the key, so a new version of the model never shows picks priced by the old one.
+const BUILD_ID = typeof __BUILD__ !== "undefined" ? __BUILD__ : "dev";
+const SLATE_PREFIX = "boardroom.slate.";
+const slateKey = sport => `${SLATE_PREFIX}${BUILD_ID}.${sport}.${etDay()}`;
+// Drop cached slates from other days or older builds, so they never crowd out the results tracker in storage.
+function pruneSlates() {
+  try {
+    const keep = `${SLATE_PREFIX}${BUILD_ID}.`, day = `.${etDay()}`;
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(SLATE_PREFIX) && !(k.startsWith(keep) && k.endsWith(day))) localStorage.removeItem(k);
+    }
+  } catch (_) { /* storage unavailable */ }
+}
 function peekSlate(sport) {
   const hit = slateMem[sport];
   if (hit && hit.day === etDay() && Date.now() - hit.t < SLATE_TTL_MS) return hit;
@@ -906,6 +919,7 @@ function getSlate(sport, { force = false, onRetry } = {}) {
     const rec = { t: Date.now(), day: etDay(), data };
     if (data.games.length) {                                   // never cache an empty result
       slateMem[sport] = rec;
+      pruneSlates();
       try { localStorage.setItem(slateKey(sport), JSON.stringify({ t: rec.t, data })); } catch (_) { /* ignore */ }
     }
     return rec;
@@ -1225,9 +1239,27 @@ function trackLoad() {
   let x = null;
   try { x = JSON.parse(localStorage.getItem(TRACK_LS) || "null"); } catch (_) { x = null; }
   _trackMem = x && typeof x === "object" && x.games && typeof x.games === "object" ? x : { v: 1, games: {}, learnOn: true };
+  for (const [k, g] of Object.entries(_trackMem.games)) if (!validGame(g)) delete _trackMem.games[k];   // a damaged record never breaks the app
   return _trackMem;
 }
-function trackSave(st) { _trackMem = st; try { localStorage.setItem(TRACK_LS, JSON.stringify(st)); return true; } catch (_) { return false; } }
+// Browser storage holds about 5 MB. When the log outgrows it, games that were never graded and are more than three days
+// old go first (they can no longer teach anything), then the oldest graded games, so the newest results always save.
+function trackSave(st) {
+  _trackMem = st;
+  const put = () => { try { localStorage.setItem(TRACK_LS, JSON.stringify(st)); return true; } catch (_) { return false; } };
+  if (put()) return true;
+  pruneSlates();
+  if (put()) return true;
+  const cut = new Date(Date.now() - 3 * 864e5).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  for (const [k, g] of Object.entries(st.games)) if (!g.result && g.day < cut) delete st.games[k];
+  if (put()) return true;
+  const graded = Object.values(st.games).filter(g => g.result).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  for (let drop = Math.ceil(graded.length / 10); graded.length; drop = Math.ceil(graded.length / 10)) {
+    graded.splice(0, drop).forEach(g => delete st.games[g.key]);
+    if (put()) return true;
+  }
+  return put();
+}
 function trackStorageOK() { try { localStorage.setItem("__bb_probe", "1"); localStorage.removeItem("__bb_probe"); return true; } catch (_) { return false; } }
 function dayISO(label) {                                   // "Tue Nov 3" -> "2026-11-03" (falls back to today, ET)
   const now = new Date(), y = now.getFullYear();
@@ -1238,6 +1270,8 @@ function dayISO(label) {                                   // "Tue Nov 3" -> "20
   const d = new Date(t);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+const validGame = g => !!(g && typeof g === "object" && g.key && g.sport && SPORT_CFG[g.sport] && typeof g.day === "string" && Array.isArray(g.plays) && g.away && g.home
+  && g.p && Number.isFinite(g.p.h) && Number.isFinite(g.p.a) && (g.proj == null || Number.isFinite(g.proj.total)));
 const trackKey = (sport, day, a, h) => `${sport}|${day}|${a}@${h}`;
 const PLAY_FIELDS = b => ({ key: b.key, market: b.market, side: b.side, line: b.line, odds: b.odds, label: b.label, wc: b.wc, fair: b.fair, ev: b.ev, edge: b.edge });
 function snapRecord(sport, day, r, source) {
@@ -1391,7 +1425,7 @@ function trackImport(text) {
   if (!games || typeof games !== "object") throw new Error("That isn't a Boardroom results export.");
   const st = trackLoad(); let n = 0;
   for (const [k, g] of Object.entries(games)) {
-    if (!g || typeof g !== "object" || !g.sport || !SPORT_CFG[g.sport] || !Array.isArray(g.plays) || !g.away || !g.home) continue;
+    if (!validGame(g) || g.key !== k) continue;
     const old = st.games[k];
     if (!old || (!old.result && g.result)) { st.games[k] = g; n++; }
   }
