@@ -101,7 +101,7 @@ export function parseStandings(j) {
       let gpg = statOf(st, "avgPointsFor"), gaa = statOf(st, "avgPointsAgainst");
       if (!(gpg > 0) && pf > 0 && gp > 0) gpg = pf / gp;
       if (!(gaa > 0) && pa > 0 && gp > 0) gaa = pa / gp;
-      if (gp > 0 && gpg > 0 && gaa > 0) out[id] = { id, abbr: t.abbreviation || "", name: t.displayName || "", gp, gpg, gaa, w, l, t: ti + ot };
+      if (gp > 0 && gpg > 0 && gaa > 0) out[id] = { id, abbr: t.abbreviation || "", name: t.displayName || "", short: t.shortDisplayName || "", nick: t.name || "", loc: t.location || "", gp, gpg, gaa, w, l, t: ti + ot };
     }
     for (const c of node.children || []) walk(c);
   };
@@ -154,7 +154,7 @@ export function parseScoreboard(j, sport, { standings = {}, hist = {}, lg = null
       const form = typeof comp.form === "string" ? comp.form.slice(-5) : "";
       const avgPts = statOf(comp.statistics, "avgPoints", "avgGoals", "avgRuns");
       const out = {
-        id, name: t.displayName || t.name || "", abbr: t.abbreviation || "", color: t.color ? "#" + t.color : "", rec,
+        id, name: t.displayName || t.name || "", abbr: t.abbreviation || "", short: t.shortDisplayName || "", nick: t.name || "", loc: t.location || "", color: t.color ? "#" + t.color : "", rec,
         gp: cur?.gp ?? null, gpg: cur?.gpg ?? avgPts ?? null, ga: cur?.gaa ?? null,
         pgpg: prev?.gpg ?? null, pga: prev?.gaa ?? null, pgp: prev?.gp ?? null,
         gk: pr?.athlete?.displayName || null, gkId: pr?.athlete?.id ? String(pr.athlete.id) : null, lineup: null, rest: null, miles: null,
@@ -380,4 +380,29 @@ export function matchSplit(game, list) {
   }
   out.src = [...used].join(" + ") || all[0].src;
   return out;
+}
+
+// ---------- typed team names: "UMass", "Ball St", "Mass", "Minutemen", "Massachusetts Minutemen" all find the same team ----------
+// Scores one team against what was typed: 3 = exact (any of its names or the abbreviation), 2 = clearly the same team
+// (every typed word is in its full name, or a name starts with it), 1 = nickname / last word only, 0 = no.
+const ALIAS = { "st": ["state", "saint"], "u": ["university"], "univ": ["university"], "mt": ["mount"], "ft": ["fort"], "n": ["north"], "s": ["south"], "e": ["east"], "w": ["west"] };
+function variants(q) {
+  const base = norm(q).replace(/\b(the|university of|univ of)\b/g, " ").replace(/\s+/g, " ").trim();
+  const out = new Set([base]);
+  for (const [k, vs] of Object.entries(ALIAS)) if (new RegExp(`\\b${k}\\b`).test(base)) for (const v of vs) out.add(base.replace(new RegExp(`\\b${k}\\b`, "g"), v));
+  return [...out].filter(Boolean);
+}
+export function teamQueryScore(t, q) {
+  if (!t || !q) return 0;
+  const full = norm(t.name), names = [t.name, t.short, t.loc, t.nick, t.abbr, t.loc && t.nick ? `${t.loc} ${t.nick}` : ""].map(norm).filter(Boolean);
+  const words = new Set(names.join(" ").split(" "));
+  let best = 0;
+  for (const v of variants(q)) {
+    if (names.includes(v)) return 3;
+    const vw = v.split(" ");
+    if (v.length >= 3 && (vw.every(w => words.has(w)) || names.some(n => n.startsWith(v + " ") || (v.length >= 4 && n.startsWith(v))))) best = Math.max(best, 2);
+    else if (v.length >= 4 && full.includes(v)) best = Math.max(best, 2);
+    else if (vw.includes(full.split(" ").pop())) best = Math.max(best, 1);
+  }
+  return best;
 }

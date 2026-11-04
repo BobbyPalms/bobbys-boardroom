@@ -1,4 +1,4 @@
-import { parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { teamQueryScore, parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -126,5 +126,14 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
      { src: "DraftKings", t: "2026-11-05T00:40:00.000Z", a: { abbr: "CHI", name: "CHI Blackhawks", nick: "Blackhawks" }, h: { abbr: "FLA", name: "FLA Panthers", nick: "Panthers" }, ml: { a: [15, 6], h: [85, 94], d: null }, sp: { line: 1.5, a: [17, 0], h: [83, 100] }, tot: { line: 5.5, o: [60, 70], u: [40, 30] } }]);
   check("match: a market one source hasn't posted comes from the other", mix && mix.ml.a.join() === "21,26" && mix.sp.a.join() === "17,0" && mix.tot.o.join() === "60,70" && mix.src === "Action Network + DraftKings", mix);
   check("splits urls", anSplitsUrl("CBB", "20261103").includes("ncaab?bookIds=15&periods=event&date=20261103&division=D1") && dkSplitsUrl("42648", "today", 2).endsWith("tb_eg=42648&tb_edate=today&tb_page=2") && anSplitsUrl("Tennis", "x") === null);
+}
+// typed team names
+{
+  const U = { name: "Massachusetts Minutemen", short: "UMass", nick: "Minutemen", loc: "Massachusetts", abbr: "MASS" }, B = { name: "Ball State Cardinals", short: "Ball State", nick: "Cardinals", loc: "Ball State", abbr: "BALL" };
+  check("team names: short name, abbreviation, location, nickname, any case", ["UMass", "umass", "MASS", "Massachusetts", "Minutemen", "Massachusetts Minutemen"].every(q => teamQueryScore(U, q) === 3));
+  check("team names: 'St' / 'St.' for State", teamQueryScore(B, "Ball St") === 3 && teamQueryScore(B, "ball st.") === 3 && teamQueryScore(B, "Ball State") === 3);
+  check("team names: a different team doesn't match", teamQueryScore(U, "Ball State") === 0 && teamQueryScore(B, "UMass") === 0 && teamQueryScore(U, "Michigan") === 0);
+  const sb = parseScoreboard({ events: [event({ id: "c1", away: { ...competitor({ id: "2050", abbr: "BALL", name: "Ball State Cardinals", ha: "away" }) }, home: competitor({ id: "113", abbr: "MASS", name: "Massachusetts Minutemen", ha: "home" }) })] }, "CFB", {});
+  check("scoreboard keeps the short name, nickname and location for matching", sb.length === 1 && "short" in sb[0].home && "nick" in sb[0].home && "loc" in sb[0].home, sb[0]?.home);
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

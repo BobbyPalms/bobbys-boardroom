@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { liveBoard, matchSplit, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, matchSplit, teamQueryScore, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -318,18 +318,22 @@ async function applySplits(games, sport) {
 async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
-  const norm = v => String(v || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
-  const score = (t, q) => { const a = norm(q), nm = norm(t.name), ab = norm(t.abbr); if (!a) return 0; if (a === ab || a === nm) return 3; if (nm.includes(a) || a.includes(nm)) return 2; const last = nm.split(" ").pop(); return a.split(" ").includes(last) ? 1 : 0; };
+  const score = teamQueryScore;   // abbreviations, short names (UMass), nicknames, "St" for State, either order
   const hist = await loadHistory(sport);
   let found = null, foundLeague = null;
   for (const league of R.leagues) {
     const ctx = await routeContext(sport, league, hist);
-    for (let k = 0; k < 8 && !found; k++) {
+    // the best match on the board wins (not the first loose one); a clear match on an earlier day stops the search
+    let best = null;
+    for (let k = 0; k < 8 && !(best && best.s >= 2); k++) {
       for (const g of await routeBoard(sport, league, k, ctx)) {
+        if (g.state === "post") continue;
         const s1 = Math.min(score(g.away, awayName), score(g.home, homeName)), s2 = Math.min(score(g.away, homeName), score(g.home, awayName));
-        if (Math.max(s1, s2) > 0 && g.state !== "post") { found = g; foundLeague = league; break; }
+        const sc = Math.max(s1, s2), tie = Math.max(score(g.away, awayName) + score(g.home, homeName), score(g.away, homeName) + score(g.home, awayName));
+        if (sc > 0 && (!best || sc > best.s || (sc === best.s && tie > best.t))) best = { g, s: sc, t: tie };
       }
     }
+    if (best) { found = best.g; foundLeague = league; }
     if (!found) {                                              // not on the schedule this week: build it from the standings alone
       const teams = Object.values(ctx.standings.cur), pick = q => teams.map(t => [t, score(t, q)]).sort((a, b) => b[1] - a[1])[0];
       const a = pick(awayName), h = pick(homeName);
@@ -1784,7 +1788,9 @@ function LiveScores({ sport }) {
     return () => { alive = false; clearTimeout(timer); };
   }, [sport]);
   const cfg = SPORT_CFG[sport], rows = st.sport === sport ? st.rows : null;
-  const live = (rows || []).filter(r => r.state === "in"), show = live.length ? live : rows || [];
+  // every game today: live ones first, then the ones still to start (by start time), then the finals
+  const live = (rows || []).filter(r => r.state === "in"), byT = (a, b) => String(a.date).localeCompare(String(b.date));
+  const show = [...live, ...(rows || []).filter(r => r.state === "pre").sort(byT), ...(rows || []).filter(r => r.state === "post").sort(byT)];
   const what = sport === "Tennis" ? "matches" : sport === "MMA" ? "fights" : "games", one = { matches: "match", fights: "fight", games: "game" }[what];
   const side = (x, r) => <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
     <span style={{ fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -1792,7 +1798,7 @@ function LiveScores({ sport }) {
     </span>
     <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim, whiteSpace: "nowrap" }}>{x.score}</span>
   </div>;
-  return <Panel title={live.length ? "LIVE NOW" : "TODAY'S " + what.toUpperCase()} right={`${cfg.label}${rows ? ` · ${show.length}` : ""}`} color={live.length ? NEON.red : T.chrome}>
+  return <Panel title={live.length ? `LIVE NOW · ${live.length}` : "TODAY'S " + what.toUpperCase()} right={`${cfg.label}${rows ? ` · ${show.length} today` : ""}`} color={live.length ? NEON.red : T.chrome}>
     {!rows && !st.err && <div style={{ fontSize: 12, color: T.dim }}>Loading the {cfg.label} scoreboard…</div>}
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
     {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {what} today.</div>}
@@ -1806,7 +1812,7 @@ function LiveScores({ sport }) {
         {side(r.home, r)}
       </div>)}
     </div>}
-    {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? "Updates every 30 seconds." : "Updates every 2 minutes."}{live.length && rows.length > live.length ? ` ${rows.length - live.length} more ${rows.length - live.length === 1 ? one : what} today.` : ""}</div>}
+    {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
 function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,slateInfo,slateBusy,slateErr}){
