@@ -93,10 +93,14 @@ export function parseStandings(j) {
   const walk = node => {
     if (!node || typeof node !== "object") return;
     for (const e of node.standings?.entries || []) {
-      const t = e.team || {}, st = e.stats || [], id = String(t.id || "");
+      // only the season-total stats: college standings also carry home / away / conference splits under the same
+      // names (type "homerecord_wins" ...), and reading one of those mixed a home-only game count with season points
+      const t = e.team || {}, id = String(t.id || ""), all = e.stats || [];
+      const st = all.filter(x => x && !(typeof x.type === "string" && x.type.includes("_")));
       if (!id || out[id]) continue;
-      const w = statOf(st, "wins") || 0, l = statOf(st, "losses") || 0, ti = statOf(st, "ties") || 0, ot = statOf(st, "otLosses", "overtimeLosses") || 0;
-      const gp = statOf(st, "gamesPlayed") || (w + l + ti + ot);
+      const rec = String((st.find(x => x.name === "overall" || x.type === "total") || {}).displayValue || "").match(/^(\d+)-(\d+)(?:-(\d+))?$/);
+      const w = statOf(st, "wins") ?? (rec ? +rec[1] : 0), l = statOf(st, "losses") ?? (rec ? +rec[2] : 0), ti = statOf(st, "ties") || (rec && rec[3] ? +rec[3] : 0), ot = statOf(st, "otLosses", "overtimeLosses") || 0;
+      const gp = statOf(st, "gamesPlayed") || (rec ? +rec[1] + +rec[2] + (+rec[3] || 0) + ot : w + l + ti + ot);
       const pf = statOf(st, "pointsFor"), pa = statOf(st, "pointsAgainst");
       let gpg = statOf(st, "avgPointsFor"), gaa = statOf(st, "avgPointsAgainst");
       if (!(gpg > 0) && pf > 0 && gp > 0) gpg = pf / gp;

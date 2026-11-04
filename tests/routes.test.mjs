@@ -136,4 +136,13 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
   const sb = parseScoreboard({ events: [event({ id: "c1", away: { ...competitor({ id: "2050", abbr: "BALL", name: "Ball State Cardinals", ha: "away" }) }, home: competitor({ id: "113", abbr: "MASS", name: "Massachusetts Minutemen", ha: "home" }) })] }, "CFB", {});
   check("scoreboard keeps the short name, nickname and location for matching", sb.length === 1 && "short" in sb[0].home && "nick" in sb[0].home && "loc" in sb[0].home, sb[0]?.home);
 }
+// college standings: season totals, not the home / away splits that share the same stat names
+{
+  const S = (name, type, v) => ({ name, type, value: v, displayValue: String(v) });
+  const j = { children: [{ standings: { entries: [{ team: { id: "113", abbreviation: "MASS", displayName: "Massachusetts Minutemen" }, stats: [
+    S("pointsAgainst", "pointsagainst", 169), S("pointsFor", "pointsfor", 212), S("wins", "wins", 4), { name: "overall", type: "total", displayValue: "4-4" },
+    S("pointsFor", "homerecord_pointsfor", 106), S("wins", "homerecord_wins", 2), S("losses", "homerecord_losses", 0), S("losses", "awayrecord_losses", 4)] }] } }] };
+  const m = parseStandings(j)["113"];
+  check("college standings: games from the overall record, per-game from season totals", m && m.gp === 8 && m.w === 4 && m.l === 4 && Math.abs(m.gpg - 26.5) < 1e-9 && Math.abs(m.gaa - 21.125) < 1e-9, m);
+}
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
