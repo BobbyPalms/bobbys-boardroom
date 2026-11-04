@@ -183,6 +183,7 @@ export function parseScoreboard(j, sport, { standings = {}, hist = {}, lg = null
       id: String(ev.id), compId: String(c.id || ev.id), league, date: ev.date, time: etTime(ev.date), dayLabel: etDayLabel(ev.date),
       venue: c.venue?.fullName || "", neutral: c.neutralSite === true, lg,
       state: st.state || "pre", completed: st.completed === true, statusText: st.shortDetail || st.detail || "",
+      live: st.state === "in" ? { period: n(c.status?.period), clock: n(c.status?.clock), display: c.status?.displayClock || "", detail: st.shortDetail || st.detail || "" } : null,
       away, home,
       wx: c.venue?.indoor ? { dome: true, tempF: null, windMph: null, precip: null } : wx ? { dome: false, tempF: n(wx.temperature), windMph: null, precip } : null,
       mkt: mkt ? { ...mkt, pubAwayPct: null, pubOverPct: null, sharp: mv.sharp, rlm: false, steam: mv.steam, spreadMove: mv.spreadMove, totalMove: mv.totalMove } : null,
@@ -421,13 +422,23 @@ export function lastCompletedEvent(j, before = new Date().toISOString()) {
   return e ? { id: String(e.id), date: e.date, name: e.shortName || e.name || "" } : null;
 }
 const minutesOf = v => { const s = String(v ?? ""); const m = s.match(/^(\d+):(\d{2})$/); if (m) return +m[1] + +m[2] / 60; const x = Number(s); return Number.isFinite(x) ? x : null; };
+// A player's line from a game in progress (or finished): the handful of numbers that matter in that sport.
+const SOC = [["totalGoals", "G"], ["goalAssists", "A"], ["totalShots", "SH"], ["shotsOnTarget", "SOT"], ["saves", "SV"], ["goalsConceded", "GA"], ["yellowCards", "YC"], ["redCards", "RC"]];
+function socLine(stats, pos) {
+  const m = Object.fromEntries((stats || []).map(x => [x.name || x.abbreviation, Number(x.value ?? x.displayValue)]));
+  const gk = String(pos || "").startsWith("G");
+  return SOC.filter(([k, l]) => Number.isFinite(m[k]) && (m[k] > 0 || (gk && (l === "SV" || l === "GA")))).map(([k, l]) => `${m[k]} ${l}`).join(" · ");
+}
+const BOX = ["MIN", "PTS", "REB", "AST", "G", "A", "SOG", "TOI", "SA", "SV", "GA", "H-AB", "R", "RBI", "HR", "IP", "ER", "K"];
+const boxLine = st => BOX.filter(l => st[l] != null && st[l] !== "" && st[l] !== "--").map(l => `${st[l]} ${l}`).join(" · ");
 // One summary -> each team's players: who started, position, minutes and points from that game (when played).
 // Soccer posts its XI under "rosters" about an hour before kick-off; other sports show starters in the box score.
 export function parseLineups(j) {
   const teams = {};
   for (const r of j?.rosters || []) {
     const id = String(r.team?.id || ""); if (!id) continue;
-    const players = (r.roster || []).map((x, i) => ({ id: String(x.athlete?.id || i), name: x.athlete?.displayName || "", pos: x.position?.abbreviation || "", starter: x.starter === true, min: null, pts: null, order: Number(x.formationPlace) || 99 + i }))
+    const players = (r.roster || []).map((x, i) => ({ id: String(x.athlete?.id || i), name: x.athlete?.displayName || "", pos: x.position?.abbreviation || "", starter: x.starter === true, min: null, pts: null, order: Number(x.formationPlace) || 99 + i,
+      line: socLine(x.stats, x.position?.abbreviation), sub: x.subbedIn === true || x.subbedIn?.didSub === true }))
       .filter(p => p.name);
     teams[id] = { abbr: r.team?.abbreviation || "", formation: r.formation || "", players };
   }
@@ -442,7 +453,7 @@ export function parseLineups(j) {
         if (seen.has(aid)) continue;
         const st = Object.fromEntries(lab.map((l, i) => [l, (a.stats || [])[i]]));
         seen.set(aid, { id: aid, name: a.athlete?.displayName || "", pos: a.athlete?.position?.abbreviation || "", starter: a.starter === true, dnp: a.didNotPlay === true,
-          min: minutesOf(st.MIN ?? st.TOI), pts: Number.isFinite(Number(st.PTS)) ? Number(st.PTS) : null, order: k++ });
+          min: minutesOf(st.MIN ?? st.TOI), pts: Number.isFinite(Number(st.PTS)) ? Number(st.PTS) : null, order: k++, line: boxLine(st), stats: st });
       }
     }
     if (seen.size && !(teams[id]?.players?.some(x => x.starter))) teams[id] = { abbr: p.team?.abbreviation || teams[id]?.abbr || "", formation: teams[id]?.formation || "", players: [...seen.values()].filter(x => x.name) };

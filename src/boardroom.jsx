@@ -316,6 +316,24 @@ async function applySplits(games, sport) {
   if (!f?.games?.length) return;
   for (const g of games) { const s = matchSplit(g, f.games); if (s) g.splits = s; }
 }
+// How much of a game in progress is left (0-1), from the scoreboard's period and clock.
+const REG = { NBA: [4, 720], WNBA: [4, 600], CBBW: [4, 600], CBB: [2, 1200], NFL: [4, 900], CFB: [4, 900], NHL: [3, 1200] };
+function liveState(sport, g) {
+  const lv = g.live || {}, d = String(lv.detail || g.statusText || ""), hs = num(g.home?.score, 0), as = num(g.away?.score, 0);
+  let el = null;
+  if (sport === "Soccer") {
+    if (/^HT|half ?time/i.test(d)) el = 0.5;
+    else { const m = String(lv.display || d).match(/(\d+)'(?:\s*\+\s*(\d+))?/); const mins = m ? +m[1] : lv.clock != null ? lv.clock / 60 : null; if (mins != null) el = Math.min(mins, 90) / 90; }
+  } else if (sport === "MLB") {
+    const m = d.match(/(Top|Bot(?:tom)?|Mid(?:dle)?|End)\s+(?:of\s+)?(?:the\s+)?(\d+)/i);
+    if (m) { const inn = +m[2], w = /^top/i.test(m[1]) ? 0 : /^(mid|bot)/i.test(m[1]) ? 1 : 2; el = Math.min(0.99, ((inn - 1) * 2 + w) / 18); }
+  } else if (REG[sport] && lv.period != null) {
+    const [np, len] = REG[sport], p = lv.period, left = lv.clock != null ? Math.max(0, Math.min(len, lv.clock)) : len / 2;
+    el = /half ?time/i.test(d) ? 0.5 : p > np ? 0.99 : Math.min(0.995, ((p - 1) * len + (len - left)) / (np * len));
+  }
+  if (el == null) el = 0.5;
+  return { hs, as, el, rem: Math.max(0.005, 1 - el), label: d || lv.display || "in progress", period: lv.period ?? null, clock: lv.display || "" };
+}
 // Each side's lineup: the posted one if it's out (soccer XIs, box-score starters once a game is on); otherwise the
 // team's last game, with any starter now Out / Doubtful replaced by the next man up. Football is left to the QB rating.
 async function applyLineups(g, sport, league, raw, sum) {
@@ -325,8 +343,14 @@ async function applyLineups(g, sport, league, raw, sum) {
     const t = g[side];
     if (!t?.id) return;
     const posted = today[t.id];
+    const isGK = p => /^G/.test(String(p.pos || "")) && (sport === "Soccer" || sport === "NHL");
     if (posted?.official) {
-      t.lineupInfo = { status: "official", formation: posted.formation, players: posted.players.filter(p => p.starter).sort((a, b) => a.order - b.order), moves: [], out: [] };
+      const live = g.state === "in";
+      // live: everyone who has played, starters first, each with this game's numbers; before the start: the XI / starters
+      const players = posted.players.filter(p => p.starter || (live && !p.dnp && (p.line || p.sub))).sort((a, b) => (b.starter - a.starter) || a.order - b.order);
+      t.lineupInfo = { status: "official", live, formation: posted.formation, players, moves: [], out: [] };
+      const gk = posted.players.find(p => p.starter && isGK(p));
+      if (gk) { if (!t.gk || t.gk === "TBD") t.gk = gk.name; if (live && gk.line) t.gkNote = `Today: ${gk.line}`; }
       return;
     }
     try {
@@ -336,6 +360,8 @@ async function applyLineups(g, sport, league, raw, sum) {
       if (!L?.players?.some(p => p.starter)) return;
       const pl = probableLineup(L, (sum.injuries || []).filter(i => i.team === t.abbr), sport);
       t.lineupInfo = { status: "last", from: ev, formation: L.formation, players: pl.players, moves: pl.moves, out: pl.out, adj: pl.adj, lostShare: pl.lostShare };
+      const gk = pl.players.find(isGK);
+      if (gk && (!t.gk || t.gk === "TBD")) { t.gk = gk.name; t.gkNote = "started the last game in goal"; }
       if (pl.adj < 1) t.lineupAdj = pl.adj;
     } catch (_) { /* no lineup: the team is rated from its scoring */ }
   }));
@@ -394,6 +420,7 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   }
   md.sources = ["Live scoreboard, standings, odds & game summary routes (Public-ESPN-API)", "GitHub data job: past seasons, line snapshots, officials log"];
   if (found.splits) md.sources.push(`Public bets / money %: ${found.splits.src}`);
+  if (found.state === "in") md.live = liveState(sport, found);
   md.gameRef = { id: found.id || "", league: foundLeague, sport, state: found.state || "pre", q: { away: awayName, home: homeName, neutral: !!isNeutral },
     posted: { away: found.away?.lineupInfo?.status === "official", home: found.home?.lineupInfo?.status === "official" } };
   return md;
@@ -686,7 +713,11 @@ function buildPlan(home, away, sport, md, opts = {}) {
   // The expected scores above are final scores, which already contain overtime. The sim adds a point to the OT
   // winner, so take that point out of the regulation means to keep the expected total where it belongs.
   if (!SPORT_CFG[sport].hasDraw) { const c = 1 - tieProb(muH, muA, P) / (muH + muA); muH *= c; muA *= c; }
-  return { L, muH, muA, otP: otHomeProb(muH, muA, P), neutral, factors, learn: learn || null, parts: { home: H, away: A } };
+  // a game in progress: only the share of the game still to play is simulated, on top of the current score
+  const lv = opts.live !== undefined ? opts.live : md?.live || null;
+  const otP = otHomeProb(muH, muA, P);
+  if (lv && lv.rem < 1) { muH *= Math.max(0.005, lv.rem); muA *= Math.max(0.005, lv.rem); }
+  return { L, muH, muA, otP, neutral, factors, learn: learn || null, parts: { home: H, away: A }, live: lv && lv.rem < 1 ? lv : null };
 }
 
 function randn() { let u = 0; while (u === 0) u = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); }
@@ -714,7 +745,8 @@ function sampleNormalPair(plan, P) {                       // correlated normals
 
 function simulateGame(plan, sport) {
   const P = LEAGUE[sport], cfg = SPORT_CFG[sport];
-  const [hS, aS] = P.fam === "norm" ? sampleNormalPair(plan, P) : [sampleCount(plan.muH, P), sampleCount(plan.muA, P)];
+  let [hS, aS] = P.fam === "norm" ? sampleNormalPair(plan, P) : [sampleCount(plan.muH, P), sampleCount(plan.muA, P)];
+  if (plan.live) { hS += plan.live.hs; aS += plan.live.as; }    // a game in progress: what's left on top of the current score
   if (hS !== aS) return { hS, aS, extra: null };
   if (cfg.hasDraw) return { hS, aS, extra: "draw" };
   const hw = Math.random() < plan.otP;
@@ -808,12 +840,36 @@ function pricedBets(md, sim, sport) {
   try { bets = candidates({ md, sim, mkt: pm, neutral: plan.neutral }, px, sport, true); } catch (_) { bets = []; }
   return { px, bets, pm };
 }
+// The algo's call on a deep dive: the best-graded +EV bet (A, then B, then C), the likelier winner first inside a
+// grade. Best value is different: the biggest expected return, often a long shot.
+const GRADE_RANK = { A: 0, B: 1, C: 2 };
+function algoCall(bets, md) {
+  const pos = bets.filter(b => b.ev > 0).map(b => ({ b, g: gradeOf(b, md.dq ?? 5) })).filter(x => GRADE_RANK[x.g] != null);
+  pos.sort((x, y) => GRADE_RANK[x.g] - GRADE_RANK[y.g] || y.b.wc - x.b.wc);
+  return pos[0] || null;
+}
+const bestValue = bets => bets.filter(b => b.ev > 0).sort((a, b) => b.ev - a.ev)[0] || null;
+function callLines(bets, md, liveNote = true) {
+  const f1 = x => Number(x).toFixed(1), sg = x => (x > 0 ? "+" : "") + x, out = [];
+  if (!bets.length) return [md.live ? "No lines are posted for the rest of this game." : "No odds are posted yet, so this is a lean, not a priced bet."];
+  const v = bestValue(bets), c = algoCall(bets, md);
+  out.push(v ? `Best value: ${v.label}, the algo's ${(v.wc * 100).toFixed(1)}% against ${(v.fair * 100).toFixed(1)}% priced (${sg(f1(v.edge))} pts, ${sg((v.ev * 100).toFixed(1))}% expected return).` : "Best value: none. No side clears its price after the vig.");
+  if (md.live && liveNote) out.push("Best bet: no in-game call. These are the lines posted for the game, not live prices, and the algo only makes its call before the start.");
+  else out.push(c ? `Best bet (the algo's call): ${c.b.label}. Grade ${c.g}, ${(c.b.wc * 100).toFixed(1)}% to win against ${(c.b.fair * 100).toFixed(1)}% priced, ${sg(f1(c.b.edge))} pts. A quarter-Kelly stake is about ${(Math.max(0, c.b.kelly) / 4 * 100).toFixed(1)}% of a bankroll.` : "Best bet (the algo's call): pass. Nothing on the board earns a grade.");
+  return out;
+}
 // The short version of the rundown for the overview: why the model lands where it does, in a few sentences.
 function miniRundown(md, sim, sport) {
   const cfg = SPORT_CFG[sport], A = md.away, H = md.home, plan = sim.plan || {}, u = cfg.unitFull, out = [];
   const f1 = x => Number(x).toFixed(1), sg = x => (x > 0 ? "+" : "") + x, pctd = r => `${Math.abs((r - 1) * 100).toFixed(0)}%`;
   const homeFav = sim.homeWin >= sim.awayWin, fav = homeFav ? H : A, dog = homeFav ? A : H, fp = Math.max(sim.homeWin, sim.awayWin);
   const tot = sim.avgHome + sim.avgAway, mm = Math.abs(sim.avgHome - sim.avgAway);
+  if (md.live) {
+    const lv = md.live, lead = lv.hs === lv.as ? "level" : `${lv.hs > lv.as ? H.abbr : A.abbr} up ${Math.abs(lv.hs - lv.as)}`;
+    let pre = null; try { pre = runSimulations(md.home, md.away, sport, md, 4000, { neutral: plan.neutral, live: null }); } catch (_) { pre = null; }
+    out.push(`LIVE, ${lv.label}: ${A.abbr} ${lv.as}, ${H.abbr} ${lv.hs} (${lead}), with about ${Math.round(lv.rem * 100)}% of the game left. The sims play out the rest from here.`);
+    if (pre) out.push(`Before the start the model had ${pre.homeWin >= pre.awayWin ? H.abbr : A.abbr} at ${Math.max(pre.homeWin, pre.awayWin).toFixed(1)}%; from this score it's ${fav.abbr} ${fp.toFixed(1)}%. Still to come: about ${f1(plan.muA)} more ${u} for ${A.abbr} and ${f1(plan.muH)} for ${H.abbr}.`);
+  }
   out.push(`${fav.name} win ${fp.toFixed(1)}% of 10,000 simulations${cfg.hasDraw ? ` (draw ${sim.drawPct.toFixed(1)}%)` : ""}, with an average result of ${A.abbr} ${f1(sim.avgAway)}, ${H.abbr} ${f1(sim.avgHome)}: ${fav.abbr} by ${f1(mm)} and ${f1(tot)} ${u} in all.`);
   const P = plan.parts;
   if (P) {
@@ -833,8 +889,7 @@ function miniRundown(md, sim, sport) {
     if (pm.awaySpread != null) bits.push(`${fav.abbr} by ${f1(mm)} where the line says ${pm.awaySpread > 0 ? H.abbr : A.abbr} by ${Math.abs(pm.awaySpread)}`);
     out.push(`Against the market: ${bits.join(", and ")}.`);
   }
-  const best = bets.filter(b => b.ev > 0).sort((a, b) => b.kelly - a.kelly)[0];
-  out.push(best ? `Best value: ${best.label}, the algo's ${(best.wc * 100).toFixed(1)}% against ${(best.fair * 100).toFixed(1)}% priced (${sg(f1(best.edge))} pts).` : bets.length ? "No side clears its price after the vig, so the play is to pass." : "No odds are posted yet, so this is a lean, not a priced bet.");
+  out.push(...callLines(bets, md));
   const pb = md.publicBetting || {};
   if (pb.ats?.awayBetsPct != null) { const b = pb.ats.awayBetsPct, m = pb.ats.awayDollarsPct; out.push(`Public: ${Math.max(b, 100 - b)}% of spread bets on ${b >= 50 ? A.abbr : H.abbr}${m != null ? `, ${b >= 50 ? m : 100 - m}% of the money` : ""}${md.market?.sharpSide ? `; sharp side reads ${md.market.sharpSide === "home" ? H.abbr : A.abbr}` : ""}.`); }
   return out;
@@ -855,6 +910,19 @@ async function fetchRundown(md, sim, signals, sport) {
   const px = plan.muH ? priceGame(plan, sport, 1) : null;
   const poss = nm => /s$/i.test(nm) ? `${nm}'` : `${nm}'s`;
   const sections = [], add = (title, ...paras) => { const body = paras.filter(Boolean).join("\n\n"); if (body) sections.push({ title, body }); };
+
+  // 0 · a game in progress: where it is and where it's going
+  if (md.live) {
+    const lv = md.live;
+    let pre = null; try { pre = runSimulations(md.home, md.away, sport, md, 4000, { neutral: plan.neutral, live: null }); } catch (_) { pre = null; }
+    const lead = lv.hs === lv.as ? "level" : `${lv.hs > lv.as ? H.name : A.name} lead by ${Math.abs(lv.hs - lv.as)}`;
+    add("Live: where the game is",
+      `${lv.label}. ${A.abbr} ${lv.as}, ${H.abbr} ${lv.hs}: ${lead}. About ${Math.round(lv.el * 100)}% of the game has been played and ${Math.round(lv.rem * 100)}% is left.`,
+      pre ? `Before the start the model projected ${A.abbr} ${f1(pre.avgAway)}, ${H.abbr} ${f1(pre.avgHome)} and gave ${pre.homeWin >= pre.awayWin ? H.name : A.name} ${Math.max(pre.homeWin, pre.awayWin).toFixed(1)}%${cfg.hasDraw ? ` (draw ${pre.drawPct.toFixed(1)}%)` : ""}. ${(lv.hs - lv.as) - (pre.avgHome - pre.avgAway) * lv.el > 0.5 ? `${H.abbr} are ahead of that pace.` : (lv.hs - lv.as) - (pre.avgHome - pre.avgAway) * lv.el < -0.5 ? `${A.abbr} are ahead of that pace.` : "The game is running close to that script."}` : "");
+    add("Live: where it's going",
+      `The simulations play only what's left, at the same team strengths: about ${f1(plan.muA)} more ${u} for ${A.abbr} and ${f1(plan.muH)} for ${H.abbr}. That makes the projected final ${A.abbr} ${f1(sim.avgAway)}, ${H.abbr} ${f1(sim.avgHome)} (${f1(sim.avgAway + sim.avgHome)} total).`,
+      `From this score ${fav.name} win ${favP.toFixed(1)}%${cfg.hasDraw ? `, the draw ${sim.drawPct.toFixed(1)}%` : ""}${pre ? `, ${favP >= Math.max(pre.homeWin, pre.awayWin) ? "up" : "down"} from ${(fav === H ? pre.homeWin : pre.awayWin).toFixed(1)}% before the start` : ""}. ${dog.name} come back to win ${Math.min(sim.homeWin, sim.awayWin).toFixed(1)}% of the time.`);
+  }
 
   // 1 · the setup
   const when = [md.matchInfo?.game, md.matchInfo?.time].filter(Boolean).join(", ");
@@ -961,7 +1029,8 @@ async function fetchRundown(md, sim, signals, sport) {
   if ((A.gp || 0) < 8 || (H.gp || 0) < 8) risks.push("it's early in the season, so the current numbers are thin and the history carries a lot of the weight");
   if ((md.missing || []).length) risks.push(`some inputs weren't available (${md.missing.join(", ")})`);
   if (pm.awaySpread == null && pm.homeML == null) risks.push("there are no posted odds to check the projection against");
-  const best = bets.filter(b => b.ev > 0).sort((x, y) => y.kelly - x.kelly)[0];
+  const call = md.live ? null : algoCall(bets, md), best = call ? call.b : null;
+  if (md.live) risks.push("the lines shown were posted for the game, not live prices, and momentum swings aren't in the model");
   if (best?.capped) risks.push("the algo disagrees with the price by more than 10 points, which is more often a missing input than a real edge");
   if (sp.awayBetsPct != null && Math.max(sp.awayBetsPct, 100 - sp.awayBetsPct) >= 75) risks.push(`the public is lopsided on the spread (${Math.max(sp.awayBetsPct, 100 - sp.awayBetsPct)}% on one side)`);
   if (md.matchInfo?.injuryNote) risks.push("late injury news can move this line after the projection is made");
@@ -969,14 +1038,13 @@ async function fetchRundown(md, sim, signals, sport) {
   add("What could make this wrong", risks.length ? `Things to keep in mind: ${risks.join("; ")}.` : "No unusual risks: both sides are well sourced and the projection sits near the price.");
 
   // 12 · bottom line
-  const kellyQ = b => Math.max(0, b.kelly / 4) * 100;
-  const pos = bets.filter(b => b.ev > 0).sort((x, y) => y.kelly - x.kelly);
-  add("Bottom line",
-    best ? `Best value: ${best.label}. Edge ${sg(f1(best.edge))} points, expected return ${sg((best.ev * 100).toFixed(1))}% per unit. A quarter-Kelly stake would be about ${kellyQ(best).toFixed(1)}% of a bankroll.${pos.length > 1 ? ` Also positive: ${pos.slice(1, 3).map(b => `${b.label} (${sg(f1(b.edge))} pts)`).join(", ")}.` : ""}` : bets.length ? "No side clears its price after the vig, so the algo's play is to pass on this one." : `The lean is ${fav.name} at ${favP.toFixed(1)}%, but with no prices to compare it isn't a priced bet.`);
+  const pos = bets.filter(b => b.ev > 0).sort((x, y) => y.ev - x.ev);
+  add("Bottom line", ...callLines(bets, md), pos.length > 2 ? `Also positive: ${pos.slice(1, 4).map(b => `${b.label} (${sg(f1(b.edge))} pts)`).join(", ")}.` : bets.length ? "" : `The lean is ${fav.name} at ${favP.toFixed(1)}%, but with no prices to compare it isn't a priced bet.`);
 
   const edge = mT != null ? Math.abs(tot - mT) / mT : 0;
-  return { headline: `${A.abbr} at ${H.abbr}: ${favP >= 60 ? `${fav.abbr} clear favourite` : "close game"}${mT != null ? `, total ${tot > mT ? "leans over" : "leans under"}` : ""}${best ? `; best value ${best.label}` : ""}`, sections,
-    honestRead: best ? `${best.label} is the one the numbers like, by ${f1(best.edge)} points over a fair price. That's ${best.edge >= 5 ? "a real edge" : best.edge >= 3 ? "a solid but modest edge" : "a thin edge"}${risks.length ? `, with ${risks.length} thing${risks.length === 1 ? "" : "s"} to watch above` : ""}. It's a lean on probabilities, never a lock.` : edge < 0.02 && favP < 58 ? "No strong edge: the algo and the market mostly agree." : "The algo has a lean but the price already reflects it; passing is a fine play." };
+  return { headline: md.live ? `LIVE ${A.abbr} ${md.live.as} – ${H.abbr} ${md.live.hs} (${md.live.label}): ${fav.abbr} ${favP.toFixed(0)}% from here` : `${A.abbr} at ${H.abbr}: ${favP >= 60 ? `${fav.abbr} clear favourite` : "close game"}${mT != null ? `, total ${tot > mT ? "leans over" : "leans under"}` : ""}${best ? `; the algo's call: ${best.label}` : ""}`, sections,
+    honestRead: md.live ? `From ${md.live.as}–${md.live.hs} with ${Math.round(md.live.rem * 100)}% to play, ${fav.name} win ${favP.toFixed(1)}% of the simulations of what's left. Treat it as a read on the game, not a live bet.`
+      : best ? `${best.label} is the algo's call, grade ${call.g}, ${f1(best.edge)} points over a fair price. That's ${best.edge >= 5 ? "a real edge" : best.edge >= 3 ? "a solid but modest edge" : "a thin edge"}${risks.length ? `, with ${risks.length} thing${risks.length === 1 ? "" : "s"} to watch above` : ""}. It's a lean on probabilities, never a lock.` : edge < 0.02 && favP < 58 ? "No strong edge: the algo and the market mostly agree." : "The algo has a lean but the price already reflects it; passing is a fine play." };
 }
 
 // ─── SLATE: EVERY GAME ON THE BOARD, RANKED BY THE ALGO ───────────────────────
@@ -1158,7 +1226,7 @@ function slateGameToMatchData(g, sport) {
       name: String(t.name).trim(), abbr: ab, record: t.rec ? String(t.rec) : "", color: "", espnId: t.id || null, hist: Array.isArray(t.hist) ? t.hist : [],
       lineupInfo: t.lineupInfo || null, lineupAdj: nn(t.lineupAdj),
       gp: nn(t.gp), gpg, gaa: ga, prev: { gpg: nn(t.pgpg), gaa: nn(t.pga) }, xg: { f: nn(t.xgf), a: nn(t.xga) },
-      goalie: { name: t.gk ? String(t.gk) : "TBD", role: cfg.gkLabel, ...starter(t) },
+      goalie: { name: t.gk ? String(t.gk) : "TBD", role: cfg.gkLabel, note: t.gkNote ? String(t.gkNote) : "", ...starter(t) },
       skaters: lu == null ? [] : [0, 1, 2].map(() => ({ name: "Lineup avg", pos: "", rating: lu, pts: 0, note: "" })),
     };
   };
@@ -1248,23 +1316,27 @@ function pmfProbs(pmf, lo, L) {
 // `scale` divides the plan's scoring level (the slate's market-level guard; 1 = off).
 function priceGame(plan, sport, scale = 1) {
   const P = LEAGUE[sport], draw = SPORT_CFG[sport].hasDraw;
-  const rH = plan.muH / scale, rA = plan.muA / scale, otP = otHomeProb(rH, rA, P);
+  const rH = plan.muH / scale, rA = plan.muA / scale, otP = plan.live ? plan.otP : otHomeProb(rH, rA, P);
+  // a game in progress: the plan holds only the scoring still to come, so the final adds the current score
+  const lv = plan.live, dH = lv ? lv.hs : 0, dA = lv ? lv.as : 0;
   let pm, pt, mLo, tLo = 0;
   if (P.fam === "norm") {
-    const sd = SPREAD_SD[sport], mu = rH - rA, tot = rH + rA;
+    const sd0 = SPREAD_SD[sport], k = lv ? Math.sqrt(Math.max(0.01, lv.rem)) : 1, sd = { m: sd0.m * k, t: sd0.t * k };
+    const mu = rH - rA + dH - dA, tot = rH + rA + dH + dA;
     const D = Math.ceil(Math.abs(mu) + 7 * sd.m) + 1;
     mLo = -D; pm = [];
     for (let d = -D; d <= D; d++) pm.push(normCdf((d + 0.5 - mu) / sd.m) - normCdf((d - 0.5 - mu) / sd.m));
-    tLo = Math.max(0, Math.floor(tot - 7 * sd.t)); pt = [];
+    tLo = Math.max(dH + dA, Math.floor(tot - 7 * sd.t)); pt = [];
     for (let x = tLo; x <= Math.ceil(tot + 7 * sd.t); x++) pt.push(normCdf((x + 0.5 - tot) / sd.t) - normCdf((x - 0.5 - tot) / sd.t));
   } else {
     const K = scoreCap(P), a = countPmf(rH, P, K), b = countPmf(rA, P, K);
-    mLo = -K; pm = new Array(2 * K + 1).fill(0); pt = new Array(2 * K + 2).fill(0);
+    // i, j = scoring still to come; the final adds the current score (dH, dA). One spare slot each side for overtime.
+    mLo = dH - dA - K - 1; tLo = dH + dA; pm = new Array(2 * K + 3).fill(0); pt = new Array(2 * K + 2).fill(0);
     for (let i = 0; i <= K; i++) for (let j = 0; j <= K; j++) {
-      const w = a[i] * b[j];
-      if (i !== j) { pm[i - j + K] += w; pt[i + j] += w; }
-      else if (draw) { pm[K] += w; pt[2 * i] += w; }
-      else { pm[K + 1] += w * otP; pm[K - 1] += w * (1 - otP); pt[2 * i + 1] += w; }
+      const w = a[i] * b[j], im = i - j + K + 1;
+      if (i + dH !== j + dA) { pm[im] += w; pt[i + j] += w; }
+      else if (draw) { pm[im] += w; pt[i + j] += w; }
+      else { pm[im + 1] += w * otP; pm[im - 1] += w * (1 - otP); pt[i + j + 1] += w; }
     }
   }
   if (P.fam === "norm" && !draw) {                          // regulation tie -> overtime: margin +1 / -1, and the winner's extra point lands in the total
@@ -1632,6 +1704,7 @@ async function fetchFinals(sport, games) {
   return n;
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
+export const engine = { runSimulations, priceGame, liveState, LEAGUE };   // for the tests
 export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, SPORT_KEYS, TRACK_LS };
 // <<< SLATE ENGINE
 
@@ -1751,7 +1824,7 @@ function LineupBlock({ team, col, sport }) {
   const li = team.lineupInfo;
   if (!li) return null;
   const when = li.from?.date ? new Date(li.from.date).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "";
-  const head = li.status === "official" ? "OFFICIAL LINEUP · posted" : `PROBABLE LINEUP · last game${when ? ` (${when}${li.from?.name ? `, ${li.from.name}` : ""})` : ""}${li.moves?.length ? ", adjusted for injuries" : ""}`;
+  const head = li.status === "official" ? (li.live ? "LIVE · this game's lineup and stats" : "OFFICIAL LINEUP · posted") : `PROBABLE LINEUP · last game${when ? ` (${when}${li.from?.name ? `, ${li.from.name}` : ""})` : ""}${li.moves?.length ? ", adjusted for injuries" : ""}`;
   const stat = p => [p.min != null ? `${Math.round(p.min)} min` : "", p.pts != null ? `${p.pts} ${SPORT_CFG[sport].unit === "G" ? "pts" : SPORT_CFG[sport].unit}` : ""].filter(Boolean).join(" · ");
   return <div style={{ marginBottom: 10 }}>
     <div style={{ fontSize: 10, color: li.status === "official" ? NEON.green : T.chrome, letterSpacing: 1.5, marginBottom: 4 }}>{head}{li.formation ? ` · ${li.formation}` : ""}</div>
@@ -1761,7 +1834,8 @@ function LineupBlock({ team, col, sport }) {
         <div style={{ fontSize: 13, color: p.note ? col : T.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
         {p.note && <div style={{ fontSize: 10, color: T.faint, marginTop: 1 }}>{p.note}</div>}
       </div>
-      {li.status !== "official" && stat(p) && <div style={{ fontSize: 10, color: T.dim, flexShrink: 0 }}>{stat(p)}</div>}
+      {(li.status === "official" ? p.line : stat(p)) && <div style={{ fontSize: 10, color: li.live ? NEON.green : T.dim, flexShrink: 0, maxWidth: "48%", textAlign: "right" }}>{li.status === "official" ? p.line : stat(p)}</div>}
+      {li.live && !p.starter && <div style={{ fontSize: 9, color: T.faint, flexShrink: 0 }}>SUB</div>}
     </div>)}
     {li.out?.length > 0 && <div style={{ fontSize: 11, color: "#FF8095", marginTop: 6 }}>Out of last game's lineup: {li.out.map(o => `${o.name} (${o.status})`).join(", ")}{li.adj < 1 ? ` · about ${((1 - li.adj) * 100).toFixed(1)}% off their scoring` : ""}</div>}
     {li.status !== "official" && <div style={{ fontSize: 10, color: T.faint, marginTop: 4 }}>Switches to the posted lineup automatically when it's announced.</div>}
@@ -2286,6 +2360,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNot
     {/* HEADER */}
     <Panel color={favC} style={{marginTop:16}}>
       <div style={{textAlign:"center",fontSize:11,color:T.dim,marginBottom:12}}>{[info.league,info.game,info.venue,info.time].filter(Boolean).join(" · ")}</div>
+      {matchData.live&&<div style={{textAlign:"center",fontSize:12,color:NEON.red,marginTop:-6,marginBottom:12,fontFamily:F.d,letterSpacing:1}}>● LIVE · {matchData.live.label} · {matchData.away.abbr} {matchData.live.as} – {matchData.home.abbr} {matchData.live.hs} · simulating the {Math.round(matchData.live.rem*100)}% that's left</div>}
       {info.seriesContext&&<div style={{textAlign:"center",fontSize:11,color:T.chrome,marginBottom:10}}>{info.seriesContext}</div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",alignItems:"center",gap:12}}>
         <Team t={away} c={AWAY_C} al="right" banner={info.bannerAway}/>
