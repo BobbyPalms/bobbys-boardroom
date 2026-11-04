@@ -1,7 +1,7 @@
 name: Probe a source
-# Manual only: fetches a few pages from a GitHub runner and keeps them as a run artifact, to check a data source.
+# Manual only: fetches a few pages from a GitHub runner and pushes them to the 'probe' branch, to check a data source.
 on: { workflow_dispatch: {} }
-permissions: { contents: read }
+permissions: { contents: write }
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -16,5 +16,7 @@ jobs:
           get an_v1.json "https://api.actionnetwork.com/web/v1/scoreboard/ncaab?period=game&date=$(TZ=America/New_York date +%Y%m%d)"
           get an_v2.json "https://api.actionnetwork.com/web/v2/scoreboard/ncaab?bookIds=15,30,68,69,71,75,76,79&periods=event&date=$(TZ=America/New_York date +%Y%m%d)"
           get an_v2_nfl.json "https://api.actionnetwork.com/web/v2/scoreboard/nfl?bookIds=15,30&periods=event&week=10&seasonType=reg"
-      - uses: actions/upload-artifact@v4
-        with: { name: probe, path: out }
+      - run: |
+          cd out && git init -q -b probe && git add -A
+          git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
