@@ -427,7 +427,8 @@ const SOC = [["totalGoals", "G"], ["goalAssists", "A"], ["totalShots", "SH"], ["
 function socLine(stats, pos) {
   const m = Object.fromEntries((stats || []).map(x => [x.name || x.abbreviation, Number(x.value ?? x.displayValue)]));
   const gk = String(pos || "").startsWith("G");
-  return SOC.filter(([k, l]) => Number.isFinite(m[k]) && (m[k] > 0 || (gk && (l === "SV" || l === "GA")))).map(([k, l]) => `${m[k]} ${l}`).join(" · ");
+  const keeperOnly = l => l === "SV" || l === "GA";            // every player on the pitch is credited the goals conceded; only the keeper's matter
+  return SOC.filter(([k, l]) => Number.isFinite(m[k]) && (keeperOnly(l) ? gk : m[k] > 0)).map(([k, l]) => `${m[k]} ${l}`).join(" · ");
 }
 const BOX = ["MIN", "PTS", "REB", "AST", "G", "A", "SOG", "TOI", "SA", "SV", "GA", "H-AB", "R", "RBI", "HR", "IP", "ER", "K"];
 const boxLine = st => BOX.filter(l => st[l] != null && st[l] !== "" && st[l] !== "--").map(l => `${st[l]} ${l}`).join(" · ");
