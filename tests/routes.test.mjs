@@ -175,6 +175,16 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
   check("ratings: a scoring striker rates well", striker && striker.rating >= 85, striker);
   check("ratings: no stats, no rating", playerRating({}, "NBA") === null && playerRating({ splits: { categories: [cat("general", { minutes: 10 })] } }, "Soccer", "F") === null);
   check("athlete season url (soccer uses the competition's season type)", athleteSeasonUrl("Soccer", "uefa.champions", 2026, "134283").endsWith("/soccer/leagues/uefa.champions/seasons/2026/types/1/athletes/134283/statistics") && /types\/2\//.test(athleteSeasonUrl("NBA", "nba", 2027, "1")));
+  const fb = { boxscore: { players: [{ team: { id: "3" }, statistics: [
+    { name: "passing", labels: ["C/ATT", "YDS"], athletes: [{ athlete: { id: "q1", displayName: "Caleb Williams" }, stats: ["24/34", "247"] }] },
+    { name: "rushing", labels: ["CAR", "YDS"], athletes: [{ athlete: { id: "r1", displayName: "D'Andre Swift" }, stats: ["27", "69"] }, { athlete: { id: "r2", displayName: "Kalif Raymond" }, stats: ["1", "39"] }, { athlete: { id: "r3", displayName: "Third Back" }, stats: ["1", "2"] }] },
+    { name: "receiving", labels: ["REC", "YDS"], athletes: [{ athlete: { id: "w1", displayName: "Rome Odunze" }, stats: ["4", "87"] }, { athlete: { id: "w2", displayName: "Colston Loveland" }, stats: ["7", "65"] }] },
+    { name: "defensive", labels: ["TOT"], athletes: [{ athlete: { id: "d1", displayName: "Devin Bush" }, stats: ["6"] }] }] }] } };
+  const F = parseLineups(fb)["3"], st = F.players.filter(p => p.starter);
+  check("football: key players from the box score (passer, top 2 rushers, receivers, tacklers)", st.map(p => p.pos + ":" + p.name).join() === "QB:Caleb Williams,RB:D'Andre Swift,RB:Kalif Raymond,WR:Rome Odunze,WR:Colston Loveland,DEF:Devin Bush" && !F.players.find(p => p.name === "Third Back").starter, st.map(p => p.pos + ":" + p.name));
+  const qbR = playerRating({ splits: { categories: [cat("general", { gamesPlayed: 5 }), cat("passing", { completionPct: 70.9, netPassingYards: 1267, passingAttempts: 158, passingTouchdownPct: 3.8, interceptionPct: 0.63, interceptions: 1 })] } }, "NFL", "QB");
+  const defR = playerRating({ splits: { categories: [cat("general", { gamesPlayed: 8 }), cat("defensive", { totalTackles: 44, sacks: 2, tacklesForLoss: 5 })] } }, "NFL", "DEF");
+  check("football ratings: QB from yards per attempt, TD / INT rates and completions; defender from tackles and sacks", qbR && qbR.rating > 72 && /8 yds\/att/.test(qbR.why) && defR && defR.rating > 60, { qbR, defR });
   check("team schedule url", teamScheduleUrl("NBA", "nba", "15").endsWith("/basketball/nba/teams/15/schedule"));
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

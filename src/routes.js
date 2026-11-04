@@ -457,6 +457,20 @@ export function parseLineups(j) {
           min: minutesOf(st.MIN ?? st.TOI), pts: Number.isFinite(Number(st.PTS)) ? Number(st.PTS) : null, order: k++, line: boxLine(st), stats: st });
       }
     }
+    // football box scores don't mark starters: the key players are the passer, the top two rushers, the top three
+    // receivers and the top three tacklers (each group is listed best first)
+    if (![...seen.values()].some(x => x.starter)) {
+      const grp = nm => (p.statistics || []).find(g => g.name === nm)?.athletes || [];
+      const keys = [["passing", 1, "QB"], ["rushing", 2, "RB"], ["receiving", 3, "WR"], ["defensive", 3, "DEF"]];
+      if (grp("passing").length) {
+        let o = 0;
+        for (const [nm, k, pos] of keys) for (const a of grp(nm).slice(0, k)) {
+          const x = seen.get(String(a.athlete?.id || a.athlete?.displayName));
+          if (x && !x.starter) { x.starter = true; x.pos = pos; x.order = o++; }
+        }
+        for (const x of seen.values()) if (!x.starter && !x.pos) x.pos = (p.statistics || []).find(g => (g.athletes || []).some(a => String(a.athlete?.id) === x.id))?.name === "passing" ? "QB" : "";
+      }
+    }
     if (seen.size && !(teams[id]?.players?.some(x => x.starter))) teams[id] = { abbr: p.team?.abbreviation || teams[id]?.abbr || "", formation: teams[id]?.formation || "", players: [...seen.values()].filter(x => x.name) };
   }
   for (const t of Object.values(teams)) t.official = t.players.some(x => x.starter);
@@ -515,6 +529,24 @@ export function playerRating(j, sport, pos = "") {
       raw = 66 + 16 * p90("totalGoals") + 11 * p90("goalAssists") + 2.5 * p90("shotsOnTarget") + 1.2 * (p90("totalTackles") + p90("interceptions")) + ((m.passPct || 0.8) - 0.8) * 25;
       why = `${m.totalGoals || 0} G · ${m.goalAssists || 0} A in ${apps} apps${m.passPct ? ` · ${Math.round(m.passPct * 100)}% passing` : ""}`;
     }
+  } else if (sport === "NFL" || sport === "CFB") {
+    n = m.gamesPlayed || 0; if (!n) return null;
+    const pg = k => (m[k] || 0) / n;
+    if (pos === "QB" && m.passingAttempts > 0) {
+      const ypa = (m.netPassingYards || m.passingYards || 0) / m.passingAttempts, td = m.passingTouchdownPct ?? 100 * (m.passingTouchdowns || 0) / m.passingAttempts, int = m.interceptionPct ?? 100 * (m.interceptions || 0) / m.passingAttempts;
+      raw = 64 + (ypa - 6.5) * 6 + (td - 4) * 2.5 - (int - 2.5) * 3 + ((m.completionPct || 63) - 63) * 0.3;
+      why = `${r1(m.completionPct || 0)}% · ${r1(ypa)} yds/att · ${m.passingTouchdowns ?? Math.round(td * m.passingAttempts / 100)} TD, ${m.interceptions || 0} INT (${n} g)`;
+    } else if (pos === "RB" && m.rushingAttempts > 0) {
+      const ypc = (m.rushingYards || 0) / m.rushingAttempts;
+      raw = 60 + 0.25 * pg("rushingYards") + (ypc - 4.2) * 5 + 6 * pg("rushingTouchdowns");
+      why = `${r1(pg("rushingYards"))} rush yds/g · ${r1(ypc)} per carry · ${m.rushingTouchdowns || 0} TD (${n} g)`;
+    } else if (pos === "WR" && (m.receptions > 0 || m.receivingYards > 0)) {
+      raw = 60 + 0.25 * pg("receivingYards") + 1.2 * pg("receptions") + 8 * pg("receivingTouchdowns");
+      why = `${r1(pg("receptions"))} rec · ${r1(pg("receivingYards"))} yds a game · ${m.receivingTouchdowns || 0} TD (${n} g)`;
+    } else if (pos === "DEF" && (m.totalTackles > 0 || m.sacks > 0)) {
+      raw = 60 + 1.2 * pg("totalTackles") + 6 * pg("sacks") + 3 * pg("tacklesForLoss") + 4 * pg("passesDefended") + 10 * pg("interceptions");
+      why = `${r1(pg("totalTackles"))} tackles · ${m.sacks || 0} sacks · ${m.tacklesForLoss || 0} TFL (${n} g)`;
+    } else return null;
   } else if (sport === "MLB") {
     n = m.gamesPlayed || m.games || 0; if (!n) return null;
     if (m.OPS > 0 && !/^(SP|RP|P)$/.test(pos)) { raw = 40 + 45 * m.OPS; why = `${m.OPS.toFixed(3).replace(/^0/, "")} OPS${m.homeRuns ? ` · ${m.homeRuns} HR` : ""} (${n} g)`; }

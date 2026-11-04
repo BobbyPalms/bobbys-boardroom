@@ -335,9 +335,10 @@ function liveState(sport, g) {
   return { hs, as, el, rem: Math.max(0.005, 1 - el), label: d || lv.display || "in progress", period: lv.period ?? null, clock: lv.display || "" };
 }
 // Each side's lineup: the posted one if it's out (soccer XIs, box-score starters once a game is on); otherwise the
-// team's last game, with any starter now Out / Doubtful replaced by the next man up. Football is left to the QB rating.
+// team's last game, with any starter now Out / Doubtful replaced by the next man up. Football: the key players
+// (passer, top rushers, receivers and tacklers) from the box score.
 async function applyLineups(g, sport, league, raw, sum) {
-  if (!g?.id || sport === "NFL" || sport === "CFB") return;
+  if (!g?.id) return;
   const today = raw ? parseLineups(raw) : {};
   await Promise.all(["away", "home"].map(async side => {
     const t = g[side];
@@ -366,6 +367,20 @@ async function applyLineups(g, sport, league, raw, sum) {
     } catch (_) { /* no lineup: the team is rated from its scoring */ }
   }));
   await rateLineups(g, sport, league);
+  lineupEdge(g, sport);
+}
+// Tonight's lineup ratings against each other: each point of team rating above the two lineups' average is worth
+// 0.4% of scoring, scaled by how much of a full lineup was rated and capped at +-3%. Small on purpose: the team's
+// scoring already says most of this; the lineup adds who is actually playing tonight.
+const FULL_LINEUP = { NBA: 5, WNBA: 5, CBB: 5, CBBW: 5, NHL: 6, MLB: 9, Soccer: 11, NFL: 9, CFB: 9 };
+function lineupEdge(g, sport) {
+  const a = g.away?.lineupInfo, h = g.home?.lineupInfo;
+  if (!(a?.teamRating > 0) || !(h?.teamRating > 0)) return;
+  const mid = (a.teamRating + h.teamRating) / 2, full = FULL_LINEUP[sport] || 9;
+  for (const [t, li] of [[g.away, a], [g.home, h]]) {
+    const k = Math.min(1, li.rated / full), x = clampTo(1 + 0.004 * (li.teamRating - mid) * k, 0.97, 1.03);
+    t.lineupRtgAdj = x; li.edge = x;
+  }
 }
 // Every player in a lineup gets a rating from his season numbers (this season, else last season), and the keeper's
 // season numbers go to the keeper panels (and, in soccer, into the engine as the keeper's goals allowed).
@@ -382,6 +397,9 @@ async function rateLineups(g, sport, league) {
     }));
     // basketball: the "star" slot is the best-rated player in the lineup
     if (/NBA|WNBA|CBB/.test(sport) && (!t.gk || t.gk === "TBD")) { const top = li.players.filter(p => p.rating != null).sort((a, b) => b.rating - a.rating)[0]; if (top) { t.gk = top.name; t.gkNote = `rated ${top.rating} · ${top.why}`; } }
+    // the lineup's team rating: the average of its rated players (how many of a full lineup were rated is kept too)
+    const rated = li.players.filter(p => p.rating != null);
+    if (rated.length) { li.teamRating = rated.reduce((a, p) => a + p.rating, 0) / rated.length; li.rated = rated.length; }
     const kp = li.players.find(p => p.keeper && t.gk && nameEq(p.name, t.gk));
     if (kp && sport === "Soccer") { if (t.gks == null) t.gks = kp.keeper.ga90; if (t.gkn == null) t.gkn = kp.keeper.apps; t.gkSv = kp.keeper.sv; }
   }));
@@ -682,7 +700,8 @@ function starterRatio(t, sport) {
 // Today's lineup vs a typical one. Half-elasticity: the team's scoring already reflects its usual lineup.
 function lineupFactor(t, sport) {
   const sk = t.skaters || [];
-  if (!sk.length) return t.lineupAdj > 0 && t.lineupAdj <= 1 ? t.lineupAdj : 1;   // starters missing from the last lineup
+  // starters missing from the last lineup (basketball) and tonight's lineup rating against the opponent's
+  if (!sk.length) return (t.lineupAdj > 0 && t.lineupAdj <= 1 ? t.lineupAdj : 1) * (t.lineupRtgAdj > 0.9 && t.lineupRtgAdj < 1.1 ? t.lineupRtgAdj : 1);
   return clampTo(Math.pow(sk.reduce((a, p) => a + p.rating, 0) / sk.length / SPORT_CFG[sport].rRef, 0.5), 0.9, 1.1);
 }
 // NFL/CFB: the QB changes his OWN team's scoring (never the opponent's).
@@ -969,7 +988,8 @@ async function fetchRundown(md, sim, signals, sport) {
     if (P.useXG && t.xg?.f) bits.push(`Expected goals: ${f2(t.xg.f)} created, ${f2(t.xg.a)} conceded per game, counted at double weight because xG is steadier than goals.`);
     if (pt.sp != null) bits.push(`Today's ${cfg.gkLabel}, ${t.goalie?.name || "TBD"}, shifts what the other side faces by a ratio of ${f2(pt.sp)}${t.goalie?.svPct ? ` (save % ${(t.goalie.svPct * 100).toFixed(1)}${t.goalie.n ? ` over ${t.goalie.n} starts` : ""})` : t.goalie?.gaa ? ` (${f2(t.goalie.gaa)} allowed per game)` : ""}.`);
     if (pt.qb && Math.abs(pt.qb - 1) > 0.005) bits.push(`Quarterback adjustment: ${pt.qb > 1 ? "+" : ""}${((pt.qb - 1) * 100).toFixed(1)}% to their scoring (${t.goalie?.name || "starter"}, rating ${t.goalie?.rating ?? "n/a"}).`);
-    if (pt.lu && Math.abs(pt.lu - 1) > 0.005) bits.push(`Lineup strength moves their scoring ${pt.lu > 1 ? "up" : "down"} ${Math.abs((pt.lu - 1) * 100).toFixed(1)}%.`);
+    if (t.lineupInfo?.teamRating > 0) bits.push(`Tonight's lineup rates ${t.lineupInfo.teamRating.toFixed(1)} as a team (${t.lineupInfo.rated} rated players, ${t.lineupInfo.status === "official" ? "the posted lineup" : "last game's lineup"}).`);
+    if (pt.lu && Math.abs(pt.lu - 1) > 0.005) bits.push(`Lineup strength (who's playing, how they rate against the other side${t.lineupInfo?.moves?.length ? ", and who's missing" : ""}) moves their scoring ${pt.lu > 1 ? "up" : "down"} ${Math.abs((pt.lu - 1) * 100).toFixed(1)}%.`);
     return bits.join(" ");
   };
   add(`How the algo rates ${A.name}`, rate(A, "away"));
@@ -1246,7 +1266,7 @@ function slateGameToMatchData(g, sport) {
     if (lu == null && !(Array.isArray(t.hist) && t.hist.length >= 3)) missing.push(`${ab} lineup rating or past seasons`);
     return {
       name: String(t.name).trim(), abbr: ab, record: t.rec ? String(t.rec) : "", color: "", espnId: t.id || null, hist: Array.isArray(t.hist) ? t.hist : [],
-      lineupInfo: t.lineupInfo || null, lineupAdj: nn(t.lineupAdj),
+      lineupInfo: t.lineupInfo || null, lineupAdj: nn(t.lineupAdj), lineupRtgAdj: nn(t.lineupRtgAdj),
       gp: nn(t.gp), gpg, gaa: ga, prev: { gpg: nn(t.pgpg), gaa: nn(t.pga) }, xg: { f: nn(t.xgf), a: nn(t.xga) },
       goalie: { name: t.gk ? String(t.gk) : "TBD", role: cfg.gkLabel, note: t.gkNote ? String(t.gkNote) : "", ...starter(t) },
       skaters: lu == null ? [] : [0, 1, 2].map(() => ({ name: "Lineup avg", pos: "", rating: lu, pts: 0, note: "" })),
@@ -1840,6 +1860,24 @@ function FactorRow({factor,awayColor,homeColor,awayAbbr,homeAbbr}){
     </div>
     <div style={{fontSize:12,color:T.dim,marginTop:4}}>{factor.desc}</div>
     {factor.note&&<div style={{fontSize:11,color:T.faint,marginTop:2}}>{factor.note}</div>}
+  </div>;
+}
+// The lineup's team rating, shown above the team's scoring numbers, with what it's worth in tonight's projection.
+function TeamRating({ team, col }) {
+  const li = team.lineupInfo;
+  if (!(li?.teamRating > 0)) return null;
+  const r = li.teamRating, top = li.players.map(p => p.rating).filter(x => x != null).sort((a, b) => b - a).slice(0, 3);
+  const lit = Math.max(1, Math.min(10, Math.round((r - 60) / 3.7)));
+  return <div style={{ marginTop: 12, padding: "10px 12px", border: `1px solid ${col}66`, background: `${col}14` }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+      <div><div style={{ fontSize: 10, color: T.dim, letterSpacing: 1.5 }}>TEAM RATING</div>
+        <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{li.rated} rated player{li.rated === 1 ? "" : "s"}{top.length ? ` · top 3 avg ${(top.reduce((a, b) => a + b, 0) / top.length).toFixed(1)}` : ""}</div></div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontFamily: F.d, fontSize: 22, fontWeight: 700, color: col, textShadow: `0 0 10px ${col}88` }}>{r.toFixed(1)}</div>
+        <div style={{ display: "flex", gap: 1, justifyContent: "flex-end", marginTop: 2 }}>{Array.from({ length: 10 }, (_, i) => <i key={i} style={{ width: 5, height: 5, background: i < lit ? col : T.faint, opacity: i < lit ? 1 : .4 }} />)}</div>
+      </div>
+    </div>
+    {li.edge != null && <div style={{ fontSize: 10, color: T.dim, marginTop: 6 }}>In the projection: {li.edge >= 1 ? "+" : ""}{((li.edge - 1) * 100).toFixed(1)}% to their scoring against tonight's opponent lineup.</div>}
   </div>;
 }
 function LineupBlock({ team, col, sport }) {
@@ -2440,6 +2478,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNot
         <StatBar label="top-3 stars" valA={awayStr.topAvg} valB={homeStr.topAvg} colorA={AWAY_C} colorB={HOME_C} fmtA={awayStr.topAvg.toFixed(1)} fmtB={homeStr.topAvg.toFixed(1)}/></>}
         {away.has.gpg&&home.has.gpg&&<StatBar label={cfg.gLabel} valA={away.gpg} valB={home.gpg} colorA={AWAY_C} colorB={HOME_C} fmtA={away.gpg.toFixed(1)} fmtB={home.gpg.toFixed(1)}/>}
         {away.has.gaa&&home.has.gaa&&<StatBar label={`${cfg.dLabel} (lower is better)`} valA={away.gaa} valB={home.gaa} colorA={AWAY_C} colorB={HOME_C} fmtA={away.gaa.toFixed(2)} fmtB={home.gaa.toFixed(2)} lowerIsBetter/>}
+        {away.lineupInfo?.teamRating>0&&home.lineupInfo?.teamRating>0&&<StatBar label="lineup team rating" valA={away.lineupInfo.teamRating} valB={home.lineupInfo.teamRating} colorA={AWAY_C} colorB={HOME_C} fmtA={away.lineupInfo.teamRating.toFixed(1)} fmtB={home.lineupInfo.teamRating.toFixed(1)}/>}
         <StatBar label="algo scoring index (100 = league)" valA={sim.plan.parts.away.off.r*100} valB={sim.plan.parts.home.off.r*100} colorA={AWAY_C} colorB={HOME_C} fmtA={(sim.plan.parts.away.off.r*100).toFixed(0)} fmtB={(sim.plan.parts.home.off.r*100).toFixed(0)}/>
         <StatBar label="algo defense index (lower is better)" valA={sim.plan.parts.away.def.r*100} valB={sim.plan.parts.home.def.r*100} colorA={AWAY_C} colorB={HOME_C} fmtA={(sim.plan.parts.away.def.r*100).toFixed(0)} fmtB={(sim.plan.parts.home.def.r*100).toFixed(0)} lowerIsBetter/>
       </Panel>
@@ -2525,6 +2564,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNot
             <div style={{fontSize:11,color:T.dim,marginBottom:3}}>{team.lineupInfo?"":"roster"}</div>
             {(team.skaters||[]).map((p,j)=><SkaterRow key={j} player={p} color={col} sport={sport}/>)}
             {!(team.skaters||[]).length&&!team.lineupInfo&&<div style={{fontSize:11,color:T.dim,lineHeight:1.6}}>Lineups and player ratings aren't in the routes before a game, so the algo rates the team from its scoring and every past season instead.</div>}
+            <TeamRating team={team} col={col}/>
             <div style={{display:"flex",justifyContent:"space-between",marginTop:12,padding:"10px 12px",border:`1px solid ${col}44`,background:`${col}0D`}}>
               {[...((team.skaters||[]).length?[["avg rtg",str.avg.toFixed(1)],["top 3",str.topAvg.toFixed(1)]]:[]),[cfg.gLabel,team.gpg.toFixed(1)],[cfg.dLabel||"allowed",team.gaa.toFixed(1)]].map(([l,v])=><div key={l}><div style={{fontSize:10,color:T.dim}}>{l}</div><div style={{fontFamily:F.d,fontSize:16,fontWeight:700,color:col}}>{v}</div></div>)}
             </div>
