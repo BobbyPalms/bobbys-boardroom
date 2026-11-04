@@ -1842,25 +1842,25 @@ const Ico=({children})=><span style={{filter:"grayscale(1) brightness(1.5)"}}>{c
 function Ring({pct,color,size=108,label}){
   const [on,setOn]=useState(false);useEffect(()=>{const t=setTimeout(()=>setOn(true),90);return()=>clearTimeout(t);},[]);
   const c=size/2,r=c-9,C=2*Math.PI*r;
-  return <div style={{position:"relative",width:size,height:size,margin:"0 auto"}}>
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{transform:"rotate(-90deg)"}}>
+  return <div style={{position:"relative",width:"100%",maxWidth:size,aspectRatio:"1 / 1",margin:"0 auto"}}>
+    <svg width="100%" height="100%" viewBox={`0 0 ${size} ${size}`} style={{transform:"rotate(-90deg)"}}>
       <circle cx={c} cy={c} r={c-1.5} fill="none" stroke={color} strokeOpacity=".4" strokeDasharray="2 6" style={{transformOrigin:`${c}px ${c}px`,animation:"spin 28s linear infinite"}}/>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(143,0,255,0.22)" strokeWidth="7"/>
       <circle cx={c} cy={c} r={r} fill="none" stroke={color} strokeWidth="7" strokeDasharray={`${on?C*Math.min(pct,100)/100:0} ${C}`} style={{filter:`drop-shadow(0 0 6px ${color})`,transition:"stroke-dasharray 1.5s cubic-bezier(.2,.8,.2,1)"}}/>
     </svg>
     <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-      <div style={{fontFamily:F.d,fontSize:size*.19,fontWeight:700,color,textShadow:`0 0 10px ${color}88`}}>{pct.toFixed(1)}%</div>
-      <div style={{fontSize:11,color:T.dim,marginTop:2}}>{label}</div>
+      <div style={{fontFamily:F.d,fontSize:`min(${size*.19}px, ${(size*.19/108*26).toFixed(2)}vw)`,fontWeight:700,color,textShadow:`0 0 10px ${color}88`,whiteSpace:"nowrap"}}>{pct.toFixed(1)}%</div>
+      <div style={{fontSize:11,color:T.dim,marginTop:2,whiteSpace:"nowrap"}}>{label}</div>
     </div>
   </div>;
 }
 function StatBar({label,valA,valB,colorA,colorB,fmtA,fmtB,lowerIsBetter}){
   const g=v=>Math.max(v,0.01),eA=lowerIsBetter?1/g(valA):valA,eB=lowerIsBetter?1/g(valB):valB,tot=eA+eB||1;
   return <div style={{marginBottom:14}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
-      <b style={{color:colorA,fontFamily:F.d,fontSize:13}}>{fmtA??valA.toFixed(2)}</b>
-      <span style={{color:T.dim,fontSize:11}}>{label}</span>
-      <b style={{color:colorB,fontFamily:F.d,fontSize:13}}>{fmtB??valB.toFixed(2)}</b>
+    <div style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:10,alignItems:"baseline",marginBottom:5}}>
+      <b style={{color:colorA,fontFamily:F.d,fontSize:13,whiteSpace:"nowrap"}}>{fmtA??valA.toFixed(2)}</b>
+      <span style={{color:T.dim,fontSize:11,textAlign:"center",lineHeight:1.35}}>{label}</span>
+      <b style={{color:colorB,fontFamily:F.d,fontSize:13,whiteSpace:"nowrap",textAlign:"right"}}>{fmtB??valB.toFixed(2)}</b>
     </div>
     <div style={{display:"flex",height:7,gap:2,WebkitMaskImage:SEG,maskImage:SEG}}>
       <div style={{width:`${(eA/tot)*100}%`,background:colorA,boxShadow:`0 0 10px ${colorA}`,transition:"width 1.2s"}}/>
@@ -2489,7 +2489,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack,lineupNot
         </div>
       </Panel>
       <Panel title="WIN PROBABILITY" right="10,000 simulations">
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:6,alignItems:"center"}}>
           <Ring pct={sim.awayWin} color={AWAY_C} label={away.abbr}/>
           <Ring pct={cfg.hasDraw?sim.drawPct:sim.extraPct} color={T.dim} label={cfg.hasDraw?"draw":cfg.otLabel} size={92}/>
           <Ring pct={sim.homeWin} color={HOME_C} label={home.abbr}/>
