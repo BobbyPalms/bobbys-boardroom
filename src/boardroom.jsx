@@ -128,7 +128,8 @@ function seasonYear(sport, d = new Date()) {
   return d.getMonth() >= start ? d.getFullYear() : d.getFullYear() - 1;
 }
 // Past seasons are also kept on this device (best effort: storage can be unavailable) so they're fetched once.
-const HIST_LS = "boardroom.hist.v1";
+const HIST_LS = "boardroom.hist.v2";                     // v2: v1 held college seasons read from the wrong standings stats
+try { localStorage.removeItem("boardroom.hist.v1"); } catch (_) { /* no storage */ }
 let _histMem = null;
 function histStore() {
   if (_histMem) return _histMem;
