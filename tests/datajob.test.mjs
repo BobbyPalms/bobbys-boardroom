@@ -17,7 +17,6 @@ const tennisDay = d => ({ events: [{ name: "Test Open " + d.slice(0, 4), major: 
   status: { type: { state: "post", completed: true } }, competitors: [{ id: "P" + i, order: 0, winner: i % 4 !== 3, athlete: { displayName: "Player " + i } }, { id: "Q" + ((i + Number(d)) % 9), order: 1, winner: i % 4 === 3, athlete: { displayName: "Opp " + i } }] })) }] }] });
 globalThis.fetch = async url => {
   const u = new URL(url), p = u.pathname, d = u.searchParams.get("dates");
-  if (u.host.includes("actionnetwork")) return no(403);
   if (/standings/.test(p)) { const y = Number(u.searchParams.get("season")); return ok(y >= 2003 ? standings([["2","BOS","Boston Celtics",50,32,9300+y,9000],["15","MIL","Milwaukee Bucks",40,42,9100,9200],["8","DET","Detroit Pistons",30,52,8900,9300],["20","PHI","Philadelphia 76ers",45,37,9200,9100]]) : { children: [] }); }
   if (/summary/.test(p)) return ok({ gameInfo: { officials: [{ displayName: "Sean Wright", position: { displayName: "Referee" } }] } });
   if (/basketball\\/nba\\/scoreboard/.test(p)) { const b = realNBA(); if (d && d < "${new Intl.DateTimeFormat("en-CA",{timeZone:"America/New_York"}).format(new Date()).replace(/-/g,"")}") b.events.forEach(e => { e.competitions[0].status.type = { state: "post", completed: true }; e.competitions[0].competitors[0].score = "110"; e.competitions[0].competitors[1].score = "100"; }); return ok(b); }
@@ -40,7 +39,6 @@ const off = J("officials/NBA.json");
 check("officials logged with finals", Object.values(off).some(g => g.o[0].startsWith("Sean Wright") && g.hs + g.as === 210), off);
 check("live board written", Object.keys(J("live/NBA.json").days).length === 3);
 check("line snapshots for upcoming games", Object.values(J("lines/NBA.json")).some(a => a.length >= 1));
-check("splits probe records the blocked source", J("splits/NBA.json").status === 403 && J("splits/NBA.json").count === 0);
 const shards = readdirSync(join(dir, "data/matches/Tennis"));
 check("tennis matches sharded by year, from 2015", shards.includes("2015.json") && shards.length >= 11, shards);
 const RT = J("ratings/Tennis.json");

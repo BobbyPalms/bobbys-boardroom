@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
     paths: ["src/**", "index.html", "scripts/**", "package.json", ".github/workflows/site.yml"]
-  schedule: [{ cron: "*/15 * * * *" }]
+  schedule: [{ cron: "7,22,37,52 * * * *" }]   # every 15 min, off the top of the hour (GitHub drops more runs at :00)
   workflow_dispatch:
     inputs:
       backfill: { description: "Re-pull every past season / match from scratch", type: boolean, default: false }

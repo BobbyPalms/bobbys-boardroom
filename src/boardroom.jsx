@@ -226,8 +226,8 @@ function normalizeMatchup(d, sport) {
 
 // ─── LIVE DATA: the Public-ESPN-API routes (free, no Claude) ─────────────────
 // The browser reads the live routes directly (they allow any site). The GitHub data job adds what one page view
-// can't fetch cheaply: every past season (history/), line snapshots (lines/), officials with final scores (officials/)
-// and public splits when a source answers (splits/).
+// can't fetch cheaply: every past season (history/), line snapshots (lines/), officials with final scores (officials/),
+// BPI for every college team (power/), and every tennis match / UFC fight with fitted ratings (matches/, ratings/).
 // data/ is deployed with the site, so it is read from the same place the page came from
 const DATA_BASE = typeof location !== "undefined" && /^https?:$/.test(location.protocol) ? new URL("data", location.href).href.replace(/\/$/, "") : "data";
 async function getJSON(url) {
@@ -308,10 +308,6 @@ async function applyPower(games, sport) {
     const L = g.lg > 0 ? g.lg : LEAGUE[sport].L;
     for (const [side, t] of [["advAway", g.away], ["advHome", g.home]]) { const r = powerRatios(PW[t.id], L); if (r) g[side] = { ...r, n: POWER_N[sport], source: sport === "NFL" || sport === "CFB" ? "FPI" : "BPI" }; }
   }
-}
-function applySplits(games, sp) {
-  if (!sp?.games) return;
-  for (const g of games) { const x = sp.games[`${g.away.abbr}@${g.home.abbr}`]; if (x && g.mkt) { g.mkt.pubAwayPct = x.spreadAwayPub ?? x.mlAwayPub ?? null; g.mkt.pubOverPct = x.overPub ?? null; } }
 }
 async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   const R = ROUTES[sport];
@@ -870,7 +866,6 @@ async function fetchSlate(sport) {
     return [];
   }));
   const games = per.flat().sort((a, b) => a.date.localeCompare(b.date));
-  applySplits(games, await dataFile(`splits/${sport}.json`));
   await applyQBR(games, sport);
   await applyGoalies(games, sport);
   await applyPower(games, sport);

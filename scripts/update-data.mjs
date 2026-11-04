@@ -3,7 +3,6 @@
 //   live/<SPORT>.json        yesterday / today / tomorrow: every game, status, score, odds
 //   lines/<SPORT>.json       line snapshots per game (spread, total, moneylines) when they change
 //   officials/<SPORT>.json   each finished game's officials with its final score (referee tendencies)
-//   splits/<SPORT>.json      public bet / money % when a source answers (probe)
 //   matches/<SPORT>/<YEAR>.json  tennis matches / UFC fights, every one on record
 //   ratings/<SPORT>.json     Elo for every player / fighter, fitted and back-tested on held-out matches
 // State carries over between runs through the deployed site (scripts/restore-state.mjs) and a daily commit.
@@ -97,24 +96,6 @@ async function live(sport) {
   write(`data/live/${sport}.json`, L); write(`data/lines/${sport}.json`, lines); write(`data/officials/${sport}.json`, offs);
 }
 
-// ---- 5. public splits probe (kept only if the source answers with numbers) ----
-const AN = { NFL: "nfl", CFB: "ncaaf", NBA: "nba", CBB: "ncaab", MLB: "mlb", NHL: "nhl", WNBA: "wnba" };
-async function probeSplits(sport) {
-  if (!AN[sport]) return;
-  const url = `https://api.actionnetwork.com/web/v1/scoreboard/${AN[sport]}?period=game&date=${ymd(new Date())}`;
-  let status = 0, j = null;
-  try { const r = await fetch(url, { headers: UA }); status = r.status; if (r.ok) j = await r.json(); } catch (e) { status = String(e).slice(0, 80); }
-  const out = { source: "actionnetwork", status, games: {} };
-  for (const g of j?.games || []) {
-    const t = Object.fromEntries((g.teams || []).map(x => [x.id, x.abbr || x.short_name || x.full_name]));
-    const o = (g.odds || []).find(x => x.ml_home_public != null || x.spread_home_public != null) || {};
-    out.games[`${t[g.away_team_id]}@${t[g.home_team_id]}`] = { spreadAwayPub: o.spread_away_public ?? null, spreadAwayMoney: o.spread_away_money ?? null,
-      mlAwayPub: o.ml_away_public ?? null, mlAwayMoney: o.ml_away_money ?? null, overPub: o.total_over_public ?? null, overMoney: o.total_over_money ?? null };
-  }
-  out.count = Object.values(out.games).filter(x => x.spreadAwayPub != null || x.mlAwayPub != null).length;
-  write(`data/splits/${sport}.json`, out);
-}
-
 // ---- 5b. college hoops power index (BPI) for every team, once a day (the list route only has the top 25) ----
 async function power(sport) {
   if (sport !== "CBB" && sport !== "CBBW") return;
@@ -181,7 +162,7 @@ function ratings(sport, all) {
 
 for (const s of sports) {
   try {
-    if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); if (HOURLY) await probeSplits(s); await power(s); }
+    if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); await power(s); }
     else if (s === "Tennis") ratings("Tennis", await tennis());
     else if (s === "MMA") ratings("MMA", await mma());
   } catch (e) { console.error(s, e); fails++; }
