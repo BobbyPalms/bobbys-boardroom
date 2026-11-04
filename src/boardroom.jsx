@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { liveBoard, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, matchSplit, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -309,6 +309,12 @@ async function applyPower(games, sport) {
     for (const [side, t] of [["advAway", g.away], ["advHome", g.home]]) { const r = powerRatios(PW[t.id], L); if (r) g[side] = { ...r, n: POWER_N[sport], source: sport === "NFL" || sport === "CFB" ? "FPI" : "BPI" }; }
   }
 }
+// Public % of bets and money for each game (data job: Action Network + DraftKings Network), matched by teams and start time.
+async function applySplits(games, sport) {
+  const f = await dataFile(`splits/${sport}.json`);
+  if (!f?.games?.length) return;
+  for (const g of games) { const s = matchSplit(g, f.games); if (s) g.splits = s; }
+}
 async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
@@ -340,6 +346,7 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   await applyQBR([found], sport);
   await applyGoalies([found], sport);
   await applyPower([found], sport);
+  await applySplits([found], sport);
   let sum = {};
   if (found.id) { try { sum = parseSummary(await getJSON(summaryUrl(sport, foundLeague, found.id))); } catch (_) { sum = {}; } }
   const x = slateGameToMatchData(found, sport), md = x.md, m = found.mkt;
@@ -351,11 +358,12 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   if (m) {
     const fl = v => v == null ? "" : (v > 0 ? "+" : "") + v;
     md.market = { ...md.market, openLine: m.awaySpreadOpen != null ? `${md.away.abbr} ${fl(m.awaySpreadOpen)}` : "", currentLine: m.awaySpread != null ? `${md.away.abbr} ${fl(m.awaySpread)}` : "",
-      direction: m.spreadMove ? (m.spreadMove < 0 ? "away" : "home") : "", steamMove: !!m.steam, sharpSide: m.sharp || null };
+      direction: m.spreadMove ? (m.spreadMove < 0 ? "away" : "home") : "", steamMove: !!m.steam, sharpSide: x.mkt.sharp || null };
     md.publicBetting = { ...(md.publicBetting || {}), ml: { ...(md.publicBetting?.ml || {}), awayMLOpen: m.awayMLOpen ?? null, homeMLOpen: m.homeMLOpen ?? null },
       pinnacle: null };
   }
   md.sources = ["Live scoreboard, standings, odds & game summary routes (Public-ESPN-API)", "GitHub data job: past seasons, line snapshots, officials log"];
+  if (found.splits) md.sources.push(`Public bets / money %: ${found.splits.src}`);
   return md;
 }
 
@@ -758,23 +766,143 @@ function engineInputs(plan){
   const r=x=>Math.round(x*1000)/1000,side=p=>({offense:r(p.off.r),defenseVsLeague:r(p.def.r),starterRate:p.sp==null?null:r(p.sp),lineupFactor:r(p.lu),qbFactor:r(p.qb)});
   return {leagueAvgPerTeam:r(plan.L),neutralSite:plan.neutral,home:side(plan.parts.home),away:side(plan.parts.away),note:"ratios are vs league average; defense below 1 allows less than average"};
 }
-// The rundown is written from the numbers on screen (no AI call): projection, market, line movement, officials, injuries.
+// The rundown is written from the numbers on screen (no AI call). It walks through everything the algo used, in
+// order: the setup, how each side is rated and why, the matchup math, every situational factor, personnel, officials,
+// what 10,000 simulations produced, each market against its price, where the public and the money sit, what the algo
+// has learned from graded games, what could make it wrong, and the bottom line.
 async function fetchRundown(md, sim, signals, sport) {
-  const cfg = SPORT_CFG[sport], A = md.away, H = md.home, pb = md.publicBetting || {}, u = cfg.unitFull;
-  const tot = sim.avgHome + sim.avgAway, mT = num(pb.ou?.total, null), aS = num(pb.ats?.awaySpread, null), mlA = num(pb.ml?.awayML, null), mlH = num(pb.ml?.homeML, null);
-  const fav = sim.homeWin >= sim.awayWin ? H : A, favP = Math.max(sim.homeWin, sim.awayWin);
-  const sections = [];
-  sections.push({ title: "Projection", body: `${A.abbr} ${sim.avgAway.toFixed(1)} – ${H.abbr} ${sim.avgHome.toFixed(1)} (total ${tot.toFixed(1)} ${u}) over 10,000 simulations. ${fav.name} win ${favP.toFixed(1)}% of them${cfg.hasDraw ? `, draw ${sim.drawPct.toFixed(1)}%` : ""}.` });
-  if (mT != null) sections.push({ title: "Total", body: `Market total ${mT}; the algo projects ${tot.toFixed(1)}, ${Math.abs(tot - mT) < 0.05 * mT * 0.2 ? "right on it" : tot > mT ? `${(tot - mT).toFixed(1)} over` : `${(mT - tot).toFixed(1)} under`}.${pb.ou?.totalOpen != null && pb.ou.totalOpen !== mT ? ` It opened at ${pb.ou.totalOpen}.` : ""}` });
-  if (aS != null) { const mm = sim.avgHome - sim.avgAway; sections.push({ title: "Spread", body: `${A.abbr} ${aS > 0 ? "+" : ""}${aS}; the algo has ${mm >= 0 ? H.abbr : A.abbr} by ${Math.abs(mm).toFixed(1)}.${pb.ats?.awaySpreadOpen != null && pb.ats.awaySpreadOpen !== aS ? ` The line moved from ${A.abbr} ${pb.ats.awaySpreadOpen > 0 ? "+" : ""}${pb.ats.awaySpreadOpen}${md.market?.steamMove ? ", a big move" : ""}.` : ""}` }); }
-  if (mlA != null && mlH != null) { const ip = o => o > 0 ? 100 / (o + 100) : -o / (-o + 100), pa = ip(mlA), ph = ip(mlH), nv = ph / (pa + ph) * 100; sections.push({ title: "Moneyline", body: `Market no-vig: ${H.abbr} ${nv.toFixed(1)}%. Algo: ${H.abbr} ${(cfg.hasDraw ? sim.homeWin / Math.max(1e-9, sim.homeWin + sim.awayWin) * 100 : sim.homeWin).toFixed(1)}%.` }); }
-  if (md.official?.name) sections.push({ title: "Officials", body: `${md.official.name}.${md.official.knownTendencies ? " " + md.official.knownTendencies + "." : " Not enough logged games yet for a tendency."}` });
-  if (md.matchInfo?.injuryNote) sections.push({ title: "Injuries", body: md.matchInfo.injuryNote + "." });
-  const sig = (signals?.list || []).slice(0, 3).map(s => `${s.label}: ${s.text}`);
-  if (sig.length) sections.push({ title: "Signals", body: sig.join(" ") });
+  const cfg = SPORT_CFG[sport], P = LEAGUE[sport], A = md.away, H = md.home, pb = md.publicBetting || {}, u = cfg.unitFull, plan = sim.plan || {};
+  const f1 = x => Number(x).toFixed(1), f2 = x => Number(x).toFixed(2), pctS = x => `${(x * 100).toFixed(1)}%`, sg = x => (x > 0 ? "+" : "") + x;
+  const rel = r => { const d = (r - 1) * 100; return Math.abs(d) < 1.5 ? "right at the league average" : `${Math.abs(d).toFixed(0)}% ${d > 0 ? "above" : "below"} the league average`; };
+  const relD = r => { const d = (1 - r) * 100; return Math.abs(d) < 1.5 ? "an average defence" : d > 0 ? `a defence that allows ${d.toFixed(0)}% less than average` : `a defence that allows ${(-d).toFixed(0)}% more than average`; };
+  const L = plan.L || P.L, tot = sim.avgHome + sim.avgAway, mm = sim.avgHome - sim.avgAway;
+  const mT = num(pb.ou?.total, null), aS = num(pb.ats?.awaySpread, null), mlA = num(pb.ml?.awayML, null), mlH = num(pb.ml?.homeML, null);
+  const fav = sim.homeWin >= sim.awayWin ? H : A, dog = fav === H ? A : H, favP = Math.max(sim.homeWin, sim.awayWin);
+  const px = plan.muH ? priceGame(plan, sport, 1) : null;
+  const poss = nm => /s$/i.test(nm) ? `${nm}'` : `${nm}'s`;
+  const sections = [], add = (title, ...paras) => { const body = paras.filter(Boolean).join("\n\n"); if (body) sections.push({ title, body }); };
+
+  // 1 · the setup
+  const when = [md.matchInfo?.game, md.matchInfo?.time].filter(Boolean).join(", ");
+  add("The setup",
+    `${A.name}${A.record ? ` (${A.record})` : ""} ${plan.neutral ? "meet" : "visit"} ${H.name}${H.record ? ` (${H.record})` : ""}${when ? ` (${when})` : ""}${md.matchInfo?.venue ? ` at ${md.matchInfo.venue}` : ""}${plan.neutral ? ", a neutral site, so neither side gets the home edge" : ""}. ${cfg.label} teams average ${f1(L)} ${u} a game${md.league?.gpg ? " this season (from the standings)" : " (the engine's long-run baseline)"}, and every rating below is measured against that number.`,
+    md.situational?.h2hThisSeason ? `Season series: ${md.situational.h2hThisSeason}.` : "",
+    md.situational?.awayATSRecord || md.situational?.homeATSRecord ? `Against the spread this season: ${A.abbr} ${md.situational.awayATSRecord || "n/a"}, ${H.abbr} ${md.situational.homeATSRecord || "n/a"}.` : "");
+
+  // 2 · how each side is rated
+  const rate = (t, side) => {
+    const pt = plan.parts?.[side];
+    if (!pt) return "";
+    const off = pt.off, def = pt.def, hs = t.hist || [], last = hs.length ? hs[hs.length - 1] : null;
+    const bits = [];
+    bits.push(`The engine rates ${poss(t.name)} attack ${rel(off.r)} (ratio ${f2(off.r)}) and their defence as ${relD(def.r)} (ratio ${f2(def.r)}).`);
+    if (t.has?.gpg && t.gp) bits.push(`This season they score ${f1(t.gpg)} and allow ${f1(t.gaa)} ${u} a game over ${t.gp} games.`);
+    else bits.push(`They have little or no current-season scoring on file yet, so the rating leans on what came before.`);
+    if (t.prev?.gpg) bits.push(`Last season: ${f1(t.prev.gpg)} scored, ${f1(t.prev.gaa)} allowed per game.`);
+    if (off.seasons) bits.push(`Behind that sit ${off.seasons} past season${off.seasons === 1 ? "" : "s"} on file${off.from ? ` going back to ${off.from}` : ""}, pooled with older years fading; together they are worth about ${Math.round(off.n)} games of evidence for the attack and ${Math.round(def.n)} for the defence, so ${off.n > 60 ? "one hot or cold week barely moves the number" : "the rating can still move quickly"}.`);
+    if (last && last.gpg) bits.push(`Most recent full season on file (${last.y}): ${f1(last.gpg)} for, ${f1(last.gaa)} against.`);
+    const adv = side === "home" ? md.advancedHome : md.advancedAway;
+    if (adv?.offRating) bits.push(`${adv.source || "Power"} ratings put their attack at ${f2(adv.offRating)} and defence at ${f2(adv.defRating)} of average, blended in as ${adv.n || "a few"} games of schedule-adjusted evidence.`);
+    if (P.useXG && t.xg?.f) bits.push(`Expected goals: ${f2(t.xg.f)} created, ${f2(t.xg.a)} conceded per game, counted at double weight because xG is steadier than goals.`);
+    if (pt.sp != null) bits.push(`Today's ${cfg.gkLabel}, ${t.goalie?.name || "TBD"}, shifts what the other side faces by a ratio of ${f2(pt.sp)}${t.goalie?.svPct ? ` (save % ${(t.goalie.svPct * 100).toFixed(1)}${t.goalie.n ? ` over ${t.goalie.n} starts` : ""})` : t.goalie?.gaa ? ` (${f2(t.goalie.gaa)} allowed per game)` : ""}.`);
+    if (pt.qb && Math.abs(pt.qb - 1) > 0.005) bits.push(`Quarterback adjustment: ${pt.qb > 1 ? "+" : ""}${((pt.qb - 1) * 100).toFixed(1)}% to their scoring (${t.goalie?.name || "starter"}, rating ${t.goalie?.rating ?? "n/a"}).`);
+    if (pt.lu && Math.abs(pt.lu - 1) > 0.005) bits.push(`Lineup strength moves their scoring ${pt.lu > 1 ? "up" : "down"} ${Math.abs((pt.lu - 1) * 100).toFixed(1)}%.`);
+    return bits.join(" ");
+  };
+  add(`How the algo rates ${A.name}`, rate(A, "away"));
+  add(`How the algo rates ${H.name}`, rate(H, "home"));
+
+  // 3 · the matchup math
+  if (plan.muH) {
+    const fx = sim.factors || {}, hEdge = plan.neutral ? 0 : P.hfa;
+    add("The matchup math",
+      `Put together, ${A.abbr}'s attack (${f2(plan.parts.away.off.r)}) runs into ${H.abbr}'s defence (${f2(plan.parts.home.def.r)}), and ${H.abbr}'s attack (${f2(plan.parts.home.off.r)}) runs into ${A.abbr}'s defence (${f2(plan.parts.away.def.r)}). ${plan.neutral ? "There's no home edge at a neutral site." : `Home edge in ${cfg.label} is worth about ${f1(hEdge)} ${u}.`} The situational factors below multiply ${H.abbr}'s scoring by ${f2(fx.homeMult || 1)} and ${A.abbr}'s by ${f2(fx.awayMult || 1)}.`,
+      `That gives expected scores of ${A.abbr} ${f1(plan.muA)} and ${H.abbr} ${f1(plan.muH)} before overtime is settled${plan.learn ? `, including what the algo has learned from graded games (scoring level ×${f2(plan.learn.s)}, home edge ${sg(f2(plan.learn.h))} ${u})` : ""}. ${!cfg.hasDraw ? `If regulation ends level, ${H.abbr} win the extra period ${(plan.otP * 100).toFixed(0)}% of the time on team strength.` : ""}`);
+  }
+
+  // 4 · situational factors
+  // factors that move a number (officials have their own section below)
+  const fd = (sim.factors?.display || []).filter(f => f.label !== "Official" && (Math.abs((f.hm ?? 1) - 1) >= 0.005 || Math.abs((f.am ?? 1) - 1) >= 0.005));
+  add("Situational factors",
+    fd.length ? fd.map(f => `${f.label}: ${f.desc}${f.note ? `, ${f.note.toLowerCase()}` : ""} (${H.abbr} ×${f2(f.hm ?? 1)}, ${A.abbr} ×${f2(f.am ?? 1)}).`).join(" ") : "Nothing situational moves this game: rest, travel, form and conditions are all within what's normal for the sport, so the projection is pure team strength.",
+    md.weather?.applicable && md.weather.summary ? `Conditions at kick-off: ${md.weather.summary}${md.weather.precipitation && md.weather.precipitation !== "none" ? `, ${md.weather.precipitation}` : ""}.` : md.weather?.dome ? "Indoors, so weather plays no part." : "",
+    md.schedule?.awayDaysRest != null || md.schedule?.homeDaysRest != null ? `Rest: ${A.abbr} ${md.schedule.awayDaysRest ?? "?"} days, ${H.abbr} ${md.schedule.homeDaysRest ?? "?"} days${md.schedule.awayTravelMiles ? `; ${A.abbr} travelled about ${Math.round(md.schedule.awayTravelMiles).toLocaleString()} miles` : ""}.` : "",
+    md.situational?.awayForm || md.situational?.homeForm ? `Recent form: ${A.abbr} ${md.situational.awayForm || "n/a"}, ${H.abbr} ${md.situational.homeForm || "n/a"}.` : "");
+
+  // 5 · personnel + officials
+  add("Personnel and injuries",
+    [A, H].map(t => t.goalie?.name && t.goalie.name !== "TBD" ? `${t.abbr} ${cfg.gkLabel}: ${t.goalie.name}${t.goalie.note ? ` (${t.goalie.note})` : ""}.` : "").filter(Boolean).join(" "),
+    md.matchInfo?.injuryNote ? `Injury report: ${md.matchInfo.injuryNote}.` : "No injuries were listed on the game's summary route.");
+  if (md.official?.name) add("Officials", `${md.official.name}. ${md.official.knownTendencies ? `From every logged game they've worked: ${md.official.knownTendencies}. That nudges the projected scoring ${md.official.scoringImpact ? `${md.official.scoringImpact > 0 ? "up" : "down"} ${Math.abs(md.official.scoringImpact).toFixed(1)}%` : "by almost nothing"}.` : "There aren't enough logged games with this crew yet to measure a tendency, so they're treated as neutral."}`);
+
+  // 6 · the simulation
+  const sl = (sim.topSL || []).slice(0, 5).map(x => `${x.score} (${x.pct.toFixed(1)}%)`).join(", ");
+  const key = P.fam === "norm" ? (sport === "NFL" || sport === "CFB" ? [3, 7, 10, 14] : [5, 10, 15]) : [1, 2, 3];
+  const byMore = px ? key.map(k => `${k}+: ${pctS((mm >= 0 ? px.margin(k - 0.5).gt : px.margin(-(k - 0.5)).lt))}`).join(", ") : "";
+  let band = "";
+  if (px) { const qs = [0.1, 0.25, 0.5, 0.75, 0.9].map(q => { let x = Math.floor(tot - 40); while (px.total(x + 0.5).lt < q && x < tot + 200) x++; return x; }); band = `Half the simulated games land between ${qs[1]} and ${qs[3]} total ${u}, and 80% between ${qs[0]} and ${qs[4]}; the median is ${qs[2]}.`; }
+  add("What 10,000 simulations say",
+    `Average result: ${A.abbr} ${f1(sim.avgAway)}, ${H.abbr} ${f1(sim.avgHome)}, a total of ${f1(tot)} ${u} and an edge of ${f1(Math.abs(mm))} ${u} to ${mm >= 0 ? H.abbr : A.abbr}. ${fav.name} win ${favP.toFixed(1)}% of the simulations, ${dog.name} ${Math.min(sim.homeWin, sim.awayWin).toFixed(1)}%${cfg.hasDraw ? `, with ${sim.drawPct.toFixed(1)}% drawn` : ""}${sim.extraPct ? `; ${sim.extraPct.toFixed(1)}% need ${cfg.otLabel}` : ""}. Model confidence: ${String(sim.confidence || "").toLowerCase()}.`,
+    sl ? `Most common exact scores: ${sl}. No single score is likely on its own, which is why the algo prices ranges, not exact results.` : "",
+    byMore ? `${mm >= 0 ? H.abbr : A.abbr} win by ${byMore} of the time.` : "",
+    band);
+
+  // 7 · against the market
+  const pm = md.priced || { homeML: mlH, awayML: mlA, drawML: null, awaySpread: aS, total: mT };
+  let bets = [];
+  if (px) { try { bets = candidates({ md, sim, mkt: pm, neutral: plan.neutral }, px, sport, true); } catch (_) { bets = []; } }
+  const mkLine = b => `${b.label}: the algo gives it ${pctS(b.wc)} (raw sim ${pctS(b.wcRaw)}), the price implies ${pctS(b.fair)} with the vig removed, so the edge is ${sg(f1(b.edge))} points and the expected return is ${sg((b.ev * 100).toFixed(1))}% per unit staked${b.capped ? "; the gap is over 10 points, so stake sizing ignores the excess" : ""}.`;
+  const byM = k => bets.filter(b => b.market === k);
+  const mv = [];
+  if (pb.ats?.awaySpreadOpen != null && aS != null && pb.ats.awaySpreadOpen !== aS) mv.push(`the spread moved from ${A.abbr} ${sg(pb.ats.awaySpreadOpen)} to ${sg(aS)}`);
+  if (pb.ou?.totalOpen != null && mT != null && pb.ou.totalOpen !== mT) mv.push(`the total moved from ${pb.ou.totalOpen} to ${mT}`);
+  if (pb.ml?.awayMLOpen != null && mlA != null && pb.ml.awayMLOpen !== mlA) mv.push(`${A.abbr}'s moneyline went from ${sg(pb.ml.awayMLOpen)} to ${sg(mlA)}`);
+  add("Against the market",
+    mlA != null || aS != null || mT != null ? `Current prices: ${[mlA != null && mlH != null ? `moneyline ${A.abbr} ${sg(mlA)} / ${H.abbr} ${sg(mlH)}` : "", aS != null ? `spread ${A.abbr} ${sg(aS)}` : "", mT != null ? `total ${mT}` : ""].filter(Boolean).join(", ")}. ${mv.length ? `Since the open, ${mv.join("; ")}${md.market?.steamMove ? " (a big, fast move)" : ""}.` : "The lines haven't moved from the open."}` : "No odds are posted for this game yet, so there's nothing to price against.",
+    mT != null ? `Total: the algo projects ${f1(tot)} against ${mT}, ${Math.abs(tot - mT) < 0.5 ? "essentially the same number" : `${f1(Math.abs(tot - mT))} ${tot > mT ? "over" : "under"}`}. ${byM("TOT").map(mkLine).join(" ")}` : "",
+    aS != null ? `Spread: the market has ${A.abbr} ${sg(aS)}, which means ${aS > 0 ? `${H.abbr} by ${Math.abs(aS)}` : `${A.abbr} by ${Math.abs(aS)}`}; the algo has ${mm >= 0 ? H.abbr : A.abbr} by ${f1(Math.abs(mm))}. ${byM("SPR").map(mkLine).join(" ")}` : "",
+    mlA != null ? `Moneyline: ${byM("ML").map(mkLine).join(" ")}` : "",
+    bets.length ? `The algo blends its own number with the market's at ${Math.round(blendW(sport) * 100)}% / ${100 - Math.round(blendW(sport) * 100)}% (learned from graded ${cfg.label} games once there are enough), because closing prices are hard to beat and the blend keeps the edges honest.` : "");
+
+  // 8 · where the public and the money sit
+  const sp = pb.ats || {}, ou = pb.ou || {}, ml = pb.ml || {};
+  const split = (name, b, m, sideA, sideB) => b == null ? "" : `${name}: ${b}% of bets on ${sideA} (${100 - b}% on ${sideB})${m != null ? `, ${m}% of the money on ${sideA}` : ""}.${m != null && Math.abs(m - b) >= 10 ? ` The money is ${Math.abs(m - b)} points ${m > b ? "heavier" : "lighter"} than the ticket count on ${sideA}, which usually means ${m > b ? "bigger, sharper bets on" : "the big bets are against"} ${sideA}.` : ""}`;
+  add("Where the public and the money are",
+    pb.source ? `Splits from ${pb.source}${pb.source === "DraftKings" ? " (bets and handle at DraftKings Sportsbook)" : " (consensus tickets and money across books)"}.` : "Neither Action Network nor DraftKings has posted splits for this game yet; they usually appear a day or two before the start.",
+    split("Spread", sp.awayBetsPct, sp.awayDollarsPct, `${A.abbr} ${aS != null ? sg(aS) : ""}`.trim(), `${H.abbr}`),
+    split("Total", ou.overBetsPct, ou.overDollarsPct, `the over`, `the under`),
+    split("Moneyline", ml.awayBetsPct, ml.awayDollarsPct, A.abbr, H.abbr) + (ml.drawBetsPct != null ? ` Draw: ${ml.drawBetsPct}% of bets.` : ""),
+    md.market?.sharpSide ? `Sharp side by the algo's read (line movement first, then money vs tickets): ${md.market.sharpSide === "home" ? H.name : A.name}.${md.market?.reverseLineMove ? " The line has moved against the public side (reverse line movement)." : ""}` : "");
+
+  // 9 · signals
+  const sig = (signals?.list || []).map(x => `${x.label}: ${String(x.text).replace(/[.\s]+$/, "")}.`);
+  if (sig.length) add("Every signal on the board", sig.join(" "));
+
+  // 10 · learning
+  const lr = learnedFor(sport);
+  add("What the algo has learned", lr ? `From ${lr.n} graded ${cfg.label} games tracked in the background, the algo now scales scoring by ×${f2(lr.s)} and adjusts the home edge by ${sg(f2(lr.h))} ${u}${lr.bw != null ? `, and weights its own number at ${Math.round(lr.bw * 100)}% against the closing price` : ""}. Those corrections are deliberately slow and capped so a short streak can't swing them.` : `The background tracker logs and grades every ${cfg.label} game the algo prices. Corrections start once ${LEARN_MIN} games are graded; until then the engine runs on its calibrated defaults.`);
+
+  // 11 · risks
+  const risks = [];
+  if ((A.gp || 0) < 8 || (H.gp || 0) < 8) risks.push("it's early in the season, so the current numbers are thin and the history carries a lot of the weight");
+  if ((md.missing || []).length) risks.push(`some inputs weren't available (${md.missing.join(", ")})`);
+  if (pm.awaySpread == null && pm.homeML == null) risks.push("there are no posted odds to check the projection against");
+  const best = bets.filter(b => b.ev > 0).sort((x, y) => y.kelly - x.kelly)[0];
+  if (best?.capped) risks.push("the algo disagrees with the price by more than 10 points, which is more often a missing input than a real edge");
+  if (sp.awayBetsPct != null && Math.max(sp.awayBetsPct, 100 - sp.awayBetsPct) >= 75) risks.push(`the public is lopsided on the spread (${Math.max(sp.awayBetsPct, 100 - sp.awayBetsPct)}% on one side)`);
+  if (md.matchInfo?.injuryNote) risks.push("late injury news can move this line after the projection is made");
+  if (cfg.outdoor && md.weather?.applicable) risks.push("game-time weather can still change");
+  add("What could make this wrong", risks.length ? `Things to keep in mind: ${risks.join("; ")}.` : "No unusual risks: both sides are well sourced and the projection sits near the price.");
+
+  // 12 · bottom line
+  const kellyQ = b => Math.max(0, b.kelly / 4) * 100;
+  const pos = bets.filter(b => b.ev > 0).sort((x, y) => y.kelly - x.kelly);
+  add("Bottom line",
+    best ? `Best value: ${best.label}. Edge ${sg(f1(best.edge))} points, expected return ${sg((best.ev * 100).toFixed(1))}% per unit. A quarter-Kelly stake would be about ${kellyQ(best).toFixed(1)}% of a bankroll.${pos.length > 1 ? ` Also positive: ${pos.slice(1, 3).map(b => `${b.label} (${sg(f1(b.edge))} pts)`).join(", ")}.` : ""}` : bets.length ? "No side clears its price after the vig, so the algo's play is to pass on this one." : `The lean is ${fav.name} at ${favP.toFixed(1)}%, but with no prices to compare it isn't a priced bet.`);
+
   const edge = mT != null ? Math.abs(tot - mT) / mT : 0;
-  return { headline: `${A.abbr} at ${H.abbr}: ${favP >= 60 ? `${fav.abbr} clear favourite` : "close game"}${mT != null ? `, total ${tot > mT ? "leans over" : "leans under"}` : ""}`, sections,
-    honestRead: edge < 0.02 && favP < 58 ? "No strong edge: the algo and the market mostly agree." : "A lean, not a lock: check the BETTING tab for the priced edge." };
+  return { headline: `${A.abbr} at ${H.abbr}: ${favP >= 60 ? `${fav.abbr} clear favourite` : "close game"}${mT != null ? `, total ${tot > mT ? "leans over" : "leans under"}` : ""}${best ? `; best value ${best.label}` : ""}`, sections,
+    honestRead: best ? `${best.label} is the one the numbers like, by ${f1(best.edge)} points over a fair price. That's ${best.edge >= 5 ? "a real edge" : best.edge >= 3 ? "a solid but modest edge" : "a thin edge"}${risks.length ? `, with ${risks.length} thing${risks.length === 1 ? "" : "s"} to watch above` : ""}. It's a lean on probabilities, never a lock.` : edge < 0.02 && favP < 58 ? "No strong edge: the algo and the market mostly agree." : "The algo has a lean but the price already reflects it; passing is a fine play." };
 }
 
 // ─── SLATE: EVERY GAME ON THE BOARD, RANKED BY THE ALGO ───────────────────────
@@ -871,8 +999,9 @@ async function fetchSlate(sport) {
   await applyQBR(games, sport);
   await applyGoalies(games, sport);
   await applyPower(games, sport);
+  await applySplits(games, sport);
   const sc = SLATE_SCOPE[sport];
-  return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard"], games: (sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
+  return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard", "Public bets / money %: Action Network + DraftKings Network"], games: (sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
 }
 
 // ---- cache: one scan per sport, reused by SLATE and BEST OF SLATE (20 min) ---
@@ -964,8 +1093,16 @@ function slateGameToMatchData(g, sport) {
   // American odds are never between -100 and +100, and a split is a 0-100 percentage; anything else is a bad read, so drop it.
   const od = v => { const x = nn(v); return x != null && Math.abs(x) >= 100 && Math.abs(x) < 100000 ? x : null; };
   const pct = v => { const x = nn(v); return x != null && x >= 0 && x <= 100 ? x : null; };
-  const pubAway = pct(m.pubAwayPct), pubOver = pct(m.pubOverPct);
-  const sharp = m.sharp === "away" || m.sharp === "home" ? m.sharp : null;
+  // public splits as [bets %, money %] per side; a missing side is the complement of the other
+  const S = g.splits || {}, side = (x, y) => (x ? x : y ? [y[0] == null ? null : 100 - y[0], y[1] == null ? null : 100 - y[1]] : [null, null]);
+  const spA = side(S.sp?.a, S.sp?.h), toO = side(S.tot?.o, S.tot?.u);
+  // moneyline: two-way share between the sides (a soccer draw is reported separately)
+  const mlA = S.ml?.a, mlH = S.ml?.h, two = i => { const x = mlA?.[i], y = mlH?.[i]; return x != null && y != null && x + y > 0 ? Math.round(100 * x / (x + y)) : x != null && !S.ml?.d ? x : null; };
+  const pubAway = pct(spA[0]) ?? pct(m.pubAwayPct), pubAwayMoney = pct(spA[1]), pubOver = pct(toO[0]) ?? pct(m.pubOverPct), pubOverMoney = pct(toO[1]);
+  const mlAwayBets = pct(two(0)), mlAwayMoney = pct(two(1));
+  // sharp side: line movement first; with no move, a spread where the money share beats the ticket share by 12+ points
+  const gap = pubAway != null && pubAwayMoney != null ? pubAwayMoney - pubAway : null;
+  const sharp = m.sharp === "away" || m.sharp === "home" ? m.sharp : gap != null && Math.abs(gap) >= 12 ? (gap > 0 ? "away" : "home") : null;
   const total = nn(m.total) > 0 ? nn(m.total) : null, awaySpread = nn(m.awaySpread) != null && Math.abs(nn(m.awaySpread)) <= 100 ? nn(m.awaySpread) : null;
   const raw = {
     matchInfo: { league: sport, game: "", venue: g.venue ? String(g.venue) : "", time: g.time ? String(g.time) : "", injuryNote: g.note ? String(g.note) : "" },
@@ -976,9 +1113,11 @@ function slateGameToMatchData(g, sport) {
     situational: { awayMomentum: mom(A), homeMomentum: mom(H), awayForm: form(A), homeForm: form(H) },
     market: { openLine: "", currentLine: "", publicPctHome: pubAway != null ? 100 - pubAway : undefined, sharpSide: sharp, reverseLineMove: m.rlm === true, steamMove: m.steam === true, overUnder: total != null ? String(total) : "" },
     publicBetting: {
-      ats: { awayBetsPct: pubAway, awayDollarsPct: null, awaySpread, awaySpreadOpen: nn(m.awaySpreadOpen) },
-      ou: { overBetsPct: pubOver, overDollarsPct: null, total, totalOpen: nn(m.totalOpen) },
-      ml: { awayBetsPct: null, awayDollarsPct: null, awayML: od(m.awayML), homeML: od(m.homeML) },
+      ats: { awayBetsPct: pubAway, awayDollarsPct: pubAwayMoney, awaySpread, awaySpreadOpen: nn(m.awaySpreadOpen) },
+      ou: { overBetsPct: pubOver, overDollarsPct: pubOverMoney, total, totalOpen: nn(m.totalOpen) },
+      ml: { awayBetsPct: mlAwayBets, awayDollarsPct: mlAwayMoney, awayML: od(m.awayML), homeML: od(m.homeML),
+        drawBetsPct: pct(S.ml?.d?.[0]), drawDollarsPct: pct(S.ml?.d?.[1]) },
+      source: S.src || null,
     },
     away: a, home: h,
     advancedAway: g.advAway || null, advancedHome: g.advHome || null,
@@ -1004,8 +1143,9 @@ function slateGameToMatchData(g, sport) {
   const mkt = {
     awayML: od(m.awayML), homeML: od(m.homeML), drawML: od(m.drawML),
     awaySpread, awaySpreadOdds: od(m.awaySpreadOdds), homeSpreadOdds: od(m.homeSpreadOdds),
-    total, overOdds: od(m.overOdds), underOdds: od(m.underOdds), sharp, rlm: m.rlm === true, steam: m.steam === true, pubAway, pubOver,
+    total, overOdds: od(m.overOdds), underOdds: od(m.underOdds), sharp, rlm: m.rlm === true, steam: m.steam === true, pubAway, pubOver, pubAwayMoney, pubOverMoney, mlAwayBets, mlAwayMoney, splitSrc: S.src || null,
   };
+  md.priced = mkt; md.dq = sourced; md.used = used; md.missing = missing;          // the rundown reads these
   return { md, mkt, dq: sourced, missing, used, usable: rated(md.away) && rated(md.home) && sourced >= 4, neutral: g.neutral === true };
 }
 // ---- pricing: sim projection -> probabilities -> EV --------------------------
@@ -1597,10 +1737,12 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
   return <div>
     <Panel title="PUBLIC BETTING" right={<span style={{display:"flex",gap:4}}>{[["ats","ATS"],["ou","O/U"],["ml","ML"]].map(([k,t])=>
       <button key={k} onClick={()=>setMk(k)} style={{padding:"4px 10px",border:`1px solid ${mk===k?T.chrome:T.line}`,background:mk===k?"rgba(143,0,255,0.25)":"none",color:mk===k?T.chrome:T.dim,fontSize:11,cursor:"pointer"}}>{t}</button>)}</span>}>
-      {(!d||L==null)?<div style={{fontSize:12,color:T.dim,padding:"16px 0"}}>No sourced public split found for this market.</div>:<>
+      {(!d||L==null)?<div style={{fontSize:12,color:T.dim,padding:"16px 0"}}>{pb.source?`${pb.source} has no split posted for this market yet.`:"Neither Action Network nor DraftKings has posted splits for this game yet (they usually appear a day or two before the start)."}</div>:<>
         <div style={lab}>bets</div><SplitBar l={L} lc={lc} rc={rc}/>
         {Ld!=null&&<><div style={lab}>dollars</div><SplitBar l={Ld} lc={lc} rc={rc}/></>}
         <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontFamily:F.d,marginTop:10}}><span style={{color:labs[0][2]}}>{labs[0][1]}</span><span style={{color:labs[1][2]}}>{labs[1][1]}</span></div>
+        {mk==="ml"&&d.drawBetsPct!=null&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4}}>draw: {d.drawBetsPct}% of bets{d.drawDollarsPct!=null?` · ${d.drawDollarsPct}% of money`:""} (bars split the rest between the two sides)</div>}
+        {pb.source&&<div style={{fontSize:10,color:T.faint,textAlign:"center",marginTop:4}}>splits: {pb.source}{pb.source==="DraftKings"?" (bets and handle at DraftKings Sportsbook)":" (consensus tickets and money)"}</div>}
         <div style={{...lab,marginTop:18}}>line movement <span style={{color:T.faint}}>open → now</span></div>
         <MoveChart series={series}/>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center",fontSize:11,color:T.dim,marginTop:4}}>{legend.map(([c,t],i)=><span key={i}><span style={{color:c}}>● </span>{t}</span>)}</div>
@@ -2118,7 +2260,7 @@ function SimScreen({matchData,simResult,sport,isNeutral,onReset,onBack}){
         <div style={{fontFamily:F.d,fontSize:17,fontWeight:700,color:"#fff",lineHeight:1.4,marginBottom:16,textShadow:"0 0 14px rgba(143,0,255,0.63)"}}>{rd.headline}</div>
         {(rd.sections||[]).map((sc,i)=><div key={i} style={{marginBottom:16}}>
           <div style={{fontFamily:F.d,fontSize:11,letterSpacing:1.5,color:T.chrome,marginBottom:5}}>{sc.title}</div>
-          <div style={{fontSize:13,color:T.ink,opacity:.85,lineHeight:1.8}}>{sc.body}</div></div>)}
+          <div style={{fontSize:13,color:T.ink,opacity:.85,lineHeight:1.8,whiteSpace:"pre-line"}}>{sc.body}</div></div>)}
         {rd.honestRead&&<div style={{padding:"12px 14px",background:"rgba(143,0,255,0.11)",border:`1px solid ${T.line}`,borderLeft:`3px solid ${confC}`}}>
           <div style={{fontFamily:F.d,fontSize:11,letterSpacing:1.5,color:confC,marginBottom:6}}>The honest read</div>
           <div style={{fontSize:13,color:T.ink,lineHeight:1.8}}>{rd.honestRead}</div></div>}

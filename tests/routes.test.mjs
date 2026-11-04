@@ -1,4 +1,4 @@
-import { liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
+import { parseANSplits, parseDKSplits, matchSplit, anSplitsUrl, dkSplitsUrl, liveBoard, parsePower, powerRatios, powerUrl, powerTeamUrl, parseGoalie, athleteStatsUrl, parseQBR, qbrToRating, qbrUrl, parseScoreboard, parseStandings, parseOdds, parseSummary, finalsFrom, leagueAvg, lineMove, amOdds, espnSeason, startYearOf, scoreboardUrl, standingsUrl, ROUTES } from "../src/routes.js";
 import { realNBA, standings, event, competitor, odds } from "./espn_fixtures.mjs";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -90,5 +90,34 @@ check("power urls", powerUrl("CBB", 2027).includes("mens-college-basketball/seas
   const m = liveBoard({ events: [{ name: "UFC 999", competitions: [{ id: "f1", date: "2026-11-07T22:00Z", type: { abbreviation: "LW" }, status: { type: { state: "post", completed: true, shortDetail: "Final" } },
     competitors: [{ order: 1, winner: true, athlete: { displayName: "Fighter One" } }, { order: 2, winner: false, athlete: { displayName: "Fighter Two" } }] }] }] }, "MMA");
   check("live: MMA bout with the winner", m.length === 1 && m[0].away.win && !m[0].home.win && m[0].state === "post" && m[0].note === "LW", m);
+}
+// public betting splits
+{
+  const bi = (t, m) => ({ tickets: { percent: t }, money: { percent: m } });
+  const an = parseANSplits({ games: [{ start_time: "2026-11-05T00:00:00.000Z", away_team_id: 1, home_team_id: 2,
+    teams: [{ id: 1, abbr: "PHI", full_name: "Philadelphia 76ers", short_name: "76ers", location: "Philadelphia" }, { id: 2, abbr: "DET", full_name: "Detroit Pistons", short_name: "Pistons", location: "Detroit" }],
+    markets: { "15": { event: { moneyline: [{ side: "away", odds: 110, bet_info: bi(65, 64) }, { side: "home", odds: -130, bet_info: bi(35, 36) }],
+      spread: [{ side: "away", value: 2.5, odds: -110, bet_info: bi(67, 61) }, { side: "home", value: -2.5, odds: -110, bet_info: bi(33, 39) }],
+      total: [{ side: "over", value: 217.5, odds: -110, bet_info: bi(84, 81) }, { side: "under", value: 217.5, odds: -110, bet_info: bi(16, 19) }] } } } },
+    { start_time: "2026-11-05T00:00:00.000Z", away_team_id: 3, home_team_id: 4, teams: [{ id: 3, abbr: "X" }, { id: 4, abbr: "Y" }], markets: { "15": { event: { moneyline: [{ side: "away", bet_info: bi(0, 0) }] } } } }] });
+  check("splits (Action Network): bets + money for ML, spread, total; empty games dropped", an.length === 1 && an[0].ml.a.join() === "65,64" && an[0].sp.line === 2.5 && an[0].sp.h.join() === "33,39" && an[0].tot.o.join() === "84,81" && an[0].tot.line === 217.5, an);
+  const html = `<div class="tb-se x"><h5 class="tb-se-title-new"><a><img/> JAX Jaguars @ <img/>BAL Ravens </a></h5><span class="t">Thu 11/5 · 8:15 PM ET</span>
+    <div>Moneyline </div><div>BAL Ravens</div><div>+410 </div><div>27% </div><div>11% </div><div>JAX Jaguars</div><div>&#8722;550 </div><div>73% </div><div>89% </div>
+    <div>Spread </div><div>JAX Jaguars -10</div><div>&#8722;108 </div><div>90% </div><div>81% </div><div>BAL Ravens +10</div><div>&#8722;112 </div><div>10% </div><div>19% </div>
+    <div>Total </div><div>Over 40.5</div><div>&#8722;108 </div><div>22% </div><div>47% </div><div>Under 40.5</div><div>&#8722;112 </div><div>78% </div><div>53% </div></div>
+    <div class="tb-se y"><h5 class="tb-se-title-new">Everton vs Coventry</h5><span>Fri 11/6 · 3:00 PM ET</span><div>Moneyline </div><div>Everton</div><div>&#8722;140 </div><div>97% </div><div>95% </div><div>Draw</div><div>+260 </div><div>2% </div><div>3% </div><div>Coventry</div><div>+360 </div><div>1% </div><div>2% </div></div>`;
+  const dk = parseDKSplits(html, new Date("2026-11-03T12:00:00Z"));
+  const j = dk[0], e = dk[1];
+  check("splits (DraftKings): bets = Bets column, money = Handle column", j && j.ml.a.join() === "89,73" && j.ml.h.join() === "11,27" && j.sp.line === -10 && j.sp.a.join() === "81,90" && j.tot.o.join() === "47,22" && j.tot.line === 40.5, j);
+  check("splits (DraftKings): ET start time to ISO (EST in November)", j && j.t === "2026-11-06T01:15:00.000Z", j?.t);
+  check("splits (DraftKings): soccer 'Home vs Away' with a draw", e && e.h.name === "Everton" && e.a.name === "Coventry" && e.ml.h.join() === "95,97" && e.ml.d.join() === "3,2", e);
+  const g = { date: "2026-11-06T01:15Z", away: { abbr: "JAX", name: "Jacksonville Jaguars" }, home: { abbr: "BAL", name: "Baltimore Ravens" } };
+  const m1 = matchSplit(g, dk);
+  check("match: ESPN game to splits by teams + start", m1 && m1.src === "DraftKings" && m1.sp.a.join() === "81,90", m1);
+  const flip = matchSplit({ ...g, away: g.home, home: g.away }, dk);
+  check("match: sides swapped when the source lists them the other way", flip && flip.sp.h.join() === "81,90" && flip.sp.line === 10, flip);
+  check("match: a different day doesn't match", matchSplit({ ...g, date: "2026-11-09T01:15Z" }, dk) === null);
+  check("match: different teams don't match", matchSplit({ ...g, away: { abbr: "NE", name: "New England Patriots" } }, dk) === null);
+  check("splits urls", anSplitsUrl("CBB", "20261103").includes("ncaab?bookIds=15&periods=event&date=20261103&division=D1") && dkSplitsUrl("42648", "today", 2).endsWith("tb_eg=42648&tb_edate=today&tb_page=2") && anSplitsUrl("Tennis", "x") === null);
 }
 console.log(`routes: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

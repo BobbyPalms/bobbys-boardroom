@@ -1,8 +1,9 @@
 name: Site and data
 # Every 15 minutes: refresh the data from the routes, track and grade every game the algo prices, rebuild the site
-# and deploy it to GitHub Pages.
-# Live data ships with each deploy (no commit). Long-term records (history, matches, ratings, officials) are
-# committed once a day so they're safe in the repo, without bloating it. Results (track/, learned.json) are committed too.
+# and deploy it. Hosting: Cloudflare Pages behind Cloudflare Access (friends-only login) once the two Cloudflare
+# secrets are set in the repo; until then, GitHub Pages (public).
+# Live data ships with each deploy and is carried to the next run in the Actions cache (no commit). Long-term records
+# (history, matches, ratings, officials, results) are committed once a day so they're safe in the repo.
 on:
   push:
     branches: [main]
@@ -13,6 +14,10 @@ on:
       backfill: { description: "Re-pull every past season / match from scratch", type: boolean, default: false }
 permissions: { contents: write, pages: write, id-token: write }
 concurrency: { group: site, cancel-in-progress: false }
+env:
+  CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  CF_PROJECT: bobbys-boardroom
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -23,21 +28,44 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - id: pages
+        if: env.CF_TOKEN == ''
         uses: actions/configure-pages@v5
       - run: npm install --no-audit --no-fund
-      - name: Carry over the last run's data from the live site
+      - name: Restore the last run's data (cache)
+        uses: actions/cache/restore@v4
+        with: { path: .state, key: "state-${{ github.run_id }}", restore-keys: "state-" }
+      - name: Carry over the last run's data
         continue-on-error: true
-        run: node scripts/restore-state.mjs "${{ steps.pages.outputs.base_url }}"
+        run: node scripts/restore-state.mjs --dir .state/data "${{ steps.pages.outputs.base_url }}"
       - name: Update data from the routes
         run: node scripts/update-data.mjs ${{ inputs.backfill && '--backfill' || '' }}
       - name: Track results in the background (log today's board, grade finals, learn)
         continue-on-error: true
         run: node scripts/track.mjs
       - run: node scripts/build.mjs
-      - uses: actions/upload-pages-artifact@v3
+      - name: Keep this run's data for the next run
+        run: rm -rf .state && mkdir -p .state && cp -r data .state/data
+      - uses: actions/cache/save@v4
+        with: { path: .state, key: "state-${{ github.run_id }}" }
+
+      # ---- hosting: GitHub Pages (public) until the Cloudflare secrets exist ----
+      - if: env.CF_TOKEN == ''
+        uses: actions/upload-pages-artifact@v3
         with: { path: dist }
       - id: deploy
+        if: env.CF_TOKEN == ''
         uses: actions/deploy-pages@v4
+      # ---- hosting: Cloudflare Pages, protected by Cloudflare Access ----
+      - name: Create the Cloudflare Pages project (first run only)
+        if: env.CF_TOKEN != ''
+        continue-on-error: true
+        env: { CLOUDFLARE_API_TOKEN: "${{ env.CF_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ env.CF_ACCOUNT }}" }
+        run: npx --yes wrangler@3 pages project create "$CF_PROJECT" --production-branch=main
+      - name: Deploy to Cloudflare Pages
+        if: env.CF_TOKEN != ''
+        env: { CLOUDFLARE_API_TOKEN: "${{ env.CF_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ env.CF_ACCOUNT }}" }
+        run: npx --yes wrangler@3 pages deploy dist --project-name="$CF_PROJECT" --branch=main --commit-dirty=true
+
       - name: Daily snapshot of the long-term data
         run: |
           today=$(date -u +%F); last=$(git log -1 --format=%cs -- data/ratings 2>/dev/null || true)

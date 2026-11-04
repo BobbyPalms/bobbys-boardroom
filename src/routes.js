@@ -258,3 +258,110 @@ export function liveBoard(j, sport) {
   }
   return out;
 }
+
+// ---------- public betting splits: % of bets (tickets) and % of money on the moneyline, spread and total ----------
+// Not on the ESPN routes, so the data job pulls them from two free public sources and the page matches them to its games:
+//   Action Network's public scoreboard (consensus tickets / money, JSON) and DraftKings Network's betting-splits page
+//   (DraftKings' own bets / handle, HTML). Action Network first; DraftKings fills any game it doesn't have.
+export const SPLITS = {
+  NFL: { an: ["nfl"], dk: ["88808"], ahead: 7 }, CFB: { an: ["ncaaf", "division=FBS"], dk: ["87637"], ahead: 7 },
+  NBA: { an: ["nba"], dk: ["42648"] }, CBB: { an: ["ncaab", "division=D1"], dk: ["92483"] }, CBBW: { an: ["ncaaw", "division=D1"], dk: ["36647"] },
+  NHL: { an: ["nhl"], dk: ["42133"] }, MLB: { an: ["mlb"], dk: ["84240"] }, WNBA: { an: ["wnba"], dk: ["94682"] },
+  Soccer: { an: ["soccer"], dk: ["40253", "40685", "41410", "89345"] },
+};
+export const anSplitsUrl = (sport, yyyymmdd) => { const c = SPLITS[sport]; return c ? `https://api.actionnetwork.com/web/v2/scoreboard/${c.an[0]}?bookIds=15&periods=event&date=${yyyymmdd}${c.an[1] ? "&" + c.an[1] : ""}` : null; };
+export const dkSplitsUrl = (eg, when, page = 1) => `https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=${eg}&tb_edate=${when}&tb_page=${page}`;
+const pctOf = v => { const x = Number(v); return Number.isFinite(x) && x >= 0 && x <= 100 ? Math.round(x) : null; };
+const pair = (b, m) => (b == null && m == null ? null : [b, m]);
+const nonEmpty = s => !!s && [s.ml?.a, s.ml?.h, s.sp?.a, s.sp?.h, s.tot?.o, s.tot?.u].some(p => p && (p[0] || p[1]));
+
+export function parseANSplits(j) {
+  const out = [];
+  for (const g of j?.games || []) {
+    const W = s => String(s || "").replace(/\s*\(W\)\s*$/, "");
+    const T = Object.fromEntries((g.teams || []).map(t => [t.id, { abbr: W(t.abbr), name: W(t.full_name || t.display_name), nick: W(t.short_name), loc: W(t.location || t.display_name) }]));
+    const a = T[g.away_team_id], h = T[g.home_team_id];
+    if (!a || !h) continue;
+    const books = g.markets || {}, ev = (books["15"] || books[Object.keys(books)[0]] || {}).event || {};
+    const side = (arr, s) => { const o = (arr || []).find(x => x.side === s), bi = o?.bet_info; return o ? { line: n(o.value), odds: n(o.odds), p: bi ? pair(pctOf(bi.tickets?.percent), pctOf(bi.money?.percent)) : null } : null; };
+    const ma = side(ev.moneyline, "away"), mh = side(ev.moneyline, "home"), md = side(ev.moneyline, "draw");
+    const sa = side(ev.spread, "away"), sh = side(ev.spread, "home"), to = side(ev.total, "over"), tu = side(ev.total, "under");
+    const s = { src: "Action Network", t: g.start_time, a, h,
+      ml: { a: ma?.p || null, h: mh?.p || null, d: md?.p || null },
+      sp: { line: sa?.line ?? null, a: sa?.p || null, h: sh?.p || null },
+      tot: { line: to?.line ?? tu?.line ?? null, o: to?.p || null, u: tu?.p || null } };
+    if (nonEmpty(s)) out.push(s);
+  }
+  return out;
+}
+
+// "Thu 11/5 · 8:15 PM ET" -> ISO (the year is the nearest one to now)
+function etStamp(txt, now = new Date()) {
+  const m = String(txt).match(/(\d{1,2})\/(\d{1,2})\D+(\d{1,2}):(\d{2})\s*([AP]M)/i);
+  if (!m) return null;
+  const mo = Number(m[1]) - 1, d = Number(m[2]), hh = (Number(m[3]) % 12) + (/p/i.test(m[5]) ? 12 : 0), mm = Number(m[4]);
+  let best = null;
+  for (const y of [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1]) {
+    const guess = Date.UTC(y, mo, d, hh + 5, mm);                    // EST; corrected for daylight time below
+    const off = new Date(guess).toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false });
+    const t = guess - ((Number(off) % 24) - hh) * 3600e3;
+    if (!best || Math.abs(t - now) < Math.abs(best - now)) best = t;
+  }
+  return new Date(best).toISOString();
+}
+const decode = s => String(s).replace(/&amp;/g, "&").replace(/&#0?38;/g, "&").replace(/&#0?39;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/&nbsp;/g, " ").replace(/&#8211;|&ndash;/g, "-").replace(/&#8722;|−/g, "-");
+const dkTeam = s => { const t = decode(s).trim(), m = t.match(/^([A-Z0-9&.]{2,5})\s+(.+)$/); return m ? { abbr: m[1], name: t, nick: m[2], loc: "" } : { abbr: "", name: t, nick: "", loc: "" }; };
+export function parseDKSplits(html, now = new Date()) {
+  const out = [], blocks = String(html || "").split('<div class="tb-se ').slice(1);
+  for (const b of blocks) {
+    const title = decode((b.match(/<h5[^>]*>([\s\S]*?)<\/h5>/) || [])[1] || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const at = title.match(/^(.+?)\s+@\s+(.+)$/), vs = title.match(/^(.+?)\s+vs\.?\s+(.+)$/i);   // "Away @ Home"; soccer is "Home vs Away"
+    if (!at && !vs) continue;
+    const a = dkTeam(at ? at[1] : vs[2]), h = dkTeam(at ? at[2] : vs[1]);
+    const when = decode((b.match(/<span[^>]*>([^<]*\d{1,2}\/\d{1,2}[^<]*)<\/span>/) || [])[1] || "");
+    const toks = decode(b.replace(/<[^>]+>/g, "|")).split("|").map(x => x.replace(/\s+/g, " ").trim()).filter(Boolean);
+    const s = { src: "DraftKings", t: etStamp(when, now), a, h, ml: { a: null, h: null, d: null }, sp: { line: null, a: null, h: null }, tot: { line: null, o: null, u: null } };
+    let mk = null;
+    const isT = (sel, t) => (t.abbr && sel.startsWith(t.abbr + " ")) || sel.startsWith(t.name) || sel === t.abbr;
+    for (let i = 0; i < toks.length; i++) {
+      const x = toks[i];
+      if (/^(Moneyline|Spread|Total|Puck Line|Run Line|Point Spread|Match Result|Goal Line)$/i.test(x)) { mk = /money|match result/i.test(x) ? "ml" : /total/i.test(x) ? "tot" : "sp"; continue; }
+      if (!mk || i + 3 >= toks.length) continue;
+      const odds = toks[i + 1], hd = toks[i + 2], bt = toks[i + 3];
+      if (!/^[+-]?\d+$|^EVEN$/i.test(odds) || !/%$/.test(hd) || !/%$/.test(bt)) continue;
+      const p = pair(pctOf(bt.replace("%", "")), pctOf(hd.replace("%", "")));   // [bets, money(handle)]
+      if (mk === "tot") { const o = /^over/i.test(x), v = n(x.replace(/^(over|under)\s*/i, "")); s.tot[o ? "o" : "u"] = p; if (v != null) s.tot.line = v; }
+      else if (mk === "ml") { if (/^draw$|^tie$/i.test(x)) s.ml.d = p; else if (isT(x, a)) s.ml.a = p; else if (isT(x, h)) s.ml.h = p; }
+      else { const v = n((x.match(/([+-]\d+(?:\.\d+)?)\s*$/) || [])[1]); if (isT(x, a)) { s.sp.a = p; if (v != null) s.sp.line = v; } else if (isT(x, h)) { s.sp.h = p; if (v != null && s.sp.line == null) s.sp.line = -v; } }
+      i += 3;
+    }
+    if (nonEmpty(s)) out.push(s);
+  }
+  return out;
+}
+
+// Match one ESPN game to a splits entry: start within 4 hours and both teams agree (abbreviation, nickname or name).
+const norm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/&/g, " and ").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+function teamScore(t, s) {
+  const nm = norm(t.name), ab = norm(t.abbr);
+  let k = 0;
+  if (ab && norm(s.abbr) === ab) k += 2;
+  if (s.nick && nm.endsWith(norm(s.nick))) k += 2;
+  if (s.loc && nm.startsWith(norm(s.loc))) k += 1;
+  if (s.name && (nm === norm(s.name) || nm.includes(norm(s.name)) || norm(s.name).includes(nm))) k += 2;
+  return k;
+}
+export function matchSplit(game, list) {
+  const t0 = Date.parse(game.date);
+  let best = null;
+  for (const s of list || []) {
+    if (s.t && Number.isFinite(t0) && Math.abs(Date.parse(s.t) - t0) > 4 * 3600e3) continue;
+    const st = Math.min(teamScore(game.away, s.a), teamScore(game.home, s.h)), fl = Math.min(teamScore(game.away, s.h), teamScore(game.home, s.a));
+    const k = Math.max(st, fl);
+    if (k >= 2 && (!best || k > best.k)) best = { k, s, flip: fl > st };
+  }
+  if (!best) return null;
+  const { s, flip } = best, sw = (x, y) => (flip ? y : x);
+  return { src: s.src, ml: { a: sw(s.ml.a, s.ml.h), h: sw(s.ml.h, s.ml.a), d: s.ml.d }, sp: { a: sw(s.sp.a, s.sp.h), h: sw(s.sp.h, s.sp.a), line: s.sp.line == null ? null : flip ? -s.sp.line : s.sp.line },
+    tot: { ...s.tot } };
+}

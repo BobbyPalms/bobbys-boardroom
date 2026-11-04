@@ -2,12 +2,13 @@
 //   history/<SPORT>.json     every team's scoring for every season the standings route has
 //   live/<SPORT>.json        yesterday / today / tomorrow: every game, status, score, odds
 //   lines/<SPORT>.json       line snapshots per game (spread, total, moneylines) when they change
+//   splits/<SPORT>.json      public % of bets and money (Action Network + DraftKings Network), every run
 //   officials/<SPORT>.json   each finished game's officials with its final score (referee tendencies)
 //   matches/<SPORT>/<YEAR>.json  tennis matches / UFC fights, every one on record
 //   ratings/<SPORT>.json     Elo for every player / fighter, fitted and back-tested on held-out matches
 // State carries over between runs through the deployed site (scripts/restore-state.mjs) and a daily commit.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
-import { powerTeamUrl, parsePower } from "../src/routes.js";
+import { powerTeamUrl, parsePower, SPLITS, anSplitsUrl, dkSplitsUrl, parseANSplits, parseDKSplits } from "../src/routes.js";
 import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd } from "../src/routes.js";
 import { parseTennis, parseUFC, fitElo } from "../src/ratings.js";
 
@@ -96,6 +97,39 @@ async function live(sport) {
   write(`data/live/${sport}.json`, L); write(`data/lines/${sport}.json`, lines); write(`data/officials/${sport}.json`, offs);
 }
 
+// ---- 5. public betting splits (% of bets and % of money: moneyline, spread, total) ----
+// Action Network's public scoreboard (JSON) and DraftKings Network's splits page (HTML). Both lists are kept; the page
+// matches each game to them, Action Network first. Football looks a week ahead, everything else today and tomorrow.
+async function getText(url) {
+  for (let i = 0; i < 3; i++) {
+    try { const r = await fetch(url, { headers: { ...UA, Accept: "text/html,application/json" }, signal: AbortSignal.timeout(25000) }); if (r.ok) return await r.text(); if (r.status < 500 && r.status !== 429) return null; } catch (_) { /* retry */ }
+    await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+  }
+  return null;
+}
+async function splits(sport) {
+  const c = SPLITS[sport];
+  if (!c) return;
+  const ahead = c.ahead ? [0, 7] : [0, 1], an = [], dk = [], seen = new Set();
+  for (const k of ahead) {
+    const txt = await getText(anSplitsUrl(sport, ymd(new Date(Date.now() + k * 864e5))));
+    let j = null; try { j = txt && JSON.parse(txt); } catch (_) { j = null; }
+    for (const s of parseANSplits(j)) { const id = `${s.a.name}@${s.h.name}|${s.t}`; if (!seen.has(id)) { seen.add(id); an.push(s); } }
+  }
+  for (const eg of c.dk) for (const when of c.ahead ? ["n7days"] : ["today", "tomorrow"]) for (let page = 1; page <= 6; page++) {
+    const html = await getText(dkSplitsUrl(eg, when, page));
+    if (!html) break;
+    dk.push(...parseDKSplits(html));
+    if (!new RegExp(`tb_page=${page + 1}\\b`).test(html.replace(/&#0?38;|&amp;/g, "&"))) break;
+  }
+  const lo = Date.now() - 864e5, hi = Date.now() + 9 * 864e5, keep = s => !s.t || (Date.parse(s.t) > lo && Date.parse(s.t) < hi);
+  const prev = read(`data/splits/${sport}.json`, { games: [] });
+  const games = [...an.filter(keep), ...dk.filter(keep)];
+  // a source that fails this run keeps its last good list for games that haven't started
+  for (const src of ["Action Network", "DraftKings"]) if (!games.some(g => g.src === src)) games.push(...(prev.games || []).filter(g => g.src === src && g.t && Date.parse(g.t) > Date.now()));
+  write(`data/splits/${sport}.json`, { sources: { "Action Network": an.length, DraftKings: dk.length }, games });
+}
+
 // ---- 5b. college hoops power index (BPI) for every team, once a day (the list route only has the top 25) ----
 async function power(sport) {
   if (sport !== "CBB" && sport !== "CBBW") return;
@@ -162,7 +196,7 @@ function ratings(sport, all) {
 
 for (const s of sports) {
   try {
-    if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); await power(s); }
+    if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); await splits(s); await power(s); }
     else if (s === "Tennis") ratings("Tennis", await tennis());
     else if (s === "MMA") ratings("MMA", await mma());
   } catch (e) { console.error(s, e); fails++; }
