@@ -1075,8 +1075,11 @@ const OTHER_DEFAULT = -110;
 
 // The sim's probability is blended with the no-vig market price: the market also knows injuries, rotations and
 // roster moves the team stats can't see. bw = weight on the sim (learned per sport from graded games, see learnFrom).
-const MARKET_BLEND = 0.35;                                     // [J] starting weight on the sim until 60 graded games teach it
-const blendW = sport => { const x = LEARNED[sport]; return x && x.bw != null ? x.bw : MARKET_BLEND; };
+// [J] starting weight on the sim until 60 graded games teach it. College starts lower: its ratings follow BPI / FPI,
+// which sit well inside the closing line in buy games (a top program at home to a low-major), so the price leads there.
+const MARKET_BLEND_BY = { CBB: 0.2, CBBW: 0.2, CFB: 0.25 };
+const startBlend = sport => MARKET_BLEND_BY[sport] ?? 0.35;
+const blendW = sport => { const x = LEARNED[sport]; return x && x.bw != null ? x.bw : startBlend(sport); };
 function makeBet({ key, market, side, label, line = null, odds, w, push = 0, l, fair, bw = 1 }) {
   const b = decOdds(odds) - 1, d0 = w + l || 1, wcRaw = w / d0, wc = fair != null ? bw * wcRaw + (1 - bw) * fair : wcRaw;
   w = wc * (1 - push); l = (1 - wc) * (1 - push);
@@ -1384,7 +1387,7 @@ function learnFrom(games, sport) {
       for (const g of ml) { const ih = 1 / decOdds(g.mkt.homeML), ia = 1 / decOdds(g.mkt.awayML), f = ih / (ih + ia), pm = g.p.h / Math.max(1e-9, g.p.h + g.p.a), p = clampTo(w * pm + (1 - w) * f, 1e-4, 1 - 1e-4); ll -= Math.log(g.result.hs > g.result.as ? p : 1 - p); }
       if (!best || ll < best.ll) best = { w, ll };
     }
-    bw = clampTo(MARKET_BLEND + (best.w - MARKET_BLEND) * ml.length / (ml.length + 100), 0.05, 0.9);
+    const w0 = startBlend(sport); bw = clampTo(w0 + (best.w - w0) * ml.length / (ml.length + 100), 0.05, 0.9);
   }
   return { s, h, n, bw, nMl: ml.length };
 }
