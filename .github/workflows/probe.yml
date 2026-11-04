@@ -18,13 +18,13 @@ jobs:
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          Y=$(TZ=America/New_York date -d "-1 day" +%Y%m%d); B=https://site.api.espn.com/apis/site/v2/sports
+          set +e; Y=$(TZ=America/New_York date -d "-1 day" +%Y%m%d); B=https://site.api.espn.com/apis/site/v2/sports
           for sl in basketball/nba football/nfl hockey/nhl soccer/uefa.champions soccer/eng.1 basketball/mens-college-basketball football/college-football baseball/mlb tennis/atp mma/ufc basketball/wnba; do
             f=$(echo $sl | tr '/.' '__')
             curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard?dates=$Y" -o sb.json || true
-            id=$(jq -r '[.events[]? | select(.status.type.completed==true or .competitions[0].status.type.completed==true) | .id] | first // empty' sb.json)
-            [ -z "$id" ] && id=$(jq -r '[.events[]?.id] | first // empty' sb.json)
-            [ -z "$id" ] && { curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard" -o sb.json; id=$(jq -r '[.events[]? | select(.status.type.completed==true) | .id] | first // ([.events[]?.id] | first) // empty' sb.json); }
+            id=$(jq -r 'try ([.events[]? | select(.status.type.completed==true or .competitions[0].status.type.completed==true) | .id] | first // empty) catch empty' sb.json)
+            [ -z "$id" ] && id=$(jq -r 'try ([.events[]?.id] | first // empty) catch empty' sb.json)
+            [ -z "$id" ] && { curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard" -o sb.json; id=$(jq -r 'try ([.events[]? | select(.status.type.completed==true) | .id] | first // ([.events[]?.id] | first) // empty) catch empty' sb.json); }
             echo "$sl $id" >> out/ids.txt
             [ -n "$id" ] && curl -sS --compressed -m 40 -A "$UA" "$B/$sl/summary?event=$id" -o "out/sum_$f.json" -w "$sl %{http_code} %{size_download}\n" >> out/ids.txt
             cp sb.json "out/sb_$f.json"
