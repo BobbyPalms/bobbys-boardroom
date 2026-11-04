@@ -587,3 +587,33 @@ export function combineStats(parts) {
   if (wp.w > 0) m.passPct = wp.v / wp.w;
   return { splits: { categories: [{ name: "combined", stats: Object.entries(m).map(([name, value]) => ({ name, value })) }] } };
 }
+
+// ---------- EA SPORTS FC ratings: find the ESPN player in EA's list (accents, legal vs common names, same club) ----------
+const toks = s => norm(s).split(" ").filter(w => w.length > 1);
+const clubKey = s => norm(s).replace(/\b(fc|cf|sc|afc|club|de|calcio|ac|as|ss|sv|vfb|vfl|tsg|rc|cd|ud|sd|ca|fk|sk)\b/g, " ").replace(/\s+/g, " ").trim();
+const sameClub = (a, b) => { const x = clubKey(a), y = clubKey(b); if (!x || !y) return false; if (x === y || x.includes(y) || y.includes(x)) return true; const xs = x.split(" "), ys = new Set(y.split(" ")); return xs.filter(w => w.length > 3 && ys.has(w)).length >= 1; };
+export function fifaIndex(file) {
+  const F = file?.fields || [], ix = k => F.indexOf(k), out = [];
+  for (const r of file?.players || []) out.push({ id: r[ix("id")], name: r[ix("name")], first: r[ix("first")], last: r[ix("last")], team: r[ix("team")], ovr: r[ix("ovr")], pos: r[ix("pos")], all: new Set([...toks(r[ix("name")]), ...toks(r[ix("first")]), ...toks(r[ix("last")])]) });
+  out.byTok = new Map();                                   // name word -> players, so a lookup only checks players sharing a word
+  for (const p of out) for (const w of p.all) { if (!out.byTok.has(w)) out.byTok.set(w, []); out.byTok.get(w).push(p); }
+  return out;
+}
+// 3 = same name, 2 = surname (or a distinctive name) shared and the same club, 0 = no match
+export function matchFifa(name, team, idx) {
+  const n = norm(name), nt = toks(name), last = nt[nt.length - 1];
+  let best = null;
+  const pool = idx?.byTok ? [...new Set(nt.flatMap(w => idx.byTok.get(w) || []))] : idx || [];
+  for (const p of pool) {
+    const club = team ? sameClub(team, p.team) : false;
+    let k = 0;
+    if (n === norm(p.name) || n === norm(`${p.first} ${p.last}`)) k = club || !team ? 3 : 2.5;
+    else if (club) {
+      const shared = nt.filter(w => p.all.has(w));
+      if (last && p.all.has(last) && (shared.length >= 2 || nt.length === 1 || norm(p.first)[0] === nt[0][0])) k = 2;
+      else if (shared.some(w => w.length >= 5 && !/^(junior|junior|silva|santos|souza|costa|pereira|oliveira|rodrigues|fernandes|gomez|garcia|martinez|lopez)$/.test(w))) k = 1.5;
+    }
+    if (k > (best?.k || 0)) best = { k, p };
+  }
+  return best && best.k >= 1.5 ? { ovr: best.p.ovr, pos: best.p.pos, name: best.p.name, team: best.p.team, sure: best.k >= 2 } : null;
+}

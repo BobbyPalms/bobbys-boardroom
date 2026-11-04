@@ -1,5 +1,5 @@
 name: Site and data
-# Every 15 minutes: refresh the data from the routes, track and grade every game the algo prices, rebuild the site
+# About every 5 minutes, back to back: refresh the data from the routes, track and grade every game the algo prices, rebuild the site
 # and deploy it. Hosting: Cloudflare Pages behind Cloudflare Access (friends-only login) once the two Cloudflare
 # secrets are set in the repo; until then, GitHub Pages (public).
 # Live data ships with each deploy and is carried to the next run in the Actions cache (no commit). Long-term records
@@ -8,11 +8,11 @@ on:
   push:
     branches: [main]
     paths: ["src/**", "index.html", "scripts/**", "package.json", ".github/workflows/site.yml"]
-  schedule: [{ cron: "7,22,37,52 * * * *" }]   # every 15 min, off the top of the hour (GitHub drops more runs at :00)
+  schedule: [{ cron: "*/5 * * * *" }]   # backup only: GitHub runs these late or skips them; each run queues the next itself
   workflow_dispatch:
     inputs:
       backfill: { description: "Re-pull every past season / match from scratch", type: boolean, default: false }
-permissions: { contents: write, pages: write, id-token: write }
+permissions: { contents: write, pages: write, id-token: write, actions: write }
 concurrency: { group: site, cancel-in-progress: false }
 env:
   CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 90
     environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
     steps:
+      - run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
@@ -75,3 +76,11 @@ jobs:
             git add data/history data/officials data/matches data/ratings data/track data/learned.json 2>/dev/null || true
             git diff --cached --quiet || (git commit -m "data snapshot $today [skip ci]" && git pull --rebase --autostash && git push)
           fi
+      # Keep the data fresh without depending on GitHub's schedule: every run queues the next one, about five
+      # minutes after it started (concurrency keeps one run at a time; a newer queued run replaces an older one).
+      - name: Queue the next run
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          left=$(( 300 - ( $(date +%s) - START ) )); if [ $left -gt 0 ]; then sleep $left; fi
+          gh api -X POST "repos/${{ github.repository }}/actions/workflows/site.yml/dispatches" -f ref=main

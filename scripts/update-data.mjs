@@ -39,7 +39,11 @@ function write(p, o) {
 const startYearNow = sport => { const d = new Date(), m = d.getUTCMonth(), y = d.getUTCFullYear(); const s = { MLB: 2, NFL: 7, CFB: 7, Soccer: 7, NBA: 9, NHL: 9, CBB: 10, CBBW: 10, WNBA: 4 }[sport] ?? 7; return m >= s ? y : y - 1; };
 const sports = ONLY.length ? ONLY : Object.keys(ROUTES);
 // Standings and the UFC schedule change slowly: refresh them hourly (first run of each hour), live boards every run.
-const HOURLY = FORCE_BACKFILL || new Date().getUTCMinutes() < 15 || process.argv.includes("--all");
+// Runs come every few minutes now, so the slow jobs (standings history, UFC year list) go by the clock of the last
+// time they ran, kept in data/meta/jobs.json, not by the minute of the hour.
+const JOBS = (() => { try { return JSON.parse(readFileSync("data/meta/jobs.json", "utf8")); } catch (_) { return {}; } })();
+const due = (name, mins) => FORCE_BACKFILL || process.argv.includes("--all") || !(Date.now() - Date.parse(JOBS[name] || 0) < mins * 60e3);
+const HOURLY = due("hourly", 55);
 
 // ---- 1. team history: standings for every season back as far as the route goes ----
 async function history(sport) {
@@ -109,7 +113,8 @@ async function getText(url) {
 }
 async function splits(sport) {
   const c = SPLITS[sport];
-  if (!c) return;
+  if (!c || !due(`splits:${sport}`, 9)) return;
+  JOBS[`splits:${sport}`] = new Date().toISOString();
   const ahead = c.ahead ? [0, 7] : [0, 1], an = [], dk = [], seen = new Set();
   for (const k of ahead) {
     const txt = await getText(anSplitsUrl(sport, ymd(new Date(Date.now() + k * 864e5))));
@@ -194,6 +199,24 @@ function ratings(sport, all) {
   write(`data/ratings/${sport}.json`, { fit: { scale: f.scale, initW: f.initW, matches: f.matches, train: f.train, test: f.test, cut: f.cut || null }, players });
 }
 
+// ---- EA SPORTS FC player ratings (the ratings on ea.com), once a day: soccer lineups blend them with the stats ----
+async function fifa() {
+  if (!due("fifa", 20 * 60)) return;
+  const url = off => `https://drop-api.ea.com/rating/ea-sports-fc?locale=en&limit=100&offset=${off}`;
+  const first = await get(url(0));
+  if (!first?.items?.length) return;
+  const total = Math.min(first.totalItems || first.items.length, 30000), offs = [];
+  for (let o = 100; o < total; o += 100) offs.push(o);
+  const pages = [first, ...(await pool(offs, 4, o => get(url(o))))].filter(Boolean);
+  const players = [];
+  for (const pg of pages) for (const x of pg.items || []) {
+    const name = x.commonName || [x.firstName, x.lastName].filter(Boolean).join(" ");
+    players.push([x.id, name, x.firstName || "", x.lastName || "", x.team?.label || "", x.leagueName || "", x.overallRating, x.position?.shortLabel || "", x.nationality?.label || ""]);
+  }
+  if (players.length > 1000) { write("data/fifa/players.json", { source: "EA SPORTS FC ratings (ea.com)", fields: ["id", "name", "first", "last", "team", "league", "ovr", "pos", "nation"], players }); JOBS.fifa = new Date().toISOString(); }
+}
+
+if (!ONLY.length || ONLY.includes("Soccer")) { try { await fifa(); } catch (e) { console.error("fifa", e); fails++; } }
 for (const s of sports) {
   try {
     if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); await splits(s); await power(s); }
@@ -202,4 +225,6 @@ for (const s of sports) {
   } catch (e) { console.error(s, e); fails++; }
   console.log(`${s}: done (${calls} requests so far)`);
 }
+if (HOURLY) JOBS.hourly = new Date().toISOString();
+mkdirSync("data/meta", { recursive: true }); writeFileSync("data/meta/jobs.json", JSON.stringify(JOBS));
 console.log(`requests ${calls}, failed ${fails}`);

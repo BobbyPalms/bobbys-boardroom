@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
-import { liveBoard, matchSplit, teamQueryScore, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
+import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -385,8 +385,10 @@ function lineupEdge(g, sport) {
 // Every player in a lineup gets a rating from his season numbers (this season, else last season), and the keeper's
 // season numbers go to the keeper panels (and, in soccer, into the engine as the keeper's goals allowed).
 const _pr = {};
+let _fifa = null;
 async function rateLineups(g, sport, league) {
   const y = espnSeason(sport, seasonYear(sport));
+  const fifa = sport === "Soccer" ? await (_fifa = _fifa || dataFile("fifa/players.json").then(f => f?.players?.length ? fifaIndex(f) : null).catch(() => null)) : null;
   const one = (yy, p) => { const k = `${sport}:${league}:${yy}:${p.id}`; return (_pr[k] = _pr[k] || getJSON(athleteSeasonUrl(sport, league, yy, p.id)).then(j => playerRating(j, sport, p.pos)).catch(() => null)); };
   // soccer: every competition (league, cups, Europe, national team), this season in full and last season at half
   const overall = p => { const k = `soc:${p.id}`; return (_pr[k] = _pr[k] || (async () => {
@@ -409,6 +411,9 @@ async function rateLineups(g, sport, league) {
     await Promise.all(li.players.filter(p => /^\d+$/.test(String(p.id))).map(async p => {
       const r = sport === "Soccer" ? (await overall(p)) || (await one(y, p)) : (await one(y, p)) || (await one(y - 1, p));
       if (r) { p.rating = r.rating; p.why = r.why; p.keeper = r.keeper; }
+      // soccer: the EA SPORTS FC rating carries most of it (it rates defenders and keepers the way the stats can't);
+      // this season's numbers across every competition carry the rest, so form still counts
+      if (fifa) { const f = matchFifa(p.name, t.name, fifa); if (f) { p.fifa = f.ovr; p.rating = Math.round(r ? 0.65 * f.ovr + 0.35 * r.rating : f.ovr); p.why = `EA FC ${f.ovr}${f.pos ? ` ${f.pos}` : ""}${r ? ` · stats ${r.rating}: ${r.why}` : ""}`; } }
     }));
     // basketball: the "star" slot is the best-rated player in the lineup
     if (/NBA|WNBA|CBB/.test(sport) && (!t.gk || t.gk === "TBD")) { const top = li.players.filter(p => p.rating != null).sort((a, b) => b.rating - a.rating)[0]; if (top) { t.gk = top.name; t.gkNote = `rated ${top.rating} · ${top.why}`; } }
