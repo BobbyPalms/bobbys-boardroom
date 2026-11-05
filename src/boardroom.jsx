@@ -2068,7 +2068,7 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
 // ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
 const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
-function LiveScores({ sport, onPick, onFinal }) {
+function LiveScores({ sport, onPick, onFinal, onBox }) {
   const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
   useEffect(() => {
     let alive = true, timer = null;
@@ -2111,7 +2111,7 @@ function LiveScores({ sport, onPick, onFinal }) {
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
     {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {what} today.</div>}
     {show.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
-      {show.map(r => { const fin = r.state === "post" && !!onFinal, can = (onPick && r.state !== "post") || fin, go = () => (fin ? onFinal(r) : onPick(r));
+      {show.map(r => { const fin = r.state === "post" && !!onFinal, two = r.state === "in" && !!onBox, can = !two && ((onPick && r.state !== "post") || fin), go = () => (fin ? onFinal(r) : onPick(r));
         return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={fin ? "Open the final report" : can ? "Open the full simulation" : undefined}
         onClick={can ? go : undefined} onKeyDown={can ? e => { if (e.key === "Enter") go(); } : undefined}
         style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : r.state === "post" ? NEON.green + "88" : T.line}`, background: r.state === "post" ? "rgba(43,255,136,.05)" : "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
@@ -2122,12 +2122,16 @@ function LiveScores({ sport, onPick, onFinal }) {
         {side(r.away, r)}
         {side(r.home, r)}
         {can && <div style={{ fontSize: 9, color: fin ? NEON.green : T.faint, letterSpacing: 1.5, textAlign: "right" }}>{fin ? "FINAL REPORT ▸" : "SIMULATE ▸"}</div>}
+        {two && <div style={{ display: "grid", gridTemplateColumns: onPick ? "repeat(2,minmax(0,1fr))" : "minmax(0,1fr)", gap: 6, marginTop: 4 }}>
+          {onPick && <button onClick={() => onPick(r)} style={{ padding: "7px 4px", border: `1px solid ${T.line}`, background: "rgba(143,0,255,.14)", color: T.ink, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer", whiteSpace: "nowrap" }}>SIMULATE ▸</button>}
+          <button onClick={() => onBox(r)} style={{ padding: "7px 4px", border: `1px solid ${NEON.red}88`, background: "rgba(255,51,85,.10)", color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer", whiteSpace: "nowrap" }}>BOX SCORE ▸</button>
+        </div>}
       </div>; })}
     </div>}
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onFinal,slateInfo,slateBusy,slateErr,onPick}){
+function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
@@ -2173,7 +2177,7 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <button onClick={onFetch} disabled={!ok} style={{width:"100%",marginTop:16,padding:"14px",border:`1px solid ${ok?T.chrome:T.line}`,background:ok?"rgba(143,0,255,0.29)":"none",color:ok?"#fff":T.faint,fontFamily:F.d,fontSize:13,letterSpacing:3,cursor:ok?"pointer":"not-allowed",boxShadow:ok?"0 0 22px rgba(143,0,255,0.45),inset 0 0 18px rgba(143,0,255,0.18)":"none"}}>{loading?"LOADING…":"RUN SIMULATION"}</button>
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
     </Panel>
-    <LiveScores sport={sport} onPick={onPick} onFinal={onFinal}/>
+    <LiveScores sport={sport} onPick={onPick} onFinal={onFinal} onBox={onBox}/>
   </Shell>;
 }
 
@@ -3019,38 +3023,49 @@ function indivFinal(sport, row) {
   return { sport, id: row.id, detail: row.detail || "Final", done: true, away: t(row.away, sa, sh), home: t(row.home, sh, sa), venue: "", city: "", attendance: null,
     teamStats: [], players: { away: [], home: [] }, leaders: { away: [], home: [] }, scoring: [], lines: null, wp: null, setText: setText ? `in ${sport === "Tennis" ? "sets" : "rounds"}: ${setText}` : "" };
 }
-function FinalScreen({ sport, row, onBack }) {
-  const [d, setD] = useState(null), [err, setErr] = useState(null), [side, setSide] = useState("away");
+function FinalScreen({ sport, row: row0, onBack, live = false, onSim }) {
+  const [d, setD] = useState(null), [err, setErr] = useState(null), [side, setSide] = useState("away"), [row, setRow] = useState(row0), [at, setAt] = useState(null);
   useEffect(() => {
-    let on = true;
-    (async () => {
-      const rec = await trackRecordFor(sport, row).catch(() => null);
-      let F = null;
-      if (isIndiv(sport)) F = indivFinal(sport, row);
-      else { const j = await getJSON(summaryUrl(sport, row.slug, row.id)).catch(() => null); F = j ? parseFinal(j, sport) : null; }
+    let on = true, timer = null;
+    const pull = async () => {
+      if (live && typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
+      let F = null, r = row0, ended = false;
+      if (isIndiv(sport)) {                                // tennis / MMA: the board row is the box score; re-read it while live
+        if (live) { try { const j = await getJSON(scoreboardUrl(sport, row0.slug, ymd(new Date(row0.date)))); r = liveBoard(j, sport).find(x => x.id === row0.id) || row0; } catch (_) { /* keep the last */ } }
+        F = indivFinal(sport, r); ended = r.state === "post";
+      } else { const j = await getJSON(summaryUrl(sport, row0.slug, row0.id)).catch(() => null); F = j ? parseFinal(j, sport) : null; ended = !!F?.done; }
       if (!on) return;
-      if (!F) { setErr("Couldn't load this game's box score from the scores routes. Try again in a minute."); return; }
-      setD({ F, rec, R: finalRundown(F, sport, rec, LEARNED) });
-    })();
-    return () => { on = false; };
-  }, [sport, row.id]);
-  const cfg = SPORT_CFG[sport];
-  return <Shell status="final report">
+      if (!F) { if (!d) setErr("Couldn't load this game's box score from the scores routes. Retrying."); if (live) timer = setTimeout(pull, 30000); return; }
+      setErr(null); setRow(r);
+      if (live) setD({ F, live: !ended });
+      else { const rec = await trackRecordFor(sport, r).catch(() => null); if (on) setD({ F, rec, R: finalRundown(F, sport, rec, LEARNED) }); }
+      setAt(new Date());
+      if (live && !ended) timer = setTimeout(pull, 30000);
+    };
+    pull();
+    return () => { on = false; clearTimeout(timer); };
+  }, [sport, row0.id, live]);
+  const cfg = SPORT_CFG[sport], isLive = live && d?.live !== false;
+  return <Shell status={live ? (isLive ? "live box score" : "final") : "final report"}>
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
       <button onClick={onBack} style={btnStyle()}>◂ BACK</button>
-      <div style={{ textAlign: "right", fontFamily: F.d, fontSize: "clamp(14px,4vw,18px)", letterSpacing: 3, color: "#fff", textShadow: `0 0 14px ${NEON.green}66` }}>FINAL REPORT</div>
+      <div style={{ textAlign: "right", fontFamily: F.d, fontSize: "clamp(14px,4vw,18px)", letterSpacing: 3, color: "#fff", textShadow: `0 0 14px ${(live ? NEON.red : NEON.green)}66` }}>{live ? "BOX SCORE" : "FINAL REPORT"}</div>
     </div>
+    {live && <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginTop: 12, fontSize: 11, color: T.dim }}>
+      <span>{isLive ? <><span style={{ color: NEON.red, animation: "blink 1.6s infinite" }}>●</span> Live · updates every 30 seconds{at ? ` · last ${at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}` : ""}</> : "This game is over."}</span>
+      {onSim && isLive && <button onClick={onSim} style={{ ...btnStyle(), whiteSpace: "nowrap" }}>SIMULATE ▸</button>}
+    </div>}
     {err && <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>}
     {!d && !err && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading the box score…</div></Panel>}
     {d && <>
-      <ScorePanel F={d.F} sport={sport} row={row}/>
-      <Panel title="GAME RUNDOWN" right={cfg.label}>
+      <ScorePanel F={d.F} sport={sport} row={row} live={isLive}/>
+      {!live && <><Panel title="GAME RUNDOWN" right={cfg.label}>
         {d.R.paras.map((p, i) => <p key={i} style={{ margin: i ? "10px 0 0" : 0, fontSize: 13, lineHeight: 1.7, color: T.ink }}>{keepScores(p)}</p>)}
       </Panel>
       <Panel title="THE ALGO'S CALL" right={d.rec?.result ? "graded" : d.rec ? "grading soon" : "not logged"} color={T.chrome}>
         {d.rec && <AlgoTiles F={d.F} rec={d.rec} sport={sport}/>}
         {d.R.algo.map((p, i) => <p key={i} style={{ margin: i || d.rec ? "10px 0 0" : 0, fontSize: 12, lineHeight: 1.7, color: i === d.R.algo.length - 1 && /^What it learns/.test(p) ? T.chrome : T.ink }}>{keepScores(p)}</p>)}
-      </Panel>
+      </Panel></>}
       {teamStatRows(d.F, sport).length > 0 && <TeamStatsPanel F={d.F} sport={sport}/>}
       {d.F.scoring.length > 0 && !["NBA", "WNBA", "CBB", "CBBW"].includes(sport) && <ScoringPanel F={d.F} sport={sport}/>}
       {(d.F.players.away.length > 0 || d.F.players.home.length > 0) && <Panel title="PLAYER STATS" right="tap a player for every stat">
@@ -3063,19 +3078,19 @@ function FinalScreen({ sport, row, onBack }) {
     </>}
   </Shell>;
 }
-function ScorePanel({ F: G, sport, row }) {
+function ScorePanel({ F: G, sport, row, live = false }) {
   const A = G.away, H = G.home, n = Math.max(A.lines.length, H.lines.length), mlb = sport === "MLB", ind = isIndiv(sport);
   const extra = mlb ? [["R", "score"], ["H", "hits"], ["E", "errors"]] : [["T", "score"]];
   const cols = `minmax(44px,auto) repeat(${n},minmax(0,1fr))${ind ? "" : ` repeat(${extra.length},minmax(22px,auto))`}`;
   const cell = (v, bold, c) => <span style={{ textAlign: "center", fontFamily: F.d, fontSize: 12, fontWeight: bold ? 700 : 500, color: c || (bold ? "#fff" : T.dim), whiteSpace: "nowrap" }}>{v ?? ""}</span>;
   const team = (t, k) => <div key={k} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "center", padding: "6px 0" }}>
     <div style={{ minWidth: 0 }}>
-      <div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: t.win ? "#fff" : T.dim, overflowWrap: "anywhere" }}>{t.abbr ? <>{t.abbr} <span style={{ fontFamily: F.m, fontSize: 12, fontWeight: 400, color: T.dim }}>{t.name}</span></> : t.name}{t.win && <span style={{ color: NEON.green }}> ✓</span>}</div>
+      <div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: t.win || live ? "#fff" : T.dim, overflowWrap: "anywhere" }}>{t.abbr ? <>{t.abbr} <span style={{ fontFamily: F.m, fontSize: 12, fontWeight: 400, color: T.dim }}>{t.name}</span></> : t.name}{t.win && !live && <span style={{ color: NEON.green }}> ✓</span>}</div>
       {t.rec && <div style={{ fontSize: 11, color: T.faint, marginTop: 2 }}>{t.rec}</div>}
     </div>
-    <span style={{ fontFamily: F.d, fontSize: 30, fontWeight: 900, color: t.win ? "#fff" : T.dim, textShadow: t.win ? `0 0 12px ${NEON.green}66` : "none" }}>{t.score ?? ""}</span>
+    <span style={{ fontFamily: F.d, fontSize: 30, fontWeight: 900, color: t.win || live ? "#fff" : T.dim, textShadow: live ? `0 0 12px ${NEON.red}55` : t.win ? `0 0 12px ${NEON.green}66` : "none" }}>{t.score ?? ""}</span>
   </div>;
-  return <Panel title={`FINAL${G.detail && !/^(final|ft)$/i.test(G.detail) ? ` · ${G.detail.replace(/^final\s*\/?\s*/i, "").toUpperCase()}` : ""}`} right={[ind || sport === "Soccer" ? row.league : cfgLabel(sport), etDayLabel(row.date)].filter(Boolean).join(" · ")} color={NEON.green}>
+  return <Panel title={live ? `● LIVE · ${String(row.detail || G.detail || "").toUpperCase()}` : `FINAL${G.detail && !/^(final|ft)$/i.test(G.detail) ? ` · ${G.detail.replace(/^final\s*\/?\s*/i, "").toUpperCase()}` : ""}`} right={[ind || sport === "Soccer" ? row.league : cfgLabel(sport), etDayLabel(row.date)].filter(Boolean).join(" · ")} color={live ? NEON.red : NEON.green}>
     {team(A, "a")}{team(H, "h")}
     {n > 0 && <div style={{ marginTop: 10, borderTop: `1px solid ${T.line}`, paddingTop: 10, display: "grid", gridTemplateColumns: cols, rowGap: 6, columnGap: 4, alignItems: "center" }}>
       <span style={{ fontSize: 10, color: T.faint }}>{ind ? (sport === "Tennis" ? "SET" : "RD") : ""}</span>
@@ -3293,6 +3308,7 @@ export default function App() {
   if (phase==="indivMatch"&&indivMatch) return <IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
   if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")}/>;
   if (phase==="final"&&finalRow) return <FinalScreen sport={finalRow.sport} row={finalRow.row} onBack={()=>setPhase("setup")}/>;
+  if (phase==="box"&&finalRow) { const r=finalRow.row; return <FinalScreen live sport={finalRow.sport} row={r} onBack={()=>setPhase("setup")} onSim={()=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport:finalRow.sport})}/>; }
   if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
   if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
   if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
@@ -3303,6 +3319,6 @@ export default function App() {
   }
   if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
+    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
     onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport})}/>;
 }
