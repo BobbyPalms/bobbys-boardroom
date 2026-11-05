@@ -106,3 +106,80 @@ export function rateFor(R, p, sport) {
   const S = SETTINGS[sport], x = R?.[p.id];
   return x ? { r: x.r, n: x.n, last: x.last, known: x.n >= S.minN } : { r: S.init(p.rec, 0), n: 0, last: null, known: false };
 }
+
+// ---------- tennis, point by point: a live match from its current score ----------
+// Each player wins a share of the points they serve. Before the match those two shares are set so the model agrees
+// with the Elo ratings (a best-of-3 match on the tour's average serve level); after that it plays out exactly what's
+// left: the current set's games, tiebreaks at 6-6 (a 10-point one in a Slam's final set), then any sets still needed.
+export const TOUR_SERVE = { atp: 0.64, wta: 0.56 };
+// P(server holds) when they win each service point with probability p
+export function holdProb(p) {
+  const q = 1 - p, deuce = (p * p) / (p * p + q * q);
+  return p ** 4 * (1 + 4 * q + 10 * q * q) + 20 * p ** 3 * q ** 3 * deuce;
+}
+// P(A wins a tiebreak to `to` (win by 2)); A serves the first point, then serve alternates every two points
+export function tiebreakProb(pA, pB, to = 7, aServesFirst = true) {
+  const memo = new Map();
+  const srvA = n => (n === 0 ? aServesFirst : (Math.floor((n - 1) / 2) % 2 === 0) !== aServesFirst);   // point n's server is A?
+  const f = (a, b) => {
+    if (a >= to && a - b >= 2) return 1;
+    if (b >= to && b - a >= 2) return 0;
+    if (a >= to - 1 && b >= to - 1 && a === b && a > to + 10) { const pa = (pA + (1 - pB)) / 2; return (pa * pa) / (pa * pa + (1 - pa) * (1 - pa)); }   // long deuce: closed form
+    const k = `${a},${b}`; if (memo.has(k)) return memo.get(k);
+    const w = srvA(a + b) ? pA : 1 - pB, v = w * f(a + 1, b) + (1 - w) * f(a, b + 1);
+    memo.set(k, v); return v;
+  };
+  return f(0, 0);
+}
+// P(A wins the set from games (ga, gb) with `aServes` serving the next game)
+export function setFrom(ga, gb, aServes, pA, pB, tb = 7) {
+  const hA = holdProb(pA), hB = holdProb(pB), memo = new Map();
+  const f = (a, b, srv) => {
+    if (a >= 6 && a - b >= 2) return 1;
+    if (b >= 6 && b - a >= 2) return 0;
+    if (a === 7 || b === 7) return a > b ? 1 : 0;
+    if (a === 6 && b === 6) return tiebreakProb(pA, pB, tb, srv);
+    const k = `${a},${b},${srv}`; if (memo.has(k)) return memo.get(k);
+    const w = srv ? hA : 1 - hB, v = w * f(a + 1, b, !srv) + (1 - w) * f(a, b + 1, !srv);
+    memo.set(k, v); return v;
+  };
+  return f(ga, gb, aServes);
+}
+const avgSrv = (fn) => (fn(true) + fn(false)) / 2;      // who serves isn't on the scoreboard: both ways, averaged
+// From sets (sa, sb) and the current set's games (ga, gb): P(A wins), and the chance of each final set score
+export function tennisLive({ sa = 0, sb = 0, ga = 0, gb = 0 }, pA, pB, bo = 3, slam = false) {
+  const need = bo === 5 ? 3 : 2;
+  const cur = avgSrv(s => setFrom(ga, gb, s, pA, pB, slam && sa + sb === bo - 1 ? 10 : 7));
+  const fresh = (lastSet) => avgSrv(s => setFrom(0, 0, s, pA, pB, slam && lastSet ? 10 : 7));
+  const dist = new Map();
+  const walk = (a, b, pr, first) => {
+    if (a === need || b === need) { const k = `${a}-${b}`; dist.set(k, (dist.get(k) || 0) + pr); return; }
+    const s = first ? cur : fresh(a + b === bo - 1);
+    walk(a + 1, b, pr * s, false); walk(a, b + 1, pr * (1 - s), false);
+  };
+  walk(sa, sb, 1, true);
+  const win = [...dist].filter(([k]) => +k.split("-")[0] === need).reduce((x, [, v]) => x + v, 0);
+  return { p: win, set: cur, scores: [...dist].sort((x, y) => y[1] - x[1]) };
+}
+// serve shares that make the model match the ratings before the first point (best of 3)
+export function servePoints(pMatchBo3, tour = "atp") {
+  const base = TOUR_SERVE[tour] || TOUR_SERVE.atp;
+  let lo = -0.24, hi = 0.24;
+  for (let i = 0; i < 50; i++) { const d = (lo + hi) / 2; if (tennisLive({}, base + d, base - d, 3).p < pMatchBo3) lo = d; else hi = d; }
+  const d = (lo + hi) / 2;
+  return { pA: base + d, pB: base - d, base };
+}
+// The board's set scores ("6 3 4" / "4 6 2") -> sets won and the set in progress
+export function readSets(away, home, live = true) {
+  const a = String(away || "").split(" ").filter(Boolean).map(Number), b = String(home || "").split(" ").filter(Boolean).map(Number);
+  const done = (x, y) => (x >= 6 && x - y >= 2) || (x === 7 && (y === 6 || y === 5));
+  let sa = 0, sb = 0;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a[i] ?? 0, y = b[i] ?? 0;
+    if (done(x, y)) { sa++; continue; }
+    if (done(y, x)) { sb++; continue; }
+    if (i === n - 1 && live) return { sa, sb, ga: x, gb: y, sets: n };
+  }
+  return { sa, sb, ga: 0, gb: 0, sets: n };
+}

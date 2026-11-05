@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { parseFinal, finalRundown, teamStatRows, colOrder, groupTitle } from "./postgame.js";
-import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
+import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE } from "./bets.js";
 import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT } from "./kalshi.js";
@@ -1190,8 +1190,21 @@ async function fetchIndiv(sport) {
   list.forEach((m, i) => { m.rank = i + 1; });
   return { sport, list, fit, ratingsOK: ok, best: list.find(m => m.known) || null, t: Date.now() };
 }
-async function indivMatchup(sport, qa, qb) {
+// A live tennis match from its current score: the point-by-point model (src/ratings.js), calibrated to the ratings
+const SLAM = /australian open|roland garros|french open|wimbledon|us open/i;
+function tennisLiveFrom(m, row) {
+  const st = readSets(row.away.score, row.home.score, row.state === "in"), p0 = eloP(m.ra.r, m.rb.r), tour = m.tour || row.slug || "atp";
+  const slam = SLAM.test(m.event || row.league || ""), bo = m.bo || (slam && tour === "atp" ? 5 : 3), sv = servePoints(p0, tour);
+  const now = tennisLive(st, sv.pA, sv.pB, bo, slam), pre = tennisLive({}, sv.pA, sv.pB, bo, slam);
+  return { st, bo, slam, sv, p: now.p, set: now.set, scores: now.scores, pre: pre.p, detail: row.detail || "", over: row.state === "post", at: Date.now() };
+}
+async function indivMatchup(sport, qa, qb, row = null) {
   const { R, fit, ok } = await loadRatings(sport);
+  if (ok && row && sport === "Tennis") {
+    const j = await getJSON(scoreboardUrl(sport, row.slug, ymd(new Date(row.date)))).catch(() => null);
+    const m = j ? parseTennis(j, row.slug).find(x => x.id === String(row.id)) : null;
+    if (m) { const out = scoreIndiv(m, sport, R); if (m.bo !== 5) out.bo5 = tennisOutlook(eloP(out.ra.r, out.rb.r), 5); if (row.state !== "pre") out.live = tennisLiveFrom(out, row); return { sport, match: out, fit, row }; }
+  }
   if (!ok) throw new Error(`The ${SPORT_CFG[sport].label} ratings haven't been built yet. The data job builds them on its first run.`);
   const norm = v => String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
   const find = q => { const a = norm(q); let best = null;
@@ -2737,8 +2750,54 @@ function IndivSlateScreen({ res, best, onBack, onRefresh, onToggle, refreshing }
       : <Panel title="NOTHING SCHEDULED"><div style={{ fontSize: 12, color: T.dim }}>{sp === "Tennis" ? "No tennis matches left today or tomorrow." : "No UFC fights in the next 8 days."}</div></Panel>}
   </Shell>;
 }
+function TennisLivePanel({ m, L }) {
+  const A = m.a.name, B = m.b.name, sur = n => String(n).split(" ").slice(-1)[0], pc = x => `${(x * 100).toFixed(1)}%`;
+  const fav = L.p >= 0.5 ? A : B, st = L.st, need = L.bo === 5 ? 3 : 2;
+  const where = st.sa === st.sb ? `Sets are level at ${st.sa}-${st.sb}` : `${sur(st.sa > st.sb ? A : B)} lead ${Math.max(st.sa, st.sb)} set${Math.max(st.sa, st.sb) === 1 ? "" : "s"} to ${Math.min(st.sa, st.sb)}`;
+  const games = st.ga || st.gb ? `, and it's ${st.ga}-${st.gb} in the ${["1st", "2nd", "3rd", "4th", "5th"][st.sa + st.sb] || "next"} set${st.ga !== st.gb ? ` (${sur(st.ga > st.gb ? A : B)} ahead)` : ""}` : st.sa + st.sb ? ", with the next set about to start" : "";
+  const move = L.p - L.pre;
+  const big = (name, x, c) => <div style={{ minWidth: 0, textAlign: "center" }}>
+    <div style={{ fontFamily: F.d, fontSize: "clamp(26px,8vw,38px)", fontWeight: 900, color: c, textShadow: `0 0 12px ${c}66` }}>{pc(x)}</div>
+    <div style={{ fontSize: 12, color: T.ink, marginTop: 2, overflowWrap: "anywhere" }}>{name}</div>
+  </div>;
+  return <>
+    <Panel title={L.over ? "FINAL" : "WIN PROBABILITY · NOW"} right={`best of ${L.bo}`} color={L.over ? NEON.green : NEON.red}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 10 }}>{big(A, L.p, AWAY_DEF)}{big(B, 1 - L.p, HOME_DEF)}</div>
+      <div style={{ fontSize: 12, color: T.dim, textAlign: "center", marginTop: 10, lineHeight: 1.6 }}>Before the first point: {sur(A)} {pc(L.pre)}. {Math.abs(move) >= 0.005 ? `${sur(move > 0 ? A : B)} up ${(Math.abs(move) * 100).toFixed(1)} points since.` : "About where it started."}</div>
+    </Panel>
+    {!L.over && <Panel title="FROM HERE" right="point by point">
+      <p style={{ margin: 0, fontSize: 13, lineHeight: 1.7, color: T.ink }}>{where}{games}. {sur(A)} need {Math.max(0, need - st.sa)} more set{need - st.sa === 1 ? "" : "s"}, {sur(B)} {Math.max(0, need - st.sb)}.{st.ga || st.gb ? ` ${sur(L.set >= 0.5 ? A : B)} win this set ${pc(Math.max(L.set, 1 - L.set))} of the time.` : ""} {fav} win{fav === A ? "" : ""} the match {pc(Math.max(L.p, 1 - L.p))} from here.</p>
+      <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "12px 0 6px" }}>FINAL SCORE FROM HERE ({sur(A)} first)</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{L.scores.map(([k, v]) => <span key={k} style={{ padding: "4px 8px", border: `1px solid ${T.line}`, fontSize: 12, color: T.ink, whiteSpace: "nowrap" }}><b style={{ fontFamily: F.d }}>{k}</b> <span style={{ color: T.dim }}>{pc(v)}</span></span>)}</div>
+      <p style={{ margin: "12px 0 0", fontSize: 11, lineHeight: 1.6, color: T.dim }}>The model plays out every remaining point: {sur(A)} wins {pc(L.sv.pA)} of points on serve and {sur(B)} {pc(L.sv.pB)} (set so it matched the ratings before the match; tour average {pc(L.sv.base)}), tiebreaks at 6-6{L.slam ? ", a 10-point one in the final set" : ""}. The scoreboard doesn't show who's serving or the points in the current game, so both are averaged. Updates every 30 seconds.</p>
+    </Panel>}
+  </>;
+}
 function IndivMatchScreen({ res, onBack }) {
+  const [live, setLive] = useState(res.match.live || null), [row, setRow] = useState(res.row || null);
+  useEffect(() => {
+    if (!res.row || !res.match.live || res.match.live.over) return;
+    let on = true, t = null;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) { t = setTimeout(pull, 15000); return; }
+      try {
+        const j = await getJSON(scoreboardUrl(res.sport, res.row.slug, ymd(new Date(res.row.date))));
+        const r = liveBoard(j, res.sport).find(x => x.id === res.row.id);
+        if (r && on) { const r2 = { ...r, slug: res.row.slug }; setRow(r2); setLive(tennisLiveFrom(res.match, r2)); if (r.state === "post") return; }
+      } catch (_) { /* keep the last */ }
+      if (on) t = setTimeout(pull, 30000);
+    };
+    t = setTimeout(pull, 30000);
+    return () => { on = false; clearTimeout(t); };
+  }, [res]);
   const m = res.match, sp = res.sport;
+  if (live && row) return <Shell status={live.over ? "final" : "live simulation"}>
+    <ScorePanel F={indivFinal(sp, row)} sport={sp} row={row} live={!live.over}/>
+    <TennisLivePanel m={m} L={live}/>
+    <Panel title="BEFORE THE START" right="from the ratings"><IndivCard m={m} sport={sp}/></Panel>
+    <Panel title="HOW THIS IS RATED"><FitNote fit={res.fit} sport={sp} /></Panel>
+    <button onClick={onBack} style={{ ...btnStyle(), width: "100%", padding: 12, marginTop: 14 }}>◂ BACK</button>
+  </Shell>;
   return <Shell status="matchup">
     <IndivCard m={m} sport={sp} big />
     {sp === "Tennis" && m.bo5 && <Panel title="IF IT'S BEST OF FIVE"><div style={{ fontSize: 12, color: T.ink }}>{m.a.name} {pct1(m.bo5.p)} · {m.b.name} {pct1(1 - m.bo5.p)}</div>
@@ -3228,8 +3287,9 @@ function indivFinal(sport, row) {
   const won = (x, y) => x.reduce((k, v, i) => k + (v > (y[i] ?? -1) ? 1 : 0), 0);
   const W = row.away.win ? "away" : row.home.win ? "home" : null;
   const setText = sa.length ? sa.map((v, i) => (W === "home" ? `${sh[i]}-${v}` : `${v}-${sh[i]}`)).join(", ") : "";
-  const t = (x, s, o) => ({ id: "", abbr: "", name: x.name, short: x.name, score: sa.length ? won(s, o) : null, win: !!x.win, rec: "", lines: s });
-  return { sport, id: row.id, detail: row.detail || "Final", done: true, away: t(row.away, sa, sh), home: t(row.home, sh, sa), venue: "", city: "", attendance: null,
+  const rs = row.state === "in" ? readSets(row.away.score, row.home.score, true) : null;     // live: only finished sets count
+  const t = (x, s, o, k) => ({ id: "", abbr: "", name: x.name, short: x.name, score: rs ? rs[k] : sa.length ? won(s, o) : null, win: !!x.win, rec: "", lines: s });
+  return { sport, id: row.id, detail: row.detail || "Final", done: true, away: t(row.away, sa, sh, "sa"), home: t(row.home, sh, sa, "sb"), venue: "", city: "", attendance: null,
     teamStats: [], players: { away: [], home: [] }, leaders: { away: [], home: [] }, scoring: [], lines: null, wp: null, setText: setText ? `in ${sport === "Tennis" ? "sets" : "rounds"}: ${setText}` : "" };
 }
 function FinalScreen({ sport, row: row0, onBack, live = false, onSim }) {
@@ -3491,7 +3551,7 @@ export default function App() {
     if(o){setAwayInput(a);setHomeInput(h);setIsNeutral(n);if(sp!==sport)setSport(sp);}else setBackTo(null);
     if(isIndiv(sp)){
       setLoading(true);setError(null);setPhase("slateLoading");
-      try{setIndivMatch(await indivMatchup(sp,a,h));setPhase("indivMatch");}
+      try{setIndivMatch(await indivMatchup(sp,a,h,o&&o.row||null));setPhase("indivMatch");}
       catch(e){setError(e.message||"Couldn't find those two.");setPhase("setup");}
       finally{setLoading(false);}
       return;
@@ -3517,7 +3577,7 @@ export default function App() {
   if (phase==="indivMatch"&&indivMatch) return <IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
   if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")}/>;
   if (phase==="final"&&finalRow) return <FinalScreen sport={finalRow.sport} row={finalRow.row} onBack={()=>setPhase("setup")}/>;
-  if (phase==="box"&&finalRow) { const r=finalRow.row; return <FinalScreen live sport={finalRow.sport} row={r} onBack={()=>setPhase("setup")} onSim={()=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport:finalRow.sport})}/>; }
+  if (phase==="box"&&finalRow) { const r=finalRow.row; return <FinalScreen live sport={finalRow.sport} row={r} onBack={()=>setPhase("setup")} onSim={()=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport:finalRow.sport,row:r})}/>; }
   if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
   if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
   if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
@@ -3529,5 +3589,5 @@ export default function App() {
   if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
     onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
-    onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport})}/>;
+    onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport,row:r})}/>;
 }
