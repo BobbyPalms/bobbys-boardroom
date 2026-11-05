@@ -3,6 +3,7 @@ import { parseFinal, finalRundown, teamStatRows, colOrder, groupTitle } from "./
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE } from "./bets.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -1832,6 +1833,8 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 @media (max-width:440px){.bb-sports{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
 @media (max-width:640px){.bb-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.bb-subtabs{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:480px){.bb-subtabs{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .bb-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
 @media (max-width:560px){.bb-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}`;
@@ -2794,7 +2797,9 @@ function BetSlipsScreen({ onBack }) {
   const [tab, setTab] = useState("slip");
   const [who, setWho] = useState(null);                       // a username whose page is open
   const [ver, setVer] = useState(0);                          // bump to re-read after a change
+  const [kal, setKal] = useState(null), [flash, setFlash] = useState(null);   // this device's Kalshi key (never readable, only usable)
   useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message, status: e.status })); }, []);
+  useEffect(() => { if (me.username) savedKey(me.username).then(k => setKal(k || null)).catch(() => setKal(null)); }, [me.username]);
   const open = u => { setWho(u); setTab("user"); };
   return <Shell status={me.username || "bet slips"}>
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
@@ -2805,10 +2810,12 @@ function BetSlipsScreen({ onBack }) {
     {me.err && <Panel title="BET SLIPS" color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095", lineHeight: 1.6 }}>{me.err}</div></Panel>}
     {!me.loading && !me.err && !me.username && <UsernamePanel onDone={u => setMe({ username: u })}/>}
     {me.username && <>
-      <nav className="bb-subtabs" style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
-        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
+      <nav className="bb-subtabs" style={{ display: "grid", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
+        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"], ["kalshi", kal ? "KALSHI ✓" : "KALSHI"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); setFlash(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
       </nav>
-      {tab === "slip" && <NewSlip onPlaced={() => { setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "slip" && <NewSlip kal={kal} onPlaced={msg => { setFlash(msg || null); setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "mine" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
+      {tab === "kalshi" && <KalshiPanel username={me.username} kal={kal} setKal={setKal}/>}
       {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
       {tab === "board" && <Leaderboard key={`lb${ver}`} onOpen={open}/>}
       {tab === "user" && who && <Bettor key={`u${who}${ver}`} path={`user/${encodeURIComponent(who)}`} onBackBoard={() => setTab("board")}/>}
@@ -2833,46 +2840,67 @@ function UsernamePanel({ onDone, current = "" }) {
 // ---------- the slip: one pick per line, odds on the right, + for another line; the amount underneath ----------
 let _lineId = 1;
 const blankLine = () => ({ id: _lineId++, text: "", odds: "", choice: null });
-function NewSlip({ onPlaced }) {
+function NewSlip({ onPlaced, kal }) {
   const [lines, setLines] = useState(() => [blankLine()]);
   const [stake, setStake] = useState("");
   const [board, setBoard] = useState(null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState(null);
+  const [kOn, setKOn] = useState(true), [review, setReview] = useState(false), [note, setNote] = useState(null);
+  const toK = !!kal && kOn;
   useEffect(() => { let on = true; loadBetRows().then(b => on && setBoard(b)); return () => { on = false; }; }, []);
   const rows = board?.rows || [];
   const read = useMemo(() => lines.map(l => {
     if (!l.text.trim()) return { l, empty: true };
     const res = board ? resolvePick(parsePick(l.text), rows) : { status: "loading" };
-    const leg = l.choice || res.leg || null;
+    const base = l.choice || res.leg || null, leg = base && l.kline != null ? { ...base, line: l.kline } : base;
     const odds = readOdds(l.odds);
     return { l, res, leg, odds, ready: !!leg && leg.state === "pre" && odds != null };
   }), [lines, board]);
-  const used = read.filter(x => !x.empty);
+  const kmap = useKalshiMap(kal, toK, read.map(x => (x.empty ? null : x.leg)));
+  // sending to Kalshi: each line's price is Kalshi's, and every line has to be on Kalshi
+  const rd = toK ? read.map((x, i) => (x.empty ? x : { ...x, k: kmap[i], odds: kmap[i]?.ok ? kmap[i].am : null, ready: !!x.leg && x.leg.state === "pre" && !!kmap[i]?.ok })) : read;
+  const used = rd.filter(x => !x.empty);
   const amt = Math.round(Number(stake) * 100) / 100;
   const price = used.length && used.every(x => x.odds != null) ? slipPrice(used.map(x => x.odds), amt) : null;
   const canPlace = used.length > 0 && used.every(x => x.ready) && amt > 0 && !busy;
   const set = (id, patch) => setLines(ls => ls.map(l => (l.id === id ? { ...l, ...patch } : l)));
+  const legsOut = odds => used.map((x, i) => ({ pick: x.l.text.trim(), sport: x.leg.sport, league: x.leg.league, eventId: x.leg.eventId, date: x.leg.date, market: x.leg.market, side: x.leg.side, line: x.leg.line, odds: odds ? odds[i] : x.odds }));
   const place = async () => {
+    if (toK) { setErr(null); setNote(null); setReview(true); return; }
     setBusy(true); setErr(null);
     try {
-      await api("POST", "slips", { stake: amt, legs: used.map(x => ({ pick: x.l.text.trim(), sport: x.leg.sport, league: x.leg.league, eventId: x.leg.eventId, date: x.leg.date, market: x.leg.market, side: x.leg.side, line: x.leg.line, odds: x.odds })) });
+      await api("POST", "slips", { stake: amt, legs: legsOut() });
       setLines([blankLine()]); setStake(""); onPlaced();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
+  // bought on Kalshi: now it's tracked here at what it actually cost
+  const kalshiDone = async r => {
+    try {
+      await api("POST", "slips", { stake: r.cost, legs: legsOut(r.legOdds), kalshi: r.kalshi });
+      setReview(false); setLines([blankLine()]); setStake(""); onPlaced(r.summary);
+    } catch (e) { setReview(false); setErr(`${r.summary} It's on Kalshi, but saving it here failed: ${e.message} Add it again with Kalshi switched off to track it.`); }
+  };
   return <Panel title="NEW SLIP" right={board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"}>
     <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay.</div>
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8, fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}><span>PICK</span><span>ODDS</span><span/></div>
+    {kal && <button onClick={() => { setKOn(!kOn); setReview(false); }} aria-pressed={toK} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", marginBottom: 12, padding: "10px 12px", border: `1px solid ${toK ? NEON.teal : T.line}`, background: toK ? "rgba(23,242,208,.08)" : "none", color: T.ink, cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
+      <span style={{ width: 34, height: 18, borderRadius: 9, background: toK ? NEON.teal : T.line, position: "relative", display: "inline-block" }}><span style={{ position: "absolute", top: 2, left: toK ? 18 : 2, width: 14, height: 14, borderRadius: 7, background: "#fff", transition: "left .15s" }}/></span>
+      <span style={{ minWidth: 0, fontSize: 12, lineHeight: 1.4 }}>{toK ? `Send to Kalshi${kal.env === "demo" ? " (demo)" : ""}: priced at Kalshi's odds, confirmed before it's bought` : "Track only (not sent to Kalshi)"}</span>
+      <span style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 1, color: toK ? NEON.teal : T.faint }}>{toK ? "ON" : "OFF"}</span>
+    </button>}
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8, fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}><span>PICK</span><span>{toK ? "KALSHI" : "ODDS"}</span><span/></div>
     {read.map((x, i) => {
       const last = i === read.length - 1;
       return <div key={x.l.id} style={{ marginBottom: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8 }}>
           <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={fieldStyle()}/>
-          <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: e.target.value.replace(/[^\d+-]/g, "").slice(0, 7) })} placeholder="-110" inputMode="numeric" style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>
+          {toK ? <input aria-label={`odds ${i + 1}`} readOnly value={rd[i].k?.ok ? fmtAm(rd[i].k.am) : ""} placeholder="Kalshi" title="Kalshi's current price" style={{ ...fieldStyle(NEON.teal), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: "#fff" }}/>
+            : <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: e.target.value.replace(/[^\d+-]/g, "").slice(0, 7) })} placeholder="-110" inputMode="numeric" style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>}
           {last
             ? <button aria-label="add a line" onClick={() => setLines(ls => [...ls, blankLine()])} style={{ ...btnStyle(), padding: 0, fontSize: 18 }}>+</button>
             : <button aria-label={`remove line ${i + 1}`} onClick={() => setLines(ls => ls.filter(l => l.id !== x.l.id))} style={{ ...btnStyle(false), padding: 0, fontSize: 16, cursor: "pointer", color: T.dim }}>×</button>}
         </div>
-        <PickMatch x={x} onChoose={leg => set(x.l.id, { choice: leg })}/>
+        <PickMatch x={toK ? { ...x, l: { ...x.l, odds: "k" }, odds: 0 } : x} onChoose={leg => set(x.l.id, { choice: leg, kline: null })}/>
+        {toK && x.leg && x.leg.state === "pre" && <KalshiLine k={rd[i].k} onLine={line => set(x.l.id, { kline: line })}/>}
       </div>;
     })}
     <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "4px 0 6px" }}>BET AMOUNT</div>
@@ -2883,18 +2911,199 @@ function NewSlip({ onPlaced }) {
     <div style={{ marginTop: 12, border: `1px solid ${T.line}`, background: "rgba(143,0,255,.07)", padding: "12px" }}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
         <span style={{ ...oneLine, fontFamily: F.d, fontSize: 11, letterSpacing: 2, color: T.chrome }}>{used.length > 1 ? `PARLAY · ${used.length} LEGS` : "STRAIGHT BET"}</span>
-        <span style={{ fontFamily: F.d, fontSize: 20, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" }}>{price ? fmtAm(price.am) : "–"}</span>
+        <span style={{ fontFamily: F.d, fontSize: 20, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" }}>{toK && used.length > 1 ? "QUOTE" : price ? fmtAm(price.am) : "–"}</span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 10 }}>
-        {[["BET", amt > 0 ? cash(amt) : "–"], ["TO WIN", price?.profit != null ? cash(price.profit) : "–"], ["PAYOUT", price?.payout != null ? cash(price.payout) : "–"]].map(([k, v]) =>
+        {(toK && used.length === 1 && rd.find(x => !x.empty)?.k?.ok && amt > 0 ? (z => [["COST", cash(z.cost)], ["TO WIN", cash(z.payout - z.cost)], ["PAYOUT", cash(z.payout)]])(sizeOrder(amt, rd.find(x => !x.empty).k.price))
+          : toK && used.length > 1 ? [["BET", amt > 0 ? cash(amt) : "–"], ["PRICE", "on request"], ["PAYOUT", "with quote"]]
+          : [["BET", amt > 0 ? cash(amt) : "–"], ["TO WIN", price?.profit != null ? cash(price.profit) : "–"], ["PAYOUT", price?.payout != null ? cash(price.payout) : "–"]]).map(([k, v]) =>
           <div key={k} style={{ minWidth: 0 }}><div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div><div style={{ ...oneLine, fontFamily: F.d, fontSize: 14, color: k === "TO WIN" ? NEON.green : T.ink, marginTop: 3 }}>{v}</div></div>)}
       </div>
     </div>
     {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
-    <button onClick={place} disabled={!canPlace} style={{ width: "100%", marginTop: 12, padding: 14, border: `1px solid ${canPlace ? T.chrome : T.line}`, background: canPlace ? "rgba(143,0,255,0.3)" : "none", color: canPlace ? "#fff" : T.faint, fontFamily: F.d, fontSize: 13, letterSpacing: 3, cursor: canPlace ? "pointer" : "not-allowed" }}>{busy ? "PLACING…" : "PLACE SLIP"}</button>
+    {note && <div style={{ marginTop: 10, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>{note}</div>}
+    {review && toK ? <KalshiReview kal={kal} plan={used.map(x => ({ k: x.k }))} stake={amt} onDone={kalshiDone} onCancel={() => setReview(false)}/>
+      : <button onClick={place} disabled={!canPlace} style={{ width: "100%", marginTop: 12, padding: 14, border: `1px solid ${canPlace ? (toK ? NEON.teal : T.chrome) : T.line}`, background: canPlace ? (toK ? "rgba(23,242,208,.18)" : "rgba(143,0,255,0.3)") : "none", color: canPlace ? "#fff" : T.faint, fontFamily: F.d, fontSize: 13, letterSpacing: 3, cursor: canPlace ? "pointer" : "not-allowed" }}>{busy ? "PLACING…" : toK ? "REVIEW ON KALSHI" : "PLACE SLIP"}</button>}
     {board && board.reached < board.tried && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{board.tried - board.reached} of {board.tried} scoreboards didn't answer; some games may be missing.</div>}
   </Panel>;
 }
+// ─── KALSHI on the slip: each person's own key, kept on their device; every order confirmed before it's sent ─────
+async function kalshiCall(rec, method, sub, body) {
+  const env = rec?.env || "live", headers = rec?.key ? await signHeaders(rec, method, `${API_ROOT}/${sub}`) : {};
+  let r;
+  try { r = await fetch(`${API}/kalshi/${env}/${sub}`, { method, credentials: "same-origin", headers: { ...headers, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }); }
+  catch (_) { throw new Error("Couldn't reach Kalshi. Check your connection and try again."); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const m = j?.error?.message || j?.error?.code || j?.message || j?.error || `Kalshi said no (${r.status})`;
+    throw new Error(r.status === 401 ? "Kalshi didn't accept the key. Check the Key ID and private key in the KALSHI tab." : /insufficient/i.test(String(m)) ? "Not enough money in your Kalshi account for this." : String(m));
+  }
+  return j;
+}
+// Kalshi's markets for the series a slip needs, refreshed every minute
+const _kx = {};
+async function kalshiEvents(env, series) {
+  const k = `${env}|${series}`;
+  if (_kx[k] && Date.now() - _kx[k].t < 60000) return _kx[k].p;
+  const p = kalshiCall({ env }, "GET", `events?series_ticker=${series}&status=open&with_nested_markets=true&limit=200`).then(j => j.events || []).catch(() => []);
+  _kx[k] = { t: Date.now(), p };
+  return p;
+}
+const kalshiMoney = d => cash(d);
+
+function KalshiPanel({ username, kal, setKal }) {
+  const [keyId, setKeyId] = useState(""), [pem, setPem] = useState(""), [env, setEnv] = useState("live"), [busy, setBusy] = useState(false), [err, setErr] = useState(null), [bal, setBal] = useState(null);
+  useEffect(() => { if (!kal) { setBal(null); return; } kalshiCall(kal, "GET", "portfolio/balance").then(j => setBal({ ok: true, v: (j.balance ?? 0) / 100 })).catch(e => setBal({ ok: false, msg: e.message })); }, [kal]);
+  const save = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const { key, kind } = await importKey(pem);
+      const rec = { keyId: keyId.trim(), key, kind, env, added: new Date().toISOString(), tail: keyId.trim().slice(-4) };
+      await kalshiCall(rec, "GET", "portfolio/balance");                    // proves the key works before it's kept
+      await saveKey(username, rec); setPem(""); setKeyId(""); setKal(rec);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const file = async f => { if (f) setPem(await f.text()); };
+  if (kal) return <Panel title="KALSHI" right={kal.env === "demo" ? "DEMO (practice money)" : "LIVE"} color={NEON.green}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
+      {[["STATUS", "Connected", NEON.green], ["API KEY", `••••${kal.tail || ""}`, T.ink], ["BALANCE", bal == null ? "…" : bal.ok ? kalshiMoney(bal.v) : "—", T.ink]].map(([k, v, c]) => <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, background: "rgba(9,2,17,.5)", padding: "9px 10px" }}>
+        <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div><div style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: c, marginTop: 3, overflowWrap: "anywhere" }}>{v}</div></div>)}
+    </div>
+    {bal && !bal.ok && <div style={{ marginTop: 10, fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{bal.msg}</div>}
+    <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7, marginTop: 12 }}>Your key is saved on this device only, in a form even this site can't read back. Each order is signed here and passed to Kalshi; the site's server never sees your key. On another phone or computer, add it there too.</div>
+    <button onClick={async () => { await forgetKey(username); setKal(null); }} style={{ ...btnStyle(), marginTop: 12 }}>REMOVE KEY FROM THIS DEVICE</button>
+  </Panel>;
+  const ok = keyId.trim().length > 8 && /BEGIN/.test(pem) && !busy;
+  return <Panel title="CONNECT KALSHI" right="your own API key">
+    <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7 }}>On kalshi.com: Account &amp; security → API Keys → Create key. Copy the Key ID and download the private key file, then add both here. The key stays on this device: it's stored so even this site can't read it back, every order is signed here, and nothing is sent to Kalshi until you confirm it.</div>
+    <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "12px 0 6px" }}>ACCOUNT</div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", border: `1px solid ${T.line}` }}>
+      {[["live", "LIVE"], ["demo", "DEMO (practice)"]].map(([k, t]) => <button key={k} onClick={() => setEnv(k)} style={{ padding: "10px 4px", border: "none", background: env === k ? "rgba(143,0,255,0.22)" : "none", borderBottom: `2px solid ${env === k ? T.chrome : "transparent"}`, color: env === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 1, cursor: "pointer" }}>{t}</button>)}
+    </div>
+    <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "12px 0 6px" }}>KEY ID</div>
+    <input aria-label="Kalshi key ID" value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="a952bcbe-ec3b-4b5b-b8f9-…" autoComplete="off" spellCheck={false} style={fieldStyle()}/>
+    <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "12px 0 6px" }}>PRIVATE KEY</div>
+    <textarea aria-label="Kalshi private key" value={pem} onChange={e => setPem(e.target.value)} placeholder={"-----BEGIN RSA PRIVATE KEY-----\n…\n-----END RSA PRIVATE KEY-----"} rows={5} autoComplete="off" spellCheck={false} style={{ ...fieldStyle(), fontSize: 11, resize: "vertical", lineHeight: 1.4 }}/>
+    <label style={{ display: "inline-block", marginTop: 8, fontSize: 11, color: T.chrome, cursor: "pointer", textDecoration: "underline" }}>or choose the key file<input type="file" accept=".key,.pem,.txt" onChange={e => file(e.target.files?.[0])} style={{ display: "none" }}/></label>
+    {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
+    <button onClick={save} disabled={!ok} style={{ width: "100%", marginTop: 12, padding: 13, border: `1px solid ${ok ? T.chrome : T.line}`, background: ok ? "rgba(143,0,255,0.3)" : "none", color: ok ? "#fff" : T.faint, fontFamily: F.d, fontSize: 12, letterSpacing: 2, cursor: ok ? "pointer" : "not-allowed" }}>{busy ? "CHECKING WITH KALSHI…" : "SAVE ON THIS DEVICE"}</button>
+  </Panel>;
+}
+
+// What each line maps to on Kalshi (or why it can't), from Kalshi's current markets
+function useKalshiMap(kal, on, legs) {
+  const [ev, setEv] = useState({});
+  const need = [...new Set(legs.filter(Boolean).flatMap(l => [seriesFor(l.sport, l.league, "ml"), l.market === "spread" || l.market === "total" ? seriesFor(l.sport, l.league, l.market) : null]).filter(Boolean))];
+  const key = need.join(",");
+  useEffect(() => {
+    if (!kal || !on || !need.length) return;
+    let alive = true;
+    Promise.all(need.map(s => kalshiEvents(kal.env, s).then(e => [s, e]))).then(r => alive && setEv(o => ({ ...o, ...Object.fromEntries(r) })));
+    const t = setInterval(() => { need.forEach(s => delete _kx[`${kal.env}|${s}`]); Promise.all(need.map(s => kalshiEvents(kal.env, s).then(e => [s, e]))).then(r => alive && setEv(o => ({ ...o, ...Object.fromEntries(r) }))); }, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, [kal, on, key]);
+  return legs.map(l => (!l ? null : need.every(s => s in ev) || [seriesFor(l.sport, l.league, "ml")].every(s => s in ev) ? mapLeg(l, ev) : { loading: true }));
+}
+function KalshiLine({ k, onLine }) {
+  if (!k) return null;
+  const box = c => ({ marginTop: 4, padding: "6px 10px", borderLeft: `2px solid ${c}`, background: `${c}10`, fontSize: 11, lineHeight: 1.5 });
+  if (k.loading) return <div style={box(T.dim)}><span style={{ color: T.dim }}>Checking Kalshi…</span></div>;
+  if (!k.ok) return <div style={box(NEON.gold)}>
+    <span style={{ color: NEON.gold }}>Kalshi: {k.why}</span>
+    {k.options?.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+      <span style={{ color: T.faint }}>use Kalshi's:</span>
+      {k.options.map(o => <button key={o.line} onClick={() => onLine(o.line)} style={{ padding: "3px 8px", border: `1px solid ${NEON.gold}66`, background: "none", color: T.ink, fontFamily: F.m, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>{o.text}</button>)}
+    </div>}
+  </div>;
+  return <div style={box(NEON.teal)}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
+      <span style={{ color: T.ink, overflowWrap: "anywhere" }}>Kalshi: {k.label} · buy {k.side.toUpperCase()}</span>
+      <span style={{ fontFamily: F.d, color: "#fff", whiteSpace: "nowrap" }}>{cents(k.price)} ({fmtAm(k.am)})</span>
+    </div>
+  </div>;
+}
+
+// The review step before anything is bought: exactly what goes to Kalshi, then the result
+function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
+  const [st, setSt] = useState({ step: "review" }), cancelled = useRef(false);
+  useEffect(() => () => { cancelled.current = true; }, []);
+  const straight = plan.length === 1, k = plan[0].k, size = straight ? sizeOrder(stake, k.price) : null;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const buyStraight = async () => {
+    setSt({ step: "sending" });
+    try {
+      const yesPrice = k.side === "yes" ? k.price : 1 - k.price;
+      const o = await kalshiCall(kal, "POST", "portfolio/events/orders", { ticker: k.ticker, side: k.side === "yes" ? "bid" : "ask", count: size.count.toFixed(2), price: yesPrice.toFixed(2), time_in_force: "fill_or_kill", self_trade_prevention_type: "taker_at_cross", client_order_id: crypto.randomUUID() });
+      const filled = parseFloat(o.fill_count || "0");
+      if (!(filled > 0)) { setSt({ step: "failed", msg: "The price moved before it filled, so nothing was bought. Review the new price and try again." }); return; }
+      const avgYes = parseFloat(o.average_fill_price || yesPrice), paid = k.side === "yes" ? avgYes : 1 - avgYes;
+      onDone({ cost: Math.round(filled * paid * 100) / 100, legOdds: [priceToAm(paid)], kalshi: { env: kal.env, orders: [{ ticker: k.ticker, side: k.side, count: filled, price: paid, order_id: o.order_id, filled }] }, summary: `Bought ${filled} ${k.side.toUpperCase()} at ${cents(paid)} on Kalshi.` });
+    } catch (e) { setSt({ step: "failed", msg: e.message }); }
+  };
+  const askCombo = async () => {
+    setSt({ step: "quoting", left: 25 });
+    try {
+      const colls = await kalshiCall({ env: kal.env }, "GET", "multivariate_event_collections?status=open&limit=200").then(j => j.multivariate_contracts || j.multivariate_event_collections || []);
+      const c = comboCollection(colls, plan.map(p => p.k));
+      if (!c) { setSt({ step: "failed", msg: "Kalshi doesn't offer this combination as a combo (some legs can't be combined). Nothing was bought." }); return; }
+      const legsSel = plan.map(p => ({ event_ticker: p.k.event_ticker, market_ticker: p.k.ticker, side: p.k.side }));
+      const made = await kalshiCall(kal, "POST", `multivariate_event_collections/${c.collection_ticker}`, { selected_markets: legsSel });
+      const rfq = await kalshiCall(kal, "POST", "communications/rfqs", { market_ticker: made.market_ticker, target_cost_dollars: stake.toFixed(2), rest_remainder: false, replace_existing: true });
+      const t0 = Date.now();
+      while (!cancelled.current && Date.now() - t0 < 25000) {
+        const q = await kalshiCall(kal, "GET", `communications/quotes?rfq_id=${rfq.id}&status=open`).catch(() => ({ quotes: [] }));
+        const best = bestComboQuote(q.quotes);
+        if (best) { setSt({ step: "quote", best, rfq: rfq.id, market: made.market_ticker, coll: c.collection_ticker }); return; }
+        setSt({ step: "quoting", left: Math.max(0, Math.round(25 - (Date.now() - t0) / 1000)) });
+        await sleep(1500);
+      }
+      await kalshiCall(kal, "DELETE", `communications/rfqs/${rfq.id}`).catch(() => {});
+      if (!cancelled.current) setSt({ step: "failed", msg: "No market maker quoted this combo in time. Nothing was bought. Try again, or fewer legs." });
+    } catch (e) { setSt({ step: "failed", msg: e.message }); }
+  };
+  const acceptCombo = async () => {
+    const { best, rfq, market, coll } = st;
+    setSt({ ...st, step: "accepting" });
+    try {
+      await kalshiCall(kal, "PUT", `communications/rfqs/${rfq}/quotes/${best.quote.id}/accept`, { accepted_side: "no" });   // the maker's NO side = buying YES
+      const t0 = Date.now();
+      while (Date.now() - t0 < 12000) {
+        await sleep(1000);
+        const q = await kalshiCall(kal, "GET", `communications/quotes?rfq_id=${rfq}`).catch(() => ({ quotes: [] }));
+        const mine = (q.quotes || []).find(x => x.status === "executed") || (q.quotes || []).find(x => x.id === best.quote.id);
+        if (mine?.status === "executed") {
+          const n = parseFloat(mine.yes_contracts_fp || mine.no_contracts_fp || mine.contracts_fp || best.contracts || 0), price = 1 - parseFloat(mine.no_bid_dollars || best.quote.no_bid_dollars);
+          onDone({ cost: Math.round(n * price * 100) / 100, legOdds: plan.map(p => p.k.am), kalshi: { env: kal.env, dec: 1 / price, orders: [], combo: { market_ticker: market, collection: coll, rfq_id: rfq, quote_id: mine.id, price, contracts: n } }, summary: `Combo bought on Kalshi: ${n} YES at ${cents(price)}.` });
+          return;
+        }
+        if (mine?.status === "cancelled") break;
+      }
+      setSt({ step: "failed", msg: "The market maker didn't confirm the trade, so nothing was bought. You can ask for a new quote." });
+    } catch (e) { setSt({ step: "failed", msg: e.message }); }
+  };
+  const row = (a, b, c) => <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, padding: "5px 0", borderTop: `1px solid ${T.line}`, fontSize: 12 }}><span style={{ color: T.dim }}>{a}</span><span style={{ fontFamily: F.d, color: c || T.ink, textAlign: "right" }}>{b}</span></div>;
+  const big = (on, txt, fn, c = T.chrome) => <button onClick={fn} disabled={!on} style={{ width: "100%", marginTop: 10, padding: 13, border: `1px solid ${on ? c : T.line}`, background: on ? `${c}33` : "none", color: on ? "#fff" : T.faint, fontFamily: F.d, fontSize: 12, letterSpacing: 2, cursor: on ? "pointer" : "not-allowed" }}>{txt}</button>;
+  return <div style={{ marginTop: 12, border: `1px solid ${NEON.teal}88`, background: "rgba(23,242,208,.05)", padding: 12 }}>
+    <div style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 2, color: NEON.teal }}>REVIEW · KALSHI {kal.env === "demo" ? "DEMO" : "LIVE"}</div>
+    <div style={{ marginTop: 8 }}>{plan.map((p, i) => <div key={i} style={{ fontSize: 12, color: T.ink, padding: "3px 0", overflowWrap: "anywhere" }}>{plan.length > 1 ? `${i + 1}. ` : ""}{p.k.label} · {p.k.side.toUpperCase()} {cents(p.k.price)}</div>)}</div>
+    {straight && size && <div style={{ marginTop: 8 }}>
+      {row("Contracts", size.count.toFixed(2))}{row("Price", `${cents(k.price)} (${fmtAm(k.am)})`)}{row("Cost", kalshiMoney(size.cost))}{row("Kalshi fee (est.)", kalshiMoney(size.fee))}{row("Pays if it wins", kalshiMoney(size.payout), NEON.green)}
+    </div>}
+    {!straight && st.step === "review" && <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.6, marginTop: 8 }}>Kalshi prices a combo by asking market makers for a quote. Ask now and you'll see the price before anything is bought; {kalshiMoney(stake)} is the most it can cost, fees included.</div>}
+    {st.step === "quoting" && <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>Asking market makers for a quote… ({st.left}s)</div>}
+    {(st.step === "quote" || st.step === "accepting") && <div style={{ marginTop: 8 }}>
+      {row("Combo price", `${cents(st.best.price)} (${fmtAm(st.best.am)})`)}{row("Contracts", st.best.contracts ? st.best.contracts.toFixed(2) : "—")}{row("Pays if every leg wins", st.best.contracts ? kalshiMoney(st.best.contracts) : "—", NEON.green)}
+      <div style={{ fontSize: 11, color: T.faint, marginTop: 6 }}>Quotes last only seconds on combos.</div>
+    </div>}
+    {st.step === "failed" && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{st.msg}</div>}
+    {straight && (st.step === "review" || st.step === "sending") && big(st.step === "review", st.step === "sending" ? "SENDING TO KALSHI…" : `CONFIRM: BUY ON KALSHI FOR ${kalshiMoney(size?.cost || 0)}`, buyStraight, NEON.teal)}
+    {!straight && st.step === "review" && big(true, "GET A KALSHI QUOTE", askCombo, NEON.teal)}
+    {(st.step === "quote" || st.step === "accepting") && big(st.step === "quote", st.step === "accepting" ? "BUYING…" : `CONFIRM: BUY THE COMBO AT ${cents(st.best.price)}`, acceptCombo, NEON.teal)}
+    {st.step === "failed" && big(true, "TRY AGAIN", () => setSt({ step: "review" }))}
+    <button onClick={onCancel} disabled={st.step === "sending" || st.step === "accepting"} style={{ width: "100%", marginTop: 8, padding: 10, border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 2, cursor: "pointer" }}>CANCEL</button>
+  </div>;
+}
+
 // under each line: which game it matched (or why it didn't), and other games it could mean
 function PickMatch({ x, onChoose }) {
   if (x.empty) return null;
@@ -2957,7 +3166,7 @@ function SlipCard({ sl, canTakeBack, onTakeBack }) {
   return <div style={{ marginTop: 10, border: `1px solid ${c}66`, background: `${c}0d`, padding: "10px 12px" }}>
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
       <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: c }}>{sl.status.toUpperCase()}</span>
-      <span style={{ ...oneLine, fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}</span>
+      <span style={{ ...oneLine, fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}</span> : null}</span>
       <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{fmtAm(sl.odds)}</span>
     </div>
     <div style={{ marginTop: 8 }}>

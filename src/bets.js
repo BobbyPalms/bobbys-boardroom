@@ -49,6 +49,8 @@ export const legLabel = leg => {
 // ---------- matching a pick to a game on the board ----------
 // rows: { sport, league, id, date, state, away: {name, full, abbr, nick, loc}, home: {...} } (the live-board rows)
 const asTeam = x => ({ name: x.full || x.name, short: x.name, abbr: x.abbr, nick: x.nick || "", loc: x.loc || "" });
+// a side as a leg keeps it: the short name, abbreviation, and the full name and city (used to find it on Kalshi)
+const side = x => ({ name: x.name, abbr: x.abbr || "", ...(x.full ? { full: x.full } : {}), ...(x.loc ? { loc: x.loc } : {}), ...(x.nick ? { nick: x.nick } : {}) });
 export function resolvePick(p, rows, { sport = null } = {}) {
   if (!p || !p.q || p.q.length < 2) return { status: "empty" };
   const segs = p.q.split(/\s+(?:vs\.?|v\.?|@|at|and|&|-)\s+|\s*\/\s*/).map(s => s.trim()).filter(Boolean);
@@ -74,9 +76,9 @@ export function resolvePick(p, rows, { sport = null } = {}) {
   const leg = {
     sport: pick.r.sport, league: pick.r.league, eventId: pick.r.id, date: pick.r.date, state: pick.r.state,
     market: p.market, side: pick.side, line: p.line,
-    away: { name: pick.r.away.name, abbr: pick.r.away.abbr || "" }, home: { name: pick.r.home.name, abbr: pick.r.home.abbr || "" }, title: pick.r.title || "",
+    away: side(pick.r.away), home: side(pick.r.home), title: pick.r.title || "",
   };
-  const others = scored.filter(s => s !== pick && s.score >= pick.score - 2 && s.r.id !== pick.r.id).slice(0, 3).map(s => ({ ...leg, eventId: s.r.id, sport: s.r.sport, league: s.r.league, date: s.r.date, state: s.r.state, side: s.side, away: { name: s.r.away.name, abbr: s.r.away.abbr || "" }, home: { name: s.r.home.name, abbr: s.r.home.abbr || "" } }));
+  const others = scored.filter(s => s !== pick && s.score >= pick.score - 2 && s.r.id !== pick.r.id).slice(0, 3).map(s => ({ ...leg, eventId: s.r.id, sport: s.r.sport, league: s.r.league, date: s.r.date, state: s.r.state, side: s.side, away: side(s.r.away), home: side(s.r.home) }));
   return { status: pick.r.state === "pre" ? "ok" : "started", leg, others };
 }
 
@@ -106,7 +108,8 @@ export function settleSlip(slip) {
   if (legs.some(l => l.res !== "W" && l.res !== "P")) return { status: "pending", profit: null, dec: null };
   const live = legs.filter(l => l.res === "W");
   if (!live.length) return { status: "push", profit: 0, dec: 1 };
-  const dec = live.reduce((a, l) => a * amToDec(l.odds), 1);
+  // a Kalshi combo pays at its own price when every leg wins
+  const dec = slip.kalshi?.dec > 1 && live.length === legs.length ? slip.kalshi.dec : live.reduce((a, l) => a * amToDec(l.odds), 1);
   return { status: "won", profit: Math.round(slip.stake * (dec - 1) * 100) / 100, dec };
 }
 

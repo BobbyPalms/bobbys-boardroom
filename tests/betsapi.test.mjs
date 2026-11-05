@@ -36,8 +36,10 @@ const ev = (id, g) => ({ id, date: g.date, competitions: [{ id, date: g.date, st
   { homeAway: "away", score: g.as, winner: g.state === "post" && +g.as > +g.hs, team: { abbreviation: g.away[0], displayName: g.away[1], shortDisplayName: g.away[2], name: g.away[2] } },
   { homeAway: "home", score: g.hs, winner: g.state === "post" && +g.hs > +g.as, team: { abbreviation: g.home[0], displayName: g.home[1], shortDisplayName: g.home[2], name: g.home[2] } }] }] });
 let espnCalls = 0;
-globalThis.fetch = async url => {
+const kalshiSeen = []; let kalshi204 = false;
+globalThis.fetch = async (url, opts = {}) => {
   const u = new URL(String(url));
+  if (/kalshi/.test(u.host)) { kalshiSeen.push({ url: String(url), method: opts.method, headers: opts.headers, body: opts.body }); if (kalshi204) return new Response(null, { status: 204 }); return new Response(JSON.stringify({ balance: 12345, order_id: "ord-1", fill_count: "17.85" }), { status: 200, headers: { "content-type": "application/json" } }); }
   espnCalls++;
   const m = u.pathname.match(/sports\/(.+)\/scoreboard/);
   if (!m) return new Response("", { status: 404 });
@@ -104,6 +106,34 @@ check("no emails anywhere on the board", !JSON.stringify(b).includes("@"));
 const prof = await call("zed@x.com", "GET", "user/bobbypalmtrees");
 check("anyone's page by username: stats and slips, no email", prof.j.username === "BobbyPalmTrees" && prof.j.slips.length === 2 && prof.j.stats.W === 1 && !JSON.stringify(prof.j).includes("@"), prof.j);
 check("unknown username", (await call("zed@x.com", "GET", "user/nobody")).status === 404);
+// ---- Kalshi relay: passes a signed request through unchanged, only to the slip flow's paths ----
+let kr = await onRequest({ request: new Request("https://bobbys-boardroom.pages.dev/api/kalshi/live/portfolio/events/orders", { method: "POST", headers: { "x-dev-email": "bob@x.com", "KALSHI-ACCESS-KEY": "kid", "KALSHI-ACCESS-SIGNATURE": "sig", "KALSHI-ACCESS-TIMESTAMP": "123", "content-type": "application/json" }, body: JSON.stringify({ ticker: "T", side: "bid", count: "1", price: "0.5" }) }), env, params: { path: ["kalshi", "live", "portfolio", "events", "orders"] } });
+const ks = kalshiSeen.at(-1);
+check("relay: forwards to Kalshi with the signature headers and body, untouched", kr.status === 200 && ks.url === "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders" && ks.method === "POST" && ks.headers["KALSHI-ACCESS-KEY"] === "kid" && ks.headers["KALSHI-ACCESS-SIGNATURE"] === "sig" && JSON.parse(ks.body).ticker === "T", ks);
+kr = await onRequest({ request: new Request("https://x/api/kalshi/demo/events?series_ticker=KXNBAGAME", { headers: { "x-dev-email": "bob@x.com" } }), env, params: { path: ["kalshi", "demo", "events"] } });
+check("relay: demo host and query string", kr.status === 200 && kalshiSeen.at(-1).url === "https://external-api.demo.kalshi.co/trade-api/v2/events?series_ticker=KXNBAGAME");
+const before = kalshiSeen.length;
+kr = await onRequest({ request: new Request("https://x/api/kalshi/live/portfolio/withdrawals", { method: "POST", headers: { "x-dev-email": "bob@x.com" } }), env, params: { path: ["kalshi", "live", "portfolio", "withdrawals"] } });
+check("relay: anything outside the slip flow is refused (never reaches Kalshi)", kr.status === 403 && kalshiSeen.length === before);
+kr = await onRequest({ request: new Request("https://x/api/kalshi/live/portfolio/balance"), env, params: { path: ["kalshi", "live", "portfolio", "balance"] } });
+check("relay: needs the site login", kr.status === 401);
+kalshi204 = true;
+kr = await onRequest({ request: new Request("https://x/api/kalshi/live/communications/rfqs/r1/quotes/q1/accept", { method: "PUT", headers: { "x-dev-email": "bob@x.com" }, body: JSON.stringify({ accepted_side: "no" }) }), env, params: { path: ["kalshi", "live", "communications", "rfqs", "r1", "quotes", "q1", "accept"] } });
+check("relay: Kalshi's empty 204 reply (accepted quote) passes through", kr.status === 204);
+kalshi204 = false;
+// ---- a Kalshi combo slip pays at the combo's price ----
+Object.assign(games["402"], { state: "pre", date: new Date(Date.now() + 3 * 3600e3).toISOString(), as: "", hs: "" });
+Object.assign(games["501"], { state: "pre", date: new Date(Date.now() + 3 * 3600e3).toISOString(), as: "", hs: "" });
+r = await call("zed@x.com", "POST", "slips", { stake: 9.5, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-110"), { pick: "Real Madrid ML", sport: "Soccer", league: "uefa.champions", eventId: "501", date: games["501"].date, market: "ml", side: "away", line: null, odds: "-200" }], kalshi: { env: "live", dec: 1 / 0.19, combo: { market_ticker: "KXMVE-1", rfq_id: "r1", quote_id: "q1", price: 0.19, contracts: 50 }, orders: [], secret: "never kept" } });
+check("Kalshi combo slip: priced at the combo (+426), Kalshi ids kept, nothing else", r.status === 200 && r.j.slip.odds === 426 && r.j.slip.kalshi.combo.rfq_id === "r1" && !("secret" in r.j.slip.kalshi), r.j);
+const kid = r.j.slip.id;
+Object.assign(games["402"], { state: "post", date: past, as: "115", hs: "110" }); Object.assign(games["501"], { state: "post", date: past, as: "2", hs: "0" });
+db.prepare("UPDATE slips SET legs = replace(legs, ?, ?) WHERE id = ?").run(JSON.stringify(games["402"].date).slice(1, -1), past, kid);
+const legsNow = JSON.parse(db.prepare("SELECT legs FROM slips WHERE id=?").get(kid).legs).map(l => ({ ...l, date: past }));
+db.prepare("UPDATE slips SET legs=? WHERE id=?").run(JSON.stringify(legsNow), kid);
+db.prepare("DELETE FROM settings WHERE k='graded_at'").run();
+const zs = (await call("zed@x.com", "GET", "slips")).j.slips.find(x => x.id === kid);
+check("Kalshi combo slip graded: won at the combo price ($9.50 at 19¢ wins $40.50)", zs.status === "won" && Math.abs(zs.profit - 40.5) < 0.01, zs);
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
 function decToAmLocal(list) { const d = list.reduce((a, o) => a * (o > 0 ? 1 + o / 100 : 1 + 100 / -o), 1); return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }

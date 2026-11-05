@@ -1,0 +1,162 @@
+// Kalshi: match a slip's picks to Kalshi's markets, price them, and sign each request on the person's own device.
+// Each person's API key lives only in their browser (a non-extractable WebCrypto key in IndexedDB): the site's server
+// never sees it. Requests are signed here and passed through the site's relay (/api/kalshi), because Kalshi doesn't
+// accept calls straight from a browser.
+import { teamQueryScore } from "./routes.js";
+
+export const KALSHI_HOST = { live: "https://external-api.kalshi.com", demo: "https://external-api.demo.kalshi.co" };
+export const API_ROOT = "/trade-api/v2";
+
+// ---------- which Kalshi series carries each of our leagues ----------
+const SOCCER = { "eng.1": "EPL", "esp.1": "LALIGA", "ger.1": "BUNDESLIGA", "ita.1": "SERIEA", "fra.1": "LIGUE1", "usa.1": "MLS", "mex.1": "LIGAMX", "uefa.champions": "UCL", "uefa.europa": "UEL", "fifa.friendly": "INTLFRIENDLY" };
+const TEAM = { NBA: "NBA", NFL: "NFL", CFB: "NCAAF", CBB: "NCAAMB", CBBW: "NCAAWB", NHL: "NHL", MLB: "MLB", WNBA: "WNBA" };
+export function seriesFor(sport, league, market) {
+  if (sport === "Tennis") return market === "ml" ? (league === "wta" ? "KXWTAMATCH" : "KXATPMATCH") : null;
+  if (sport === "MMA") return market === "ml" ? "KXUFCFIGHT" : null;
+  const base = sport === "Soccer" ? SOCCER[league] : TEAM[sport];
+  if (!base) return null;
+  return `KX${base}${market === "spread" ? "SPREAD" : market === "total" ? "TOTAL" : "GAME"}`;
+}
+
+// ---------- prices ----------
+export const dollars = v => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
+export const priceToAm = p => { if (!(p > 0 && p < 1)) return null; const d = 1 / p; return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); };
+export const cents = p => `${Math.round(p * 100)}¢`;
+// Kalshi's trading fee: 7% x contracts x price x (1 - price), rounded up to the cent (an estimate shown before confirming)
+export const feeEstimate = (count, p) => Math.ceil(0.07 * count * p * (1 - p) * 100 - 1e-9) / 100;
+// contracts for a dollar amount at a price (fractions to 0.01 are allowed), and what it costs and pays
+export function sizeOrder(stake, p) {
+  if (!(stake > 0) || !(p > 0 && p < 1)) return null;
+  const count = Math.floor((stake / p) * 100 + 1e-9) / 100;
+  const cost = Math.round(count * p * 100) / 100, fee = feeEstimate(count, p);
+  return { count, cost, fee, payout: Math.round(count * 100) / 100, profit: Math.round((count - cost - fee) * 100) / 100 };
+}
+
+// ---------- matching a pick to a Kalshi market ----------
+const MON = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+const dayOfCode = code => { const m = String(code).match(/^(\d\d)([A-Z]{3})(\d\d)/); return m ? Date.UTC(2000 + Number(m[1]), MON[m[2]], Number(m[3])) : null; };
+const etDayUTC = iso => { const s = new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" }); const [y, mo, d] = s.split("-").map(Number); return Date.UTC(y, mo - 1, d); };
+const suffix = t => String(t || "").split("-").pop().replace(/\d+$/, "").toUpperCase();
+const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+function teamScore(t, m) {
+  if (!t) return 0;
+  const sub = m.yes_sub_title || "";
+  if (t.abbr && suffix(m.ticker) === String(t.abbr).toUpperCase()) return 3;
+  const T = { name: t.full || t.name, short: t.name, abbr: t.abbr, nick: t.nick || "", loc: t.loc || "" };
+  let s = teamQueryScore(T, sub);
+  // a person's name: the surname is enough ("Shelton" / "Ben Shelton")
+  const a = norm(t.full || t.name).split(" ").pop(), b = norm(sub).split(" ").pop();
+  if (a && b && a === b && a.length >= 3) s = Math.max(s, 2);
+  return s;
+}
+// the GAME (or MATCH / FIGHT) event for this leg's game: both sides found among its markets, within a day of the start
+export function findGameEvent(events, leg) {
+  const day = etDayUTC(leg.date);
+  let best = null;
+  for (const e of events || []) {
+    const code = String(e.event_ticker || "").split("-")[1] || "", d = dayOfCode(code);
+    if (d != null && Math.abs(d - day) > 864e5 * 1.01) continue;
+    const ms = (e.markets || []).filter(m => !/^tie$/i.test(m.yes_sub_title || ""));
+    const pick = side => ms.map(m => ({ m, s: teamScore(leg[side], m) })).sort((x, y) => y.s - x.s)[0];
+    const A = pick("away"), H = pick("home");
+    if (!A || !H || A.s < 2 || H.s < 2 || A.m.ticker === H.m.ticker) continue;
+    const score = A.s + H.s - (d == null ? 0 : Math.abs(d - day) / 864e5);
+    if (!best || score > best.score) best = { e, code, away: A.m, home: H.m, tie: (e.markets || []).find(m => /^tie$/i.test(m.yes_sub_title || "")) || null, score };
+  }
+  return best;
+}
+const ask = (m, side) => dollars(side === "yes" ? m.yes_ask_dollars : m.no_ask_dollars);
+const open = m => !m.status || m.status === "active" || m.status === "open";
+// One leg -> the Kalshi market and side to buy, at the current ask. When Kalshi doesn't list the exact line, the
+// nearest lines it does list come back as options (picking one changes the pick to that line).
+export function mapLeg(leg, bySeries) {
+  const gameS = seriesFor(leg.sport, leg.league, "ml");
+  if (!gameS) return { ok: false, why: "Kalshi doesn't list this league." };
+  const g = findGameEvent(bySeries[gameS], leg);
+  if (!g) return { ok: false, why: "Couldn't find this game on Kalshi (it may not be listed yet)." };
+  const teamMk = side => (side === "away" ? g.away : g.home), other = side => (side === "away" ? "home" : "away");
+  const done = (m, side, line, label) => {
+    const p = m ? ask(m, side) : null;
+    if (!m || !open(m)) return { ok: false, why: "That market isn't open on Kalshi right now." };
+    if (!(p > 0 && p < 1)) return { ok: false, why: "No one is selling that side on Kalshi right now." };
+    return { ok: true, ticker: m.ticker, event_ticker: m.event_ticker, side, price: p, am: priceToAm(p), line, label, title: m.yes_sub_title };
+  };
+  if (leg.market === "ml") return done(teamMk(leg.side), "yes", null, `${teamMk(leg.side).yes_sub_title} to win`);
+  if (leg.market === "draw") return g.tie ? done(g.tie, "yes", null, "Tie") : { ok: false, why: "Kalshi has no draw market for this game." };
+  const ser = seriesFor(leg.sport, leg.league, leg.market), ev = (bySeries[ser] || []).find(e => String(e.event_ticker).split("-")[1] === g.code);
+  if (!ev) return { ok: false, why: `Kalshi has no ${leg.market} market for this game yet.` };
+  const ms = (ev.markets || []).filter(open), strike = m => dollars(m.floor_strike);
+  if (leg.market === "total") {
+    const lines = [...new Set(ms.map(strike).filter(x => x != null))].sort((a, b) => a - b);
+    const m = ms.find(x => strike(x) === leg.line);
+    if (m) return done(m, leg.side === "over" ? "yes" : "no", leg.line, `${leg.side === "over" ? "Over" : "Under"} ${leg.line}`);
+    return { ok: false, why: `Kalshi doesn't list a total of ${leg.line}.`, options: nearest(lines, leg.line).map(x => ({ line: x, text: `${leg.side} ${x}` })) };
+  }
+  // spread: Kalshi lists "TEAM wins by over N.5" for each team. A minus line buys YES on that team's market; a plus
+  // line buys NO on the other team's market at the same number.
+  const fav = leg.line < 0 ? leg.side : other(leg.side), favCode = suffix(teamMk(fav).ticker), k = Math.abs(leg.line);
+  const forTeam = code => ms.filter(m => suffix(m.ticker) === code);
+  const m = forTeam(favCode).find(x => strike(x) === k);
+  if (m) return done(m, leg.line < 0 ? "yes" : "no", leg.line, `${teamMk(leg.side).yes_sub_title} ${leg.line > 0 ? "+" : ""}${leg.line}`);
+  const lines = forTeam(favCode).map(strike).filter(x => x != null).sort((a, b) => a - b);
+  return { ok: false, why: `Kalshi doesn't list ${leg.line > 0 ? "+" : ""}${leg.line} for this game.`, options: nearest(lines, k).map(x => ({ line: leg.line < 0 ? -x : x, text: `${leg.line < 0 ? "-" : "+"}${x}` })) };
+}
+// the closest line Kalshi lists on each side of the one asked for
+const nearest = (lines, x) => { const lo = lines.filter(v => v < x), hi = lines.filter(v => v > x); return [lo.length ? Math.max(...lo) : null, hi.length ? Math.min(...hi) : null].filter(v => v != null); };
+
+// a combo (parlay) on Kalshi: the open combo collection that holds every leg's game
+export function comboCollection(collections, mapped) {
+  const evs = mapped.map(m => m.event_ticker);
+  const ok = (collections || []).filter(c => evs.every(e => (c.associated_event_tickers || []).includes(e)));
+  return ok.find(c => /SPORTS/.test(c.collection_ticker)) || ok[0] || null;
+}
+// a quote on a combo: buying YES means accepting the maker's NO side, at 1 - no_bid
+export function bestComboQuote(quotes) {
+  const open = (quotes || []).filter(q => q.status === "open" && dollars(q.no_bid_dollars) > 0);
+  if (!open.length) return null;
+  const q = open.sort((a, b) => dollars(b.no_bid_dollars) - dollars(a.no_bid_dollars))[0];
+  const price = Math.round((1 - dollars(q.no_bid_dollars)) * 10000) / 10000;
+  return { quote: q, price, am: priceToAm(price), contracts: dollars(q.yes_contracts_fp ?? q.no_contracts_fp ?? q.contracts_fp) };
+}
+
+// ---------- the key: imported once into this browser, never readable again ----------
+const b64 = buf => { let s = ""; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const derLen = n => (n < 128 ? [n] : n < 256 ? [0x81, n] : [0x82, n >> 8, n & 255]);
+const der = (tag, body) => new Uint8Array([tag, ...derLen(body.length), ...body]);
+// "BEGIN RSA PRIVATE KEY" (PKCS#1) -> PKCS#8, which WebCrypto imports
+function pkcs1to8(pk1) {
+  const alg = [0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00];
+  return der(0x30, [0x02, 0x01, 0x00, ...alg, ...der(0x04, [...pk1])]);
+}
+export function readPem(text) {
+  const t = String(text || "").trim(), m = t.match(/-----BEGIN ([A-Z ]+)-----([\s\S]+?)-----END \1-----/);
+  if (!m) throw new Error("That doesn't look like a private key file. Paste everything from -----BEGIN to -----END.");
+  const bytes = unb64(m[2].replace(/\s+/g, ""));
+  if (m[1] === "RSA PRIVATE KEY") return { kind: "rsa", pkcs8: pkcs1to8(bytes) };
+  if (m[1] === "PRIVATE KEY") {
+    const ed = bytes.length < 100 && Array.from(bytes).join(",").includes("6,3,43,101,112");     // OID 1.3.101.112 (Ed25519)
+    return { kind: ed ? "ed25519" : "rsa", pkcs8: bytes };
+  }
+  throw new Error("Use the private key Kalshi gave you when you made the API key (a .key / .pem file).");
+}
+export async function importKey(pemText, subtle = globalThis.crypto.subtle) {
+  const { kind, pkcs8 } = readPem(pemText);
+  const alg = kind === "rsa" ? { name: "RSA-PSS", hash: "SHA-256" } : { name: "Ed25519" };
+  const key = await subtle.importKey("pkcs8", pkcs8, alg, false, ["sign"]);     // false: never extractable
+  return { key, kind };
+}
+// Kalshi's signature: timestamp + METHOD + path (from the API root, no query), RSA-PSS SHA-256 (salt 32) or Ed25519
+export async function signHeaders({ key, kind, keyId }, method, path, ts = Date.now(), subtle = globalThis.crypto.subtle) {
+  const msg = new TextEncoder().encode(`${ts}${method.toUpperCase()}${path.split("?")[0]}`);
+  const sig = await subtle.sign(kind === "ed25519" ? { name: "Ed25519" } : { name: "RSA-PSS", saltLength: 32 }, key, msg);
+  return { "KALSHI-ACCESS-KEY": keyId, "KALSHI-ACCESS-TIMESTAMP": String(ts), "KALSHI-ACCESS-SIGNATURE": b64(sig) };
+}
+
+// ---------- this device's saved key (IndexedDB) ----------
+const DB = "bb-kalshi", STORE = "keys";
+const idb = () => new Promise((res, rej) => { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => r.result.createObjectStore(STORE); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const tx = async (mode, fn) => { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction(STORE, mode), s = t.objectStore(STORE), r = fn(s); t.oncomplete = () => res(r?.result); t.onerror = () => rej(t.error); }); };
+export const savedKey = who => tx("readonly", s => s.get(String(who).toLowerCase())).catch(() => null);
+export const saveKey = (who, rec) => tx("readwrite", s => s.put(rec, String(who).toLowerCase()));
+export const forgetKey = who => tx("readwrite", s => s.delete(String(who).toLowerCase()));

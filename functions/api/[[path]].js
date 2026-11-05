@@ -54,11 +54,12 @@ async function init(env) {
     env.DB.prepare("CREATE INDEX IF NOT EXISTS slips_status ON slips(status)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)"),
   ]);
+  try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN kalshi TEXT").run(); } catch (_) { /* already there */ }
   ready = true;
 }
 const setting = async (env, k) => (await env.DB.prepare("SELECT v FROM settings WHERE k=?").bind(k).first())?.v ?? null;
 const setSetting = (env, k, v) => env.DB.prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(k, v).run();
-const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.odds, status: r.status, profit: r.profit, settled: r.settled, legs: JSON.parse(r.legs) });
+const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.odds, status: r.status, profit: r.profit, settled: r.settled, legs: JSON.parse(r.legs), kalshi: r.kalshi ? JSON.parse(r.kalshi) : null });
 
 // ---------- ESPN ----------
 const espn = (env, url) => (env.ESPN_BASE ? url.replace("https://site.api.espn.com", env.ESPN_BASE) : url);
@@ -98,6 +99,16 @@ async function gradePending(env, force = false) {
 }
 
 // ---------- placing a slip ----------
+// what a slip keeps about its Kalshi orders (ids and fills only; never anything about the key)
+function cleanKalshi(k) {
+  if (!k || typeof k !== "object") return null;
+  const str = (v, n = 80) => (v == null ? null : String(v).slice(0, n)), numv = v => (Number.isFinite(Number(v)) ? Number(v) : null);
+  return {
+    env: k.env === "demo" ? "demo" : "live", dec: numv(k.dec),
+    orders: (Array.isArray(k.orders) ? k.orders : []).slice(0, 20).map(o => ({ ticker: str(o.ticker), side: o.side === "no" ? "no" : "yes", count: numv(o.count), price: numv(o.price), order_id: str(o.order_id), filled: numv(o.filled) })),
+    combo: k.combo ? { market_ticker: str(k.combo.market_ticker), collection: str(k.combo.collection), rfq_id: str(k.combo.rfq_id), quote_id: str(k.combo.quote_id), price: numv(k.combo.price), contracts: numv(k.combo.contracts) } : null,
+  };
+}
 async function placeSlip(env, email, body) {
   const stake = Math.round(Number(body?.stake) * 100) / 100;
   if (!(stake >= 0.01 && stake <= 1e6)) return bad("Enter a bet amount.");
@@ -123,10 +134,32 @@ async function placeSlip(env, email, body) {
     legs.push({ pick: String(x.pick || "").slice(0, 80), sport: x.sport, league: x.league, eventId: row.id, date: row.date, market: x.market, side, line,
       odds, away: { name: row.away.name, abbr: row.away.abbr || "" }, home: { name: row.home.name, abbr: row.home.abbr || "" }, title: x.sport === "Tennis" || x.sport === "MMA" ? row.league : "", res: null });
   }
-  const dec = legs.reduce((a, l) => a * amToDec(l.odds), 1), odds = decToAm(dec);
+  const kalshi = cleanKalshi(body?.kalshi);
+  // a Kalshi combo is priced as one contract: its price is the slip's odds, not the legs multiplied
+  const dec = kalshi?.dec > 1 ? kalshi.dec : legs.reduce((a, l) => a * amToDec(l.odds), 1), odds = decToAm(dec);
   const id = crypto.randomUUID(), created = new Date().toISOString();
-  await env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?)").bind(id, email, created, stake, odds, JSON.stringify(legs)).run();
-  return json({ slip: { id, created, stake, odds, status: "pending", profit: null, settled: null, legs } });
+  await env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)").bind(id, email, created, stake, odds, JSON.stringify(legs), kalshi ? JSON.stringify(kalshi) : null).run();
+  return json({ slip: { id, created, stake, odds, status: "pending", profit: null, settled: null, legs, kalshi } });
+}
+
+// ---------- Kalshi relay ----------
+// Kalshi doesn't take calls straight from a browser, so the page sends each request here, already signed on the person's
+// device with their own key. This passes it on unchanged: it never sees a key (only a signature that's good for this one
+// request and expires), keeps nothing, and only reaches the Kalshi paths the slip flow uses.
+const KALSHI = { live: "https://external-api.kalshi.com", demo: "https://external-api.demo.kalshi.co" };
+const KPATH = /^(portfolio\/balance|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|events|markets\/[\w.-]+|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
+async function relayKalshi(request, env, path) {
+  const host = (env.KALSHI_BASE && JSON.parse(env.KALSHI_BASE)[path[0]]) || KALSHI[path[0]], sub = path.slice(1).join("/");
+  if (!host) return bad("Unknown Kalshi environment.", 404);
+  if (!KPATH.test(sub)) return bad("That Kalshi request isn't part of the slip flow.", 403);
+  const h = { accept: "application/json", "content-type": "application/json", "user-agent": "bobbys-boardroom/1.0" };
+  for (const k of ["KALSHI-ACCESS-KEY", "KALSHI-ACCESS-SIGNATURE", "KALSHI-ACCESS-TIMESTAMP"]) { const v = request.headers.get(k); if (v) h[k] = v; }
+  const m = request.method.toUpperCase(), body = m === "POST" || m === "PUT" ? await request.text() : undefined;
+  let r;
+  try { r = await fetch(`${host}/trade-api/v2/${sub}${new URL(request.url).search}`, { method: m, headers: h, body }); }
+  catch (_) { return bad("Couldn't reach Kalshi. Try again.", 502); }
+  const empty = r.status === 204 || r.status === 205 || r.status === 304;                       // e.g. an accepted quote: no body
+  return new Response(empty ? null : await r.text(), { status: r.status, headers: { "content-type": r.headers.get("content-type") || "application/json", "cache-control": "no-store" } });
 }
 
 // ---------- routes ----------
@@ -136,6 +169,7 @@ export async function onRequest({ request, env, params }) {
   const email = await whoIs(request, env);
   if (!email) return bad("Log in to use bet slips.", 401);
   const path = [].concat(params.path || []), m = request.method, what = path[0] || "";
+  if (what === "kalshi") return relayKalshi(request, env, path.slice(1));
   const me = await env.DB.prepare("SELECT username FROM users WHERE email=?").bind(email).first();
   const body = m === "POST" ? await request.json().catch(() => ({})) : null;
 
