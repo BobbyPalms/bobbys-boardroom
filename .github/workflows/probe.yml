@@ -32,15 +32,12 @@ jobs:
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          set +e; K=https://api.elections.kalshi.com/trade-api/v2
-          kget() { curl -sS --compressed -m 40 -A "$UA" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" >> out/ids.txt; }
-          kget k_series_sports.json "$K/series?category=Sports"
-          kget k_mve.json "$K/multivariate_event_collections?status=open&limit=200"
-          for s in KXNBAGAME KXNBASPREAD KXNBATOTAL KXNFLGAME KXNFLSPREAD KXNFLTOTAL KXNCAAFGAME KXNCAAMBGAME KXNHLGAME KXEPLGAME KXUCLGAME KXATPMATCH KXUFCFIGHT KXWNBAGAME KXMLBGAME KXNCAAWBGAME; do
-            kget "k_ev_$s.json" "$K/events?series_ticker=$s&status=open&with_nested_markets=true&limit=200"
+          set +e; D=https://docs.kalshi.com
+          for pg in api-reference/orders/create-order-v2 api-reference/orders/create-order api-reference/communications/create-rfq api-reference/communications/get-quotes api-reference/communications/get-rfq api-reference/communications/delete-rfq api-reference/multivariate/create-market-in-multivariate-event-collection api-reference/multivariate/get-multivariate-event-collection api-reference/portfolio/get-balance api-reference/orders/get-order api-reference/portfolio/get-fills getting_started/demo_env getting_started/rfqs getting_started/fee_rounding; do
+            f=$(echo $pg | tr '/' '_'); curl -sS -L --compressed -m 40 -A "$UA" -o "out/doc_$f.md" -w "$pg %{http_code} %{size_download}\n" "$D/$pg.md" >> out/ids.txt
           done
-          curl -sS -m 30 -o /dev/null -D out/k_cors.txt -X OPTIONS -H "Origin: https://bobbys-boardroom.pages.dev" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: kalshi-access-key,kalshi-access-signature,kalshi-access-timestamp,content-type" "$K/portfolio/orders"
-          curl -sS -m 30 -o out/k_get_cors.json -D out/k_get_cors.txt -H "Origin: https://bobbys-boardroom.pages.dev" "$K/series?category=Sports&limit=1"
+          curl -sS -L --compressed -m 60 -A "$UA" -o out/openapi.yaml -w "openapi %{http_code} %{size_download}\n" "$D/openapi.yaml" >> out/ids.txt
+          curl -sS -L --compressed -m 60 -A "$UA" -o out/llms.txt -w "llms %{http_code} %{size_download}\n" "$D/llms.txt" >> out/ids.txt
           cd out && git init -q -b probe && git add -A
           git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
