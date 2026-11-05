@@ -68,7 +68,7 @@ export function parsePower(j) {
   }
   return out;
 }
-// power points -> the engine's offence / defence ratios vs the league average L (defence: lower = better)
+// power points -> the engine's offense / defense ratios vs the league average L (defense: lower = better)
 export const powerRatios = (p, L) => p && L > 0 ? { offRating: (L + p.off) / L, defRating: (L - p.def) / L } : null;
 export const rankingsUrl = (sport, league) => `${SITE}/${ROUTES[sport].sport}/${league}/rankings`;
 
@@ -133,7 +133,7 @@ export function parseOdds(o) {
   };
 }
 // Sharp-money signals from the line alone (no public splits in these routes): a move of the spread/total from open
-// to now, and whether the favourite flipped. Thresholds scale with each sport's margin spread.
+// to now, and whether the favorite flipped. Thresholds scale with each sport's margin spread.
 export function lineMove(m, sdM) {
   if (!m) return { steam: false, sharp: null, spreadMove: null, totalMove: null };
   const sm = m.awaySpread != null && m.awaySpreadOpen != null ? m.awaySpread - m.awaySpreadOpen : null;
@@ -144,6 +144,7 @@ export function lineMove(m, sdM) {
 
 // ---------- scoreboard -> games in the slate shape the algo reads ----------
 // standings = {cur:{teamId:row}, prev:{teamId:row}}; hist = {teamId:[{y,gp,gpg,gaa,lg}]}; lg = league average
+const recGames = r => { const m = String(r || "").match(/^\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?/); return m ? m.slice(1).reduce((a, x) => a + (x ? Number(x) : 0), 0) : 0; };
 export function parseScoreboard(j, sport, { standings = {}, hist = {}, lg = null, sdM = null, league = "" } = {}) {
   const games = [];
   for (const ev of j?.events || []) {
@@ -159,7 +160,9 @@ export function parseScoreboard(j, sport, { standings = {}, hist = {}, lg = null
       const avgPts = statOf(comp.statistics, "avgPoints", "avgGoals", "avgRuns");
       const out = {
         id, name: t.displayName || t.name || "", abbr: t.abbreviation || "", short: t.shortDisplayName || "", nick: t.name || "", loc: t.location || "", color: t.color ? "#" + t.color : "", rec,
-        gp: cur?.gp ?? null, gpg: cur?.gpg ?? avgPts ?? null, ga: cur?.gaa ?? null,
+        // ESPN's own "per game" average only before tip-off and only once the team has played: in a team's first game, or
+        // once a game is underway, it can be the score of the game in progress
+        gp: cur?.gp ?? null, gpg: cur?.gpg ?? (st.state === "pre" && (!rec || recGames(rec) > 0) ? avgPts : null) ?? null, ga: cur?.gaa ?? null,
         pgpg: prev?.gpg ?? null, pga: prev?.gaa ?? null, pgp: prev?.gp ?? null,
         gk: pr?.athlete?.displayName || null, gkId: pr?.athlete?.id ? String(pr.athlete.id) : null, lineup: null, rest: null, miles: null,
         l5w: form ? (form.match(/W/g) || []).length : null, l5l: form ? (form.match(/L/g) || []).length : null,

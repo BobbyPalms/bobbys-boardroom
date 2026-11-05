@@ -173,7 +173,7 @@ export function finalRundown(F, sport, rec, learned) {
     const bits = [], margin = H.score - A.score, total = A.score + H.score;
     if (Lx.spreadHome != null && Lx.spreadHome !== 0 && sport !== "Soccer") {
       const favHome = Lx.spreadHome < 0, fav = favHome ? H : A, dog = favHome ? A : H, k = Math.abs(Lx.spreadHome), cover = (favHome ? margin : -margin) - k;
-      bits.push(`${nm(fav)} closed as ${f1(k)}-${sport === "MLB" ? "run" : sport === "NHL" ? "goal" : "point"} favourites and ${cover > 0 ? `covered by ${f1(cover)}` : cover < 0 ? (fav.win ? `won but didn't cover (${nm(dog)} +${f1(k)} cashed)` : `lost outright to ${nm(dog)}`) : "pushed"}`);
+      bits.push(`${nm(fav)} closed as ${f1(k)}-${sport === "MLB" ? "run" : sport === "NHL" ? "goal" : "point"} favorites and ${cover > 0 ? `covered by ${f1(cover)}` : cover < 0 ? (fav.win ? `won but didn't cover (${nm(dog)} +${f1(k)} cashed)` : `lost outright to ${nm(dog)}`) : "pushed"}`);
     }
     if (Lx.homeML != null && Lx.awayML != null && !draw) { const wML = Wn === H ? Lx.homeML : Lx.awayML, oML = Wn === H ? Lx.awayML : Lx.homeML; if (wML > 100 && wML > oML) bits.push(`${nm(Wn)} won as the underdog at +${wML}`); }
     if (Lx.total != null) { const d = total - Lx.total; bits.push(`the total closed at ${f1(Lx.total)} and they combined for ${total}, ${d > 0 ? `over by ${f1(d)}` : d < 0 ? `under by ${f1(-d)}` : "a push"}`); }
@@ -200,10 +200,10 @@ export function finalRundown(F, sport, rec, learned) {
   if (rec && (sport === "Tennis" || sport === "MMA")) algo.push(`What it learns: the result goes into both ${sport === "Tennis" ? "players'" : "fighters'"} Elo ratings at the next data run (every few minutes), so their next match is priced on it.`);
   else if (Lr && rec) {
     const tm = t => Lr.teams && Lr.teams[t.abbr];
-    if (Lr.inactive) algo.push(`What it learns: ${sport} learning switches on at 20 graded games (${Lr.n || 0} so far); this game counts toward it, along with every team's attack and defence against their projections.`);
+    if (Lr.inactive) algo.push(`What it learns: ${sport} learning switches on at 20 graded games (${Lr.n || 0} so far); this game counts toward it, along with every team's attack and defense against their projections.`);
     else {
       let s = `What it learns: across ${Lr.n} graded ${sport} games the algo now scales scoring ×${Number(Lr.s).toFixed(3)} and gives home teams ${sgn(Lr.h)} ${u}.`;
-      const tt = [[A, tm(A)], [H, tm(H)]].filter(([, x]) => x).map(([t, x]) => `${nm(t)} attack ×${x[0].toFixed(3)}, defence ×${x[1].toFixed(3)} (${x[2]} games)`);
+      const tt = [[A, tm(A)], [H, tm(H)]].filter(([, x]) => x).map(([t, x]) => `${nm(t)} attack ×${x[0].toFixed(3)}, defense ×${x[1].toFixed(3)} (${x[2]} games)`);
       s += tt.length ? ` Team by team, from how they've scored and allowed against projection: ${tt.join("; ")}.` : " Team-by-team adjustments start after 3 graded games for a team.";
       algo.push(s);
     }
@@ -227,4 +227,4 @@ export function colOrder(sport, group, labels) {
   if (!pref.length) return idx.filter(i => !/^YTD/.test(labels[i]));
   return [...pref.map(l => labels.indexOf(l)).filter(i => i >= 0), ...idx.filter(i => !pref.includes(labels[i]) && !/^YTD/.test(labels[i]))];
 }
-export const groupTitle = g => ({ forwards: "Forwards", defenses: "Defence", goalies: "Goalies", batting: "Batting", pitching: "Pitching", passing: "Passing", rushing: "Rushing", receiving: "Receiving", fumbles: "Fumbles", defensive: "Defence", interceptions: "Interceptions", kickReturns: "Kick returns", puntReturns: "Punt returns", kicking: "Kicking", punting: "Punting", players: "Players" }[g] || (g ? g[0].toUpperCase() + g.slice(1) : "Players"));
+export const groupTitle = g => ({ forwards: "Forwards", defenses: "Defense", goalies: "Goalies", batting: "Batting", pitching: "Pitching", passing: "Passing", rushing: "Rushing", receiving: "Receiving", fumbles: "Fumbles", defensive: "Defense", interceptions: "Interceptions", kickReturns: "Kick returns", puntReturns: "Punt returns", kicking: "Kicking", punting: "Punting", players: "Players" }[g] || (g ? g[0].toUpperCase() + g.slice(1) : "Players"));

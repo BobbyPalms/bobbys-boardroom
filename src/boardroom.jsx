@@ -34,7 +34,7 @@ const isIndiv = sport => !!SPORT_CFG[sport]?.indiv;
 // sdM/sdT  SD of the final margin / total (norm family). r = NB size. otF = share of a game played in overtime.
 // k, rho   shrinkage: a team's rate is worth k games of league-average evidence; rho = year-to-year persistence.
 // gpDef    games played assumed when neither the routes nor the record say. season = games in a full season.
-// omega    share of the opposing defence that is the starter on the day (pitcher, goalie, keeper).
+// omega    share of the opposing defense that is the starter on the day (pitcher, goalie, keeper).
 // lgGK/lgSv  league baseline for the starter stat. kGK = starter shrinkage (IP or starts). qbK = rating-point value of a QB.
 // wEff     weight of opponent-adjusted efficiency ratings next to raw scoring (higher where schedules differ most).
 const LEAGUE = {
@@ -77,8 +77,8 @@ for (const P of Object.values(LEAGUE)) {
 // season's league average (x1000). Other sports, and any season newer than the table, use the seasons the live
 // history route returns (built by the data job), also kept on this device so it works offline.
 // HIST_PARAMS [S]: fitted by maximum likelihood on MLB 1969-2025 and NFL 1999-2025 team-seasons. Tested on seasons
-// the fit never saw (MLB 2005-25, NFL 2013-25): versus last-season-only, prediction error fell 6% (MLB offence),
-// 3% (MLB defence), 4% (NFL offence); NFL defence was even. Sports without a fit use k/rho from LEAGUE (fL 0).
+// the fit never saw (MLB 2005-25, NFL 2013-25): versus last-season-only, prediction error fell 6% (MLB offense),
+// 3% (MLB defense), 4% (NFL offense); NFL defense was even. Sports without a fit use k/rho from LEAGUE (fL 0).
 const HIST_FADE = 0.97;                                     // [J, tested 1.00/.97/.95/.90 on MLB; .97 best overall]
 const HIST_PARAMS = {
   MLB: { off: { k: 79, fL: 0.13, rho: 0.76 }, def: { k: 66, fL: 0.19, rho: 0.71 } },
@@ -645,12 +645,12 @@ function computeFactors(matchData, sport, opts = {}) {
 }
 
 // ─── SIMULATION ENGINE v3 ────────────────────────────────────────────────────
-// 1) Team strength. A team's offence and defence are ratios to the league average, pooled (normal-normal
+// 1) Team strength. A team's offense and defense are ratios to the league average, pooled (normal-normal
 //    shrinkage) from every stat the routes give: this season's per-game numbers weighted by games played,
 //    last season's (regressed by the sport's year-to-year persistence), xG where published, and opponent-adjusted
 //    efficiency ratings. Thin evidence stays close to 1.00 (league average); a missing stat contributes nothing.
 // 2) Expected score. mu_home = L x offence_home x defence_away x lineup x QB x home edge x situational factors,
-//    and the mirror image for the away side. defence_away blends the away TEAM's defence with that day's starter
+//    and the mirror image for the away side. defence_away blends the away TEAM's defense with that day's starter
 //    (pitcher / goalie / keeper), so a better opposing starter LOWERS the expected score.
 // 3) Scores come from a distribution with each sport's real spread. A tie goes to overtime, decided by team
 //    strength; soccer draws stay draws.
@@ -682,16 +682,18 @@ function recordGP(rec) {                                   // "92-70", "30-20-5"
   const m = String(rec || "").match(/^\s*(\d{1,3})\s*[-–]\s*(\d{1,3})(?:\s*[-–]\s*(\d{1,3}))?(?:\s*[-–]\s*(\d{1,3}))?/);
   if (!m) return null;
   const s = m.slice(1).reduce((a, x) => a + (x ? Number(x) : 0), 0);
-  return s > 0 ? s : null;
+  return s;
 }
 function teamGP(t, sport) {
-  const P = LEAGUE[sport], x = t.gp > 0 ? t.gp : (recordGP(t.record) ?? P.gpDef);
+  const P = LEAGUE[sport], x = t.gp > 0 ? t.gp : (recordGP(t.record) || P.gpDef);
   return clampTo(x, 1, P.season * 2);
 }
-// side "off": runs/goals/points scored per game. side "def": allowed per game (lower = better defence).
+// side "off": runs/goals/points scored per game. side "def": allowed per game (lower = better defense).
 function poolSide(t, sport, L, side, adv) {
   const P = LEAGUE[sport], gp = teamGP(t, sport), off = side === "off";
-  const own = off ? t.gpg : t.gaa, hasOwn = off ? t.has.gpg : t.has.gaa;
+  // no completed games yet (a 0-0 record): any "per game" number is the score of a game in progress, so it isn't used
+  const played = t.gp > 0 ? t.gp : recordGP(t.record);
+  const own = off ? t.gpg : t.gaa, hasOwn = (off ? t.has.gpg : t.has.gaa) && played !== 0;
   const xg = P.useXG ? (off ? t.xg?.f : t.xg?.a) : null;
   const ef = adv ? num(off ? adv.offRating : adv.defRating, null) : null;
   const effOK = ef != null && ef >= 0.6 && ef <= 1.5;
@@ -765,7 +767,7 @@ function buildPlan(home, away, sport, md, opts = {}) {
   const factors = computeFactors(md, sport, { neutral });
   const parts = (t, adv) => ({ off: poolSide(t, sport, L, "off", adv), def: poolSide(t, sport, L, "def", adv), sp: starterRatio(t, sport), lu: lineupFactor(t, sport), qb: qbFactor(t, sport) });
   const H = parts(home, md?.advancedHome), A = parts(away, md?.advancedAway);
-  const faced = S => S.sp == null ? S.def.r : (1 - P.omega) * S.def.r + P.omega * S.sp;   // the defence the OTHER side faces
+  const faced = S => S.sp == null ? S.def.r : (1 - P.omega) * S.def.r + P.omega * S.sp;   // the defense the OTHER side faces
   const eta = neutral ? 0 : P.hfa / (2 * L);
   let muH = clampTo(L * H.off.r * faced(A) * H.lu * H.qb * Math.exp(eta) * factors.homeMult, 0.25 * L, 2.5 * L);
   let muA = clampTo(L * A.off.r * faced(H) * A.lu * A.qb * Math.exp(-eta) * factors.awayMult, 0.25 * L, 2.5 * L);
@@ -924,6 +926,34 @@ function callLines(bets, md, liveNote = true) {
   else out.push(c ? `Best bet (the algo's call): ${c.b.label}. Grade ${c.g}, ${(c.b.wc * 100).toFixed(1)}% to win against ${(c.b.fair * 100).toFixed(1)}% priced, ${sg(f1(c.b.edge))} pts. A quarter-Kelly stake is about ${(Math.max(0, c.b.kelly) / 4 * 100).toFixed(1)}% of a bankroll.` : "Best bet (the algo's call): pass. Nothing on the board earns a grade.");
   return out;
 }
+// Why the favorite is the favorite, in points a game: the four team-strength pieces that push toward them (their
+// offense and defense, the other side's offense and defense), and home court on whichever side has it.
+const sideWords = sport => (sport === "Soccer" || sport === "NHL" ? ["attack", "defense"] : sport === "MLB" ? ["lineup", "pitching and defense"] : ["offense", "defense"]);
+function driverLine(md, sim, sport) {
+  const cfg = SPORT_CFG[sport], A = md.away, H = md.home, plan = sim.plan, Ld = LEAGUE[sport], u = cfg.unitFull, [OFF, DEF] = sideWords(sport);
+  const L = plan.L || Ld.L, f1 = x => Number(x).toFixed(1), pc = r => `${Math.abs((r - 1) * 100).toFixed(0)}%`;
+  const homeFav = sim.homeWin >= sim.awayWin, fav = homeFav ? H : A, dog = homeFav ? A : H, fs = homeFav ? plan.parts.home : plan.parts.away, ds = homeFav ? plan.parts.away : plan.parts.home;
+  const pieces = [
+    { pts: (fs.off.r - 1) * L, txt: `${poss2(fav.abbr)} ${OFF} (${pc(fs.off.r)} ${fs.off.r >= 1 ? "above" : "below"} average)` },
+    { pts: (1 - fs.def.r) * L, txt: `${poss2(fav.abbr)} ${DEF} (allows ${pc(fs.def.r)} ${fs.def.r <= 1 ? "less" : "more"} than average)` },
+    { pts: (1 - ds.off.r) * L, txt: `${poss2(dog.abbr)} ${OFF} (${pc(ds.off.r)} ${ds.off.r >= 1 ? "above" : "below"} average)` },
+    { pts: (ds.def.r - 1) * L, txt: `${poss2(dog.abbr)} ${DEF} (allows ${pc(ds.def.r)} ${ds.def.r >= 1 ? "more" : "less"} than average)` },
+  ].sort((a, b) => b.pts - a.pts);
+  const hfa = plan.neutral ? 0 : Ld.hfa, home = hfa ? `home ${sport === "NHL" ? "ice" : sport === "Soccer" || sport === "MLB" || sport === "NFL" || sport === "CFB" ? "field" : "court"}` : "";
+  const amt = x => `about ${f1(Math.abs(x))} ${u} a game`;
+  const lead = md.live ? "On team strength (before this game), " : "";
+  const pro = pieces.filter(x => x.pts >= 0.15 * Ld.hfa + 0.01), con = pieces.filter(x => x.pts < -(0.15 * Ld.hfa + 0.01));
+  let s;
+  if (!pro.length) s = hfa && homeFav ? `${lead}${fav.abbr} are favored on ${home} (${amt(hfa)}); on team strength the two sides grade out about even.` : `${lead}the two sides grade out about even; ${fav.abbr} edge it in the sims.`;
+  else {
+    const two = pro.slice(0, 2).map(x => `${x.txt}, worth ${amt(x.pts)}`);
+    s = `${lead}${fav.abbr} are favored on team strength because of ${two.join(", and ")}`;
+    if (hfa) s += homeFav ? `, plus ${home} (${amt(hfa)})` : `. That outweighs ${poss2(dog.abbr)} ${home} (${amt(hfa)})`;
+    s += ".";
+  }
+  if (con.length && pro.length) s += ` Working against ${fav.abbr}: ${con[con.length - 1].txt}, ${amt(con[con.length - 1].pts)}.`;
+  return s;
+}
 // The short version of the rundown for the overview: why the model lands where it does, in a few sentences.
 function miniRundown(md, sim, sport) {
   const cfg = SPORT_CFG[sport], A = md.away, H = md.home, plan = sim.plan || {}, u = cfg.unitFull, out = [];
@@ -938,13 +968,7 @@ function miniRundown(md, sim, sport) {
   }
   out.push(`${fav.name} win ${fp.toFixed(1)}% of 10,000 simulations${cfg.hasDraw ? ` (draw ${sim.drawPct.toFixed(1)}%)` : ""}, with an average result of ${A.abbr} ${f1(sim.avgAway)}, ${H.abbr} ${f1(sim.avgHome)}: ${fav.abbr} by ${f1(mm)} and ${f1(tot)} ${u} in all.`);
   const P = plan.parts;
-  if (P) {
-    const fs = homeFav ? P.home : P.away, ds = homeFav ? P.away : P.home;
-    const attack = fs.off.r - 1, leaky = ds.def.r - 1, stout = 1 - fs.def.r, blunt = 1 - ds.off.r;
-    const [why] = [[attack, `${poss2(fav.abbr)} attack (${pctd(fs.off.r)} ${fs.off.r >= 1 ? "above" : "below"} average)`], [leaky, `${poss2(dog.abbr)} defence, which allows ${pctd(ds.def.r)} ${ds.def.r >= 1 ? "more" : "less"} than average`],
-      [stout, `${poss2(fav.abbr)} defence (${pctd(fs.def.r)} ${fs.def.r <= 1 ? "better" : "worse"} than average)`], [blunt, `${poss2(dog.abbr)} attack, ${pctd(ds.off.r)} ${ds.off.r >= 1 ? "above" : "below"} average`]].sort((a, b) => b[0] - a[0]);
-    out.push(`The biggest driver is ${why[1]}${plan.neutral ? "" : `, plus the home edge for ${H.abbr}`}.`);
-  }
+  if (P) out.push(driverLine(md, sim, sport));
   const fx = (sim.factors?.display || []).filter(f => f.label !== "Official" && (Math.abs((f.hm ?? 1) - 1) >= 0.01 || Math.abs((f.am ?? 1) - 1) >= 0.01));
   if (fx.length) out.push(`Also in play: ${fx.slice(0, 2).map(f => `${f.label.toLowerCase()} (${f.desc})`).join("; ")}.`);
   for (const t of [A, H]) { const li = t.lineupInfo; if (li?.moves?.length) out.push(`${t.abbr} are without ${li.moves.map(m => `${m.out} (${m.status})`).join(", ")}; ${li.moves.map(m => m.in).join(", ")} ${li.moves.length > 1 ? "move" : "moves"} into the lineup${li.adj < 1 ? `, about ${((1 - li.adj) * 100).toFixed(1)}% off their scoring` : ""}.`); }
@@ -969,7 +993,7 @@ async function fetchRundown(md, sim, signals, sport) {
   const cfg = SPORT_CFG[sport], P = LEAGUE[sport], A = md.away, H = md.home, pb = md.publicBetting || {}, u = cfg.unitFull, plan = sim.plan || {};
   const f1 = x => Number(x).toFixed(1), f2 = x => Number(x).toFixed(2), pctS = x => `${(x * 100).toFixed(1)}%`, sg = x => (x > 0 ? "+" : "") + x;
   const rel = r => { const d = (r - 1) * 100; return Math.abs(d) < 1.5 ? "right at the league average" : `${Math.abs(d).toFixed(0)}% ${d > 0 ? "above" : "below"} the league average`; };
-  const relD = r => { const d = (1 - r) * 100; return Math.abs(d) < 1.5 ? "an average defence" : d > 0 ? `a defence that allows ${d.toFixed(0)}% less than average` : `a defence that allows ${(-d).toFixed(0)}% more than average`; };
+  const relD = r => { const d = (1 - r) * 100; return Math.abs(d) < 1.5 ? "an average defense" : d > 0 ? `a defense that allows ${d.toFixed(0)}% less than average` : `a defense that allows ${(-d).toFixed(0)}% more than average`; };
   const L = plan.L || P.L, tot = sim.avgHome + sim.avgAway, mm = sim.avgHome - sim.avgAway;
   const mT = num(pb.ou?.total, null), aS = num(pb.ats?.awaySpread, null), mlA = num(pb.ml?.awayML, null), mlH = num(pb.ml?.homeML, null);
   const fav = sim.homeWin >= sim.awayWin ? H : A, dog = fav === H ? A : H, favP = Math.max(sim.homeWin, sim.awayWin);
@@ -1003,14 +1027,14 @@ async function fetchRundown(md, sim, signals, sport) {
     if (!pt) return "";
     const off = pt.off, def = pt.def, hs = t.hist || [], last = hs.length ? hs[hs.length - 1] : null;
     const bits = [];
-    bits.push(`The engine rates ${poss(t.name)} attack ${rel(off.r)} (ratio ${f2(off.r)}) and their defence as ${relD(def.r)} (ratio ${f2(def.r)}).`);
+    bits.push(`The engine rates ${poss(t.name)} attack ${rel(off.r)} (ratio ${f2(off.r)}) and their defense as ${relD(def.r)} (ratio ${f2(def.r)}).`);
     if (t.has?.gpg && t.gp) bits.push(`This season they score ${f1(t.gpg)} and allow ${f1(t.gaa)} ${u} a game over ${t.gp} games.`);
     else bits.push(`They have little or no current-season scoring on file yet, so the rating leans on what came before.`);
     if (t.prev?.gpg) bits.push(`Last season: ${f1(t.prev.gpg)} scored, ${f1(t.prev.gaa)} allowed per game.`);
-    if (off.seasons) bits.push(`Behind that sit ${off.seasons} past season${off.seasons === 1 ? "" : "s"} on file${off.from ? ` going back to ${off.from}` : ""}, pooled with older years fading; together they are worth about ${Math.round(off.n)} games of evidence for the attack and ${Math.round(def.n)} for the defence, so ${off.n > 60 ? "one hot or cold week barely moves the number" : "the rating can still move quickly"}.`);
+    if (off.seasons) bits.push(`Behind that sit ${off.seasons} past season${off.seasons === 1 ? "" : "s"} on file${off.from ? ` going back to ${off.from}` : ""}, pooled with older years fading; together they are worth about ${Math.round(off.n)} games of evidence for the attack and ${Math.round(def.n)} for the defense, so ${off.n > 60 ? "one hot or cold week barely moves the number" : "the rating can still move quickly"}.`);
     if (last && last.gpg) bits.push(`Most recent full season on file (${last.y}): ${f1(last.gpg)} for, ${f1(last.gaa)} against.`);
     const adv = side === "home" ? md.advancedHome : md.advancedAway;
-    if (adv?.offRating) bits.push(`${adv.source || "Power"} ratings put their attack at ${f2(adv.offRating)} and defence at ${f2(adv.defRating)} of average, blended in as ${adv.n || "a few"} games of schedule-adjusted evidence.`);
+    if (adv?.offRating) bits.push(`${adv.source || "Power"} ratings put their attack at ${f2(adv.offRating)} and defense at ${f2(adv.defRating)} of average, blended in as ${adv.n || "a few"} games of schedule-adjusted evidence.`);
     if (P.useXG && t.xg?.f) bits.push(`Expected goals: ${f2(t.xg.f)} created, ${f2(t.xg.a)} conceded per game, counted at double weight because xG is steadier than goals.`);
     if (pt.sp != null) bits.push(`Today's ${cfg.gkLabel}, ${t.goalie?.name || "TBD"}, shifts what the other side faces by a ratio of ${f2(pt.sp)}${t.goalie?.svPct ? ` (save % ${(t.goalie.svPct * 100).toFixed(1)}${t.goalie.n ? ` over ${t.goalie.n} starts` : ""})` : t.goalie?.gaa ? ` (${f2(t.goalie.gaa)} allowed per game)` : ""}.`);
     if (pt.qb && Math.abs(pt.qb - 1) > 0.005) bits.push(`Quarterback adjustment: ${pt.qb > 1 ? "+" : ""}${((pt.qb - 1) * 100).toFixed(1)}% to their scoring (${t.goalie?.name || "starter"}, rating ${t.goalie?.rating ?? "n/a"}).`);
@@ -1025,7 +1049,7 @@ async function fetchRundown(md, sim, signals, sport) {
   if (plan.muH) {
     const fx = sim.factors || {}, hEdge = plan.neutral ? 0 : P.hfa;
     add("The matchup math",
-      `Put together, ${A.abbr}'s attack (${f2(plan.parts.away.off.r)}) runs into ${H.abbr}'s defence (${f2(plan.parts.home.def.r)}), and ${H.abbr}'s attack (${f2(plan.parts.home.off.r)}) runs into ${A.abbr}'s defence (${f2(plan.parts.away.def.r)}). ${plan.neutral ? "There's no home edge at a neutral site." : `Home edge in ${cfg.label} is worth about ${f1(hEdge)} ${u}.`} The situational factors below multiply ${H.abbr}'s scoring by ${f2(fx.homeMult || 1)} and ${A.abbr}'s by ${f2(fx.awayMult || 1)}.`,
+      `Put together, ${A.abbr}'s ${sideWords(sport)[0]} (${f2(plan.parts.away.off.r)}× average) runs into ${H.abbr}'s ${sideWords(sport)[1]} (${f2(plan.parts.home.def.r)}× average allowed), and ${H.abbr}'s ${sideWords(sport)[0]} (${f2(plan.parts.home.off.r)}×) runs into ${A.abbr}'s ${sideWords(sport)[1]} (${f2(plan.parts.away.def.r)}×). ${plan.neutral ? "There's no home edge at a neutral site." : `Home edge in ${cfg.label} is worth about ${f1(hEdge)} ${u}.`} The situational factors below multiply ${H.abbr}'s scoring by ${f2(fx.homeMult || 1)} and ${A.abbr}'s by ${f2(fx.awayMult || 1)}.`,
       `That gives expected scores of ${A.abbr} ${f1(plan.muA)} and ${H.abbr} ${f1(plan.muH)} before overtime is settled${plan.learn ? `, including what the algo has learned from graded games (scoring level ×${f2(plan.learn.s)}, home edge ${sg(f2(plan.learn.h))} ${u})` : ""}. ${!cfg.hasDraw ? `If regulation ends level, ${H.abbr} win the extra period ${(plan.otP * 100).toFixed(0)}% of the time on team strength.` : ""}`);
   }
 
@@ -1109,7 +1133,7 @@ async function fetchRundown(md, sim, signals, sport) {
   add("Bottom line", ...callLines(bets, md), pos.length > 2 ? `Also positive: ${pos.slice(1, 4).map(b => `${b.label} (${sg(f1(b.edge))} pts)`).join(", ")}.` : bets.length ? "" : `The lean is ${fav.name} at ${favP.toFixed(1)}%, but with no prices to compare it isn't a priced bet.`);
 
   const edge = mT != null ? Math.abs(tot - mT) / mT : 0;
-  return { headline: md.live ? `LIVE ${A.abbr} ${md.live.as} – ${H.abbr} ${md.live.hs} (${md.live.label}): ${fav.abbr} ${favP.toFixed(0)}% from here` : `${A.abbr} at ${H.abbr}: ${favP >= 60 ? `${fav.abbr} clear favourite` : "close game"}${mT != null ? `, total ${tot > mT ? "leans over" : "leans under"}` : ""}${best ? `; the algo's call: ${best.label}` : ""}`, sections,
+  return { headline: md.live ? `LIVE ${A.abbr} ${md.live.as} – ${H.abbr} ${md.live.hs} (${md.live.label}): ${fav.abbr} ${favP.toFixed(0)}% from here` : `${A.abbr} at ${H.abbr}: ${favP >= 60 ? `${fav.abbr} clear favorite` : "close game"}${mT != null ? `, total ${tot > mT ? "leans over" : "leans under"}` : ""}${best ? `; the algo's call: ${best.label}` : ""}`, sections,
     honestRead: md.live ? `From ${md.live.as}–${md.live.hs} with ${Math.round(md.live.rem * 100)}% to play, ${fav.name} win ${favP.toFixed(1)}% of the simulations of what's left. Treat it as a read on the game, not a live bet.`
       : best ? `${best.label} is the algo's call, grade ${call.g}, ${f1(best.edge)} points over a fair price. That's ${best.edge >= 5 ? "a real edge" : best.edge >= 3 ? "a solid but modest edge" : "a thin edge"}${risks.length ? `, with ${risks.length} thing${risks.length === 1 ? "" : "s"} to watch above` : ""}. It's a lean on probabilities, never a lock.` : edge < 0.02 && favP < 58 ? "No strong edge: the algo and the market mostly agree." : "The algo has a lean but the price already reflects it; passing is a fine play." };
 }
@@ -1731,7 +1755,7 @@ function learnFrom(games, sport) {
     }
     const w0 = startBlend(sport); bw = clampTo(w0 + (best.w - w0) * ml.length / (ml.length + 100), 0.05, 0.9);
   }
-  // per team: actual vs projected points scored (attack) and allowed (defence), as log ratios net of the sport-wide
+  // per team: actual vs projected points scored (attack) and allowed (defense), as log ratios net of the sport-wide
   // level, shrunk by games played (k/(k+12)) and capped at ±4%. Projections are taken back to before any team
   // adjustment was applied, so a team's correction never feeds on itself.
   const acc = {}, add = (abbr, i, v) => { if (!abbr) return; const t = (acc[abbr] = acc[abbr] || [0, 0, 0]); t[i] += v; if (i === 0) t[2]++; };
@@ -1783,7 +1807,7 @@ async function fetchFinals(sport, games) {
   return n;
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
-export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup };   // for the tests
+export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup, driverLine, poolSide };   // for the tests
 export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, SPORT_KEYS, TRACK_LS };
 // <<< SLATE ENGINE
 
@@ -2430,7 +2454,7 @@ function gkQuality(t, sport, sp) {
   return t.has.rating ? (t.goalie.rating >= 85 ? "elite" : t.goalie.rating >= 72 ? "solid" : "shaky") : "—";
 }
 
-// The current lines under the projection: total, spread and the favourite's price, each next to the model's number.
+// The current lines under the projection: total, spread and the favorite's price, each next to the model's number.
 function MarketLines({ md, sim, sport, A, H, AWAY_C, HOME_C }) {
   const m = md.priced || {}, pb = md.publicBetting || {}, cfg = SPORT_CFG[sport];
   const tot = m.total ?? num(pb.ou?.total, null), aS = m.awaySpread ?? num(pb.ats?.awaySpread, null), aML = m.awayML ?? num(pb.ml?.awayML, null), hML = m.homeML ?? num(pb.ml?.homeML, null);

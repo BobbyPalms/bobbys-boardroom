@@ -18,14 +18,14 @@ check("WNBA: every player's line", F.players.home[0].labels[1] === "PTS" && F.pl
 check("WNBA: comeback and the deciding quarter", /Valkyries beat Dream 68-63/.test(R.paras[0]) && /came back: they were down 30-24 at the half/.test(R.paras[0]) && /3rd quarter decided it: Valkyries won it 21-14/.test(R.paras[0]), R.paras[0]);
 check("WNBA: leaders grouped by player", /Gabby Williams 30 pts/.test(R.paras.join(" ")) && /Jordin Canada 18 pts, 5 ast/.test(R.paras.join(" ")));
 check("WNBA: where it was won", /shot 38% to 33%/.test(R.paras.join(" ")) && /won the boards 37-35/.test(R.paras.join(" ")));
-check("WNBA: against the closing line", /1\.5-point favourites and covered by 3\.5/.test(R.paras.join(" ")) && /combined for 131, under by 11\.5/.test(R.paras.join(" ")), R.paras.at(-1));
+check("WNBA: against the closing line", /1\.5-point favorites and covered by 3\.5/.test(R.paras.join(" ")) && /combined for 131, under by 11\.5/.test(R.paras.join(" ")), R.paras.at(-1));
 check("WNBA: team stats panel picks the readable ones", teamStatRows(F, "WNBA")[0].label === "Field Goal %" && teamStatRows(F, "WNBA").length <= 16);
 check("WNBA: points first in the player table", F.players.home[0].labels[colOrder("WNBA", "", F.players.home[0].labels)[0]] === "PTS");
 
 // ---- CFB: Ohio 28 at Akron 20 ----
 F = parseFinal(fx("CFB"), "CFB"); R = finalRundown(F, "CFB", null, {});
 check("CFB: scoring plays counted", /Bobcats 4 touchdowns and 0 field goals; Zips 1 touchdown and 4 field goals/.test(R.paras.join(" ")), R.paras);
-check("CFB: favourite won but didn't cover", /12\.5-point favourites and won but didn't cover \(Zips \+12\.5 cashed\)/.test(R.paras.join(" ")));
+check("CFB: favorite won but didn't cover", /12\.5-point favorites and won but didn't cover \(Zips \+12\.5 cashed\)/.test(R.paras.join(" ")));
 check("CFB: stat groups", ["passing", "rushing", "receiving"].every(n => F.players.away.some(g => g.name === n)));
 
 // ---- NHL: Utah 3 at Toronto 2 ----
@@ -53,7 +53,7 @@ F = parseFinal(fx("WNBA"), "WNBA");
 R = finalRundown(F, "WNBA", rec, { WNBA: { s: 0.98, h: 1.2, n: 44, teams: { GS: [1.012, 0.991, 9], ATL: [0.988, 1.004, 8] } } });
 check("algo: pre-game call and projection", /had Dream 40% and Valkyries 60%, projecting Dream 68.5 – Valkyries 71.5/.test(R.algo[0]) && /right winner/.test(R.algo[0]) && /Total: 131 against 140 projected \(-9\)/.test(R.algo[0]), R.algo[0]);
 check("algo: its pick graded", /Its pick: Valkyries -1\.5 at -110 \(grade A\) — WON \(\+0\.9u\)/.test(R.algo[1]), R.algo[1]);
-check("algo: what it learned, team by team", /across 44 graded WNBA games/.test(R.algo.at(-1)) && /Valkyries attack ×1\.012, defence ×0\.991 \(9 games\)/.test(R.algo.at(-1)), R.algo.at(-1));
+check("algo: what it learned, team by team", /across 44 graded WNBA games/.test(R.algo.at(-1)) && /Valkyries attack ×1\.012, defense ×0\.991 \(9 games\)/.test(R.algo.at(-1)), R.algo.at(-1));
 check("algo: a game the tracker never logged says so", /wasn't in the tracker's pre-game log/.test(finalRundown(F, "WNBA", null, {}).algo[0]));
 
 // ---- team-by-team learning in the engine ----
@@ -73,7 +73,7 @@ for (let i = 0; i < 40; i++) {
 const L = E.learnFrom(games, "NBA");
 check("learning: teams learned from finals", L.teams && L.teams.BOS && L.teams.MIL && L.teams.NYK, L.teams);
 check("learning: a team scoring above projection gets a better attack", L.teams.BOS[0] > 1.01 && L.teams.BOS[0] <= 1.04, L.teams.BOS);
-check("learning: a team allowing above projection gets a worse defence", L.teams.MIL[1] > 1.01 && L.teams.MIL[1] <= 1.04, L.teams.MIL);
+check("learning: a team allowing above projection gets a worse defense", L.teams.MIL[1] > 1.01 && L.teams.MIL[1] <= 1.04, L.teams.MIL);
 check("learning: teams on projection stay near 1", Math.abs(L.teams.NYK[0] - 1) < 0.012 && Math.abs(L.teams.CHI[1] - 1) < 0.012, [L.teams.NYK, L.teams.CHI]);
 check("learning: shrunk by games played and capped at ±4%", Object.values(L.teams).every(([o, d]) => o >= 0.96 && o <= 1.04 && d >= 0.96 && d <= 1.04));
 // applied in the plan: same matchup, with and without BOS's learned attack
