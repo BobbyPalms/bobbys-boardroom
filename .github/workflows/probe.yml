@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       cleanup: { description: "Delete the probe branch instead", type: boolean, default: false }
+      diag: { description: "Diagnose a matchup: SPORT|away|home (runs the site's engine and saves every input)", type: string, default: "" }
 permissions: { contents: write }
 jobs:
   probe:
@@ -13,7 +14,20 @@ jobs:
     steps:
       - if: inputs.cleanup
         run: git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" --delete probe || true
-      - if: ${{ !inputs.cleanup }}
+      - if: ${{ inputs.diag != '' }}
+        uses: actions/checkout@v4
+      - if: ${{ inputs.diag != '' }}
+        uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - if: ${{ inputs.diag != '' }}
+        run: |
+          npm install --no-audit --no-fund
+          mkdir -p out && IFS='|' read -r SP AW HO <<< "${{ inputs.diag }}"
+          node scripts/diag.mjs "$SP" "$AW" "$HO" > out/diag.json 2> out/diag.err || true
+          cd out && git init -q -b probe && git add -A
+          git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "diag $(date -u +%FT%TZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
+      - if: ${{ !inputs.cleanup && inputs.diag == '' }}
         run: |
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"

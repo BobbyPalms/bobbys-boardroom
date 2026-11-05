@@ -1783,7 +1783,7 @@ async function fetchFinals(sport, games) {
   return n;
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
-export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan };   // for the tests
+export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup };   // for the tests
 export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, SPORT_KEYS, TRACK_LS };
 // <<< SLATE ENGINE
 
