@@ -1,0 +1,421 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Get Quotes
+
+> List quotes. The rfq_id filter requires an RFQ UUID. With rfq_id, quotes are sorted on the RFQ's main side (no for a target-cost RFQ, yes otherwise): the best price first, then the earliest place in line at that price. Pass pagination cursors back unchanged; malformed RFQ IDs or cursors return HTTP 400.
+
+
+
+## OpenAPI
+
+````yaml /openapi.yaml get /communications/quotes
+openapi: 3.0.0
+info:
+  title: Kalshi Trade API Manual Endpoints
+  version: 3.36.0
+  description: >-
+    Manually defined OpenAPI spec for endpoints being migrated to spec-first
+    approach
+servers:
+  - url: https://external-api.kalshi.com/trade-api/v2
+    description: Production Trade API server
+  - url: https://api.elections.kalshi.com/trade-api/v2
+    description: Production shared API server, also supported
+  - url: https://external-api.demo.kalshi.co/trade-api/v2
+    description: Demo Trade API server
+  - url: https://demo-api.kalshi.co/trade-api/v2
+    description: Demo shared API server, also supported
+security: []
+tags:
+  - name: api-keys
+    description: API key management endpoints
+  - name: orders
+    description: Order management endpoints
+  - name: order-groups
+    description: Order group management endpoints
+  - name: portfolio
+    description: Portfolio and balance information endpoints
+  - name: communications
+    description: Request-for-quote (RFQ) endpoints
+  - name: multivariate
+    description: Multivariate event collection endpoints
+  - name: exchange
+    description: Exchange status and information endpoints
+  - name: live-data
+    description: Live data endpoints
+  - name: markets
+    description: Market data endpoints
+  - name: milestone
+    description: Milestone endpoints
+  - name: search
+    description: Search and filtering endpoints
+  - name: incentive-programs
+    description: Incentive program endpoints
+  - name: fcm
+    description: FCM member specific endpoints
+  - name: events
+    description: Event endpoints
+  - name: structured-targets
+    description: Structured targets endpoints
+paths:
+  /communications/quotes:
+    get:
+      tags:
+        - communications
+      summary: Get Quotes
+      description: >-
+        List quotes. The rfq_id filter requires an RFQ UUID. With rfq_id, quotes
+        are sorted on the RFQ's main side (no for a target-cost RFQ, yes
+        otherwise): the best price first, then the earliest place in line at
+        that price. Pass pagination cursors back unchanged; malformed RFQ IDs or
+        cursors return HTTP 400.
+      operationId: GetQuotes
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - name: min_ts
+          in: query
+          description: >-
+            Restricts the response to quotes last updated after a timestamp,
+            formatted as a Unix Timestamp
+          schema:
+            type: integer
+            format: int64
+        - name: max_ts
+          in: query
+          description: >-
+            Restricts the response to quotes last updated before a timestamp,
+            formatted as a Unix Timestamp
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          description: >-
+            Parameter to specify the number of results per page. Defaults to
+            500.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 500
+            default: 500
+        - name: status
+          in: query
+          description: Filter quotes by status
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+        - name: quote_creator_user_id
+          in: query
+          description: Filter quotes by quote creator user ID
+          deprecated: true
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+        - name: user_filter
+          in: query
+          required: false
+          description: Filter for quotes created by the authenticated user.
+          schema:
+            $ref: '#/components/schemas/UserFilter'
+            x-go-type-skip-optional-pointer: true
+          x-oapi-codegen-extra-tags:
+            validate: omitempty,oneof=self
+        - name: rfq_user_filter
+          in: query
+          required: false
+          description: >-
+            Filter for quotes responding to RFQs created by the authenticated
+            user.
+          schema:
+            $ref: '#/components/schemas/UserFilter'
+            x-go-type-skip-optional-pointer: true
+          x-oapi-codegen-extra-tags:
+            validate: omitempty,oneof=self
+        - name: rfq_creator_user_id
+          in: query
+          description: Filter quotes by RFQ creator user ID
+          deprecated: true
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+        - name: rfq_creator_subtrader_id
+          in: query
+          description: Filter quotes by RFQ creator subtrader ID (FCM members only)
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+        - name: rfq_id
+          in: query
+          description: >-
+            Filter quotes by RFQ UUID. Pass the RFQ ID unchanged; malformed IDs
+            return HTTP 400.
+          schema:
+            type: string
+            x-go-type-skip-optional-pointer: true
+      responses:
+        '200':
+          description: Quotes retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetQuotesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      security:
+        - kalshiAccessKey: []
+          kalshiAccessSignature: []
+          kalshiAccessTimestamp: []
+components:
+  parameters:
+    CursorQuery:
+      name: cursor
+      in: query
+      description: >-
+        Pagination cursor. Use the cursor value returned from the previous
+        response to get the next page of results. Leave empty for the first
+        page.
+      schema:
+        type: string
+        x-go-type-skip-optional-pointer: true
+  schemas:
+    UserFilter:
+      type: string
+      enum:
+        - self
+      x-enum-varnames:
+        - UserFilterSelf
+      description: >-
+        Omit or leave empty to return all results. Use `self` to filter by the
+        authenticated user.
+    GetQuotesResponse:
+      type: object
+      required:
+        - quotes
+      properties:
+        quotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Quote'
+          description: List of quotes matching the query criteria
+        cursor:
+          type: string
+          description: Cursor for pagination to get the next page of results
+          x-go-type-skip-optional-pointer: true
+    Quote:
+      type: object
+      required:
+        - id
+        - rfq_id
+        - creator_id
+        - rfq_creator_id
+        - market_ticker
+        - contracts_fp
+        - yes_bid_dollars
+        - no_bid_dollars
+        - created_ts
+        - updated_ts
+        - status
+      properties:
+        id:
+          type: string
+          description: UUID of the quote. Preserve the exact returned string.
+        rfq_id:
+          type: string
+          description: UUID of the RFQ this quote is responding to.
+        creator_id:
+          type: string
+          description: Public communications ID of the quote creator
+        rfq_creator_id:
+          type: string
+          description: >-
+            Public communications ID of the RFQ creator (pseudonymous). When
+            obscure_creator_id is enabled, other users receive the shared
+            placeholder
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            (SHA-256 of empty input). The creator sees their normal ID. After
+            this quote executes successfully, its counterparty sees the normal
+            public communications ID.
+          x-go-type-skip-optional-pointer: true
+        market_ticker:
+          type: string
+          description: The ticker of the market this quote is for
+        contracts_fp:
+          $ref: '#/components/schemas/FixedPointCount'
+          description: String representation of the number of contracts in the quote
+        yes_bid_dollars:
+          $ref: '#/components/schemas/FixedPointDollars'
+          description: Bid price for YES contracts, in dollars
+        no_bid_dollars:
+          $ref: '#/components/schemas/FixedPointDollars'
+          description: Bid price for NO contracts, in dollars
+        created_ts:
+          type: string
+          format: date-time
+          description: Timestamp when the quote was created
+        updated_ts:
+          type: string
+          format: date-time
+          description: Timestamp when the quote was last updated
+        status:
+          type: string
+          description: Current status of the quote
+          enum:
+            - open
+            - accepted
+            - confirmed
+            - executed
+            - cancelled
+        accepted_side:
+          type: string
+          description: The side that was accepted (yes or no)
+          enum:
+            - 'yes'
+            - 'no'
+        accepted_ts:
+          type: string
+          format: date-time
+          description: Timestamp when the quote was accepted
+        confirmed_ts:
+          type: string
+          format: date-time
+          description: Timestamp when the quote was confirmed
+        executed_ts:
+          type: string
+          format: date-time
+          description: Timestamp when the quote was executed
+        cancelled_ts:
+          type: string
+          format: date-time
+          description: Timestamp when the quote was cancelled
+        rest_remainder:
+          type: boolean
+          description: Whether to rest the remainder of the quote after execution
+        post_only:
+          type: boolean
+          description: >-
+            Whether the quote creator's order is post-only (visible when the
+            caller is the quote creator)
+        cancellation_reason:
+          type: string
+          description: Reason for quote cancellation if cancelled
+          x-go-type-skip-optional-pointer: true
+        creator_user_id:
+          type: string
+          description: User ID of the quote creator (private field)
+          x-go-type-skip-optional-pointer: true
+        rfq_creator_user_id:
+          type: string
+          description: User ID of the RFQ creator (private field)
+          x-go-type-skip-optional-pointer: true
+        rfq_target_cost_dollars:
+          $ref: '#/components/schemas/FixedPointDollars'
+          description: Total value requested in the RFQ in dollars
+        target_cost_excludes_fees:
+          type: boolean
+          description: >-
+            True when the RFQ's target cost is principal-only and the
+            contracts-offered sizes were computed without reserving taker fees
+            (fees are charged on top of the target cost).
+          x-go-type-skip-optional-pointer: true
+        rfq_creator_order_id:
+          type: string
+          description: Order ID for the RFQ creator (private field)
+          x-go-type-skip-optional-pointer: true
+        creator_order_id:
+          type: string
+          description: Order ID for the quote creator (private field)
+          x-go-type-skip-optional-pointer: true
+        creator_subaccount:
+          type: integer
+          description: >-
+            Subaccount number of the quote creator (visible when the caller is
+            the quote creator)
+        rfq_creator_subaccount:
+          type: integer
+          description: >-
+            Subaccount number of the RFQ creator (visible when the caller is the
+            RFQ creator)
+        yes_contracts_fp:
+          $ref: '#/components/schemas/FixedPointCount'
+          description: Number of YES contracts offered in the quote (fixed-point)
+        no_contracts_fp:
+          $ref: '#/components/schemas/FixedPointCount'
+          description: Number of NO contracts offered in the quote (fixed-point)
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: string
+          description: Additional details about the error, if available
+    FixedPointCount:
+      type: string
+      description: >-
+        Fixed-point contract count string (2 decimals, e.g., "10.00"; referred
+        to as "fp" in field names). Requests accept 0-2 decimal places (e.g.,
+        "10", "10.0", "10.00"); responses always emit 2 decimals. Fractional
+        contract values (e.g., "2.50") are supported; the minimum granularity is
+        0.01 contracts.
+      example: '10.00'
+    FixedPointDollars:
+      type: string
+      description: >-
+        Fixed-point US dollar string. Most request fields accept 2-4 decimal
+        places (e.g., "0.56", "0.5600"); responses emit up to 6. Valid quote
+        intervals for a given market are constrained by that market's price
+        level structure.
+      example: '0.5600'
+  responses:
+    BadRequestError:
+      description: Bad request - invalid input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnauthorizedError:
+      description: Unauthorized - authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  securitySchemes:
+    kalshiAccessKey:
+      type: apiKey
+      in: header
+      name: KALSHI-ACCESS-KEY
+      description: Your API key ID
+    kalshiAccessSignature:
+      type: apiKey
+      in: header
+      name: KALSHI-ACCESS-SIGNATURE
+      description: >-
+        Base64 signature of the pre-sign text (timestamp + method + path) made
+        with the API key's algorithm - RSA-PSS with SHA-256 for RSA keys,
+        Ed25519 for Ed25519 keys
+    kalshiAccessTimestamp:
+      type: apiKey
+      in: header
+      name: KALSHI-ACCESS-TIMESTAMP
+      description: Request timestamp in milliseconds
+
+````
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.

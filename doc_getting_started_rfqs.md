@@ -1,0 +1,153 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.kalshi.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Request for Quote (RFQ)
+
+> How the Kalshi RFQ system works
+
+Kalshi implements an RFQ (Request for Quote) system for pre-execution communication between members. RFQs allow a requester to solicit quotes from market makers on a specific market and size. Execution follows a two-step lock: accept, then confirm.
+
+RFQs are available on any market, including combo (multivariate event) markets. Combo markets are classified as High Volatility Markets (HVM), which have shorter timing windows (see [Timing](#timing)).
+
+## Interfaces
+
+RFQs are accessible over [REST](https://docs.kalshi.com/api-reference/communications), [FIX](https://docs.kalshi.com/fix/rfq-messages.md), and [WebSocket](https://docs.kalshi.com/websockets.md). Quote notifications arrive on the `communications` WebSocket channel, not the orderbook channel.
+
+## Flow
+
+1. **Requester** creates an RFQ specifying a market ticker, size, and whether to rest any remainder.
+2. The RFQ is broadcast to all makers.
+3. **Makers** respond with quotes containing a `yes_bid` and `no_bid`. Quotes are for the full RFQ size. Each quote is private between the requester and the individual maker. Makers cannot see each other's quotes.
+4. **Requester** accepts one side of a quote. The exchange fills the earliest open quote at that quote's price on that side, so the requester gets the price and size it accepted. A maker that re-sends an unchanged price keeps its place in line on that side. The quote that fills can belong to a different maker than the one named, and its id arrives on `quote_accepted` and `quote_executed`. The named quote must still be open. On FIX, `PreferBetterQuote` (21022) fills the best-priced open quote instead, at its own price and size.
+5. **Maker** whose quote is accepted confirms within the confirmation window. Once confirmed, neither party can withdraw.
+6. After the execution timeout, orders are placed on the public book.
+
+## Creator identity and privacy
+
+Public communications IDs are pseudonymous identifiers derived from a user ID
+with a salted hash. By default, makers see the requester's public communications
+ID and can recognize it across RFQs.
+
+Set `obscure_creator_id: true` when creating an RFQ over REST, or
+`ObscureCreatorId` (`21034`) to `Y` in the FIX `NoRelatedSym` group, to hide that
+identifier from other users.
+
+Obscured creator fields display the shared placeholder
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+The placeholder appears in these fields for other users:
+
+| Surface | Field |
+| - | - |
+| REST RFQ responses before successful execution | `creator_id` |
+| REST quote responses before successful execution | `rfq_creator_id` |
+| WebSocket `rfq_created` and `rfq_deleted` | `creator_id` |
+| WebSocket `quote_created` and `quote_accepted` | `rfq_creator_id` |
+| FIX RFQ notifications | `PartyID` (`448`) inside `NoPartyIDs` (`453`) |
+
+Creators still see their own normal ID. After successful quote execution, the
+hashed RFQ creator identity will become visible. Subsequent REST RFQ responses
+show the normal public communications ID to all viewers. The executed quote's
+REST response and WebSocket `quote_executed` event also show that ID to its
+participants.
+
+## Sizing
+
+When creating an RFQ, the requester specifies size in exactly one of:
+
+* `contracts_fp`: number of contracts, including partial contracts in `0.01`-contract increments.
+* `target_cost_dollars`: dollar amount to spend. The exchange derives a contract count from the quote price, returned as `yes_contracts_fp` / `no_contracts_fp` on the quote.
+
+By default the target cost caps principal *plus* Kalshi fees: the derived
+contract count is the maximum whose total cost including your taker fee fits
+inside `target_cost_dollars`, so your debit can never exceed it. Set
+`target_cost_excludes_fees: true` to size as principal only — the count becomes
+`target_cost / price` and your taker fee is charged on top of the target cost.
+`contracts_fp`-sized RFQs are never reduced for fees under either mode.
+
+## Quotes
+
+Each quote has two prices: `yes_bid` (price per YES contract) and `no_bid` (price per NO contract). These are typically different. Either can be `"0"` to decline that side, but not both. If `yes_bid + no_bid > $1` the quote is rejected.
+
+Quoters do not specify a size. Each quote is implicitly for the full RFQ amount (`contracts_fp`, or whatever count `target_cost_dollars` resolves to at the quoted prices).
+
+Prices must land on the market's price grid. Check `price_ranges` on `GET /markets/{ticker}` for the valid step size.
+
+A new quote on the same RFQ replaces the maker's previous quote.
+
+### Post-only quotes
+
+If a confirmed quote is cancelled because the maker's
+post-only order would cross the book at execution, that cancellation counts
+toward the same quoting penalties as failing to confirm an accepted quote.
+Repeated failures can temporarily rate limit the maker's ability to create new
+quotes.
+
+## Timing
+
+The exchange designates certain markets as High Volatility Markets (HVM). All combo markets are HVMs. HVMs use shorter confirmation and execution windows.
+
+| | Standard | HVM |
+| - | - | - |
+| **Confirmation window** | 30 s | 3 s |
+| **Execution timer** | 15 s | 1 s |
+
+After acceptance, the maker has the confirmation window to confirm. Upon confirmation, the platform begins the execution timer. At the end of the timer, orders are entered into the book. Fills appear in `GET /portfolio/fills`. Match on `creator_order_id` (maker) or `rfq_creator_order_id` (requester).
+
+## WebSocket
+
+Subscribe to the `communications` channel (requires auth). `rfq_created` and `rfq_deleted` go to all subscribers. `quote_created`, `quote_accepted`, and `quote_executed` go only to the involved requester and maker. `quote_accepted` and `quote_executed` carry the id of the quote that executes, which can differ from the quote the requester named.
+
+## Combos (MVE)
+
+Combo RFQs include `mve_collection_ticker` and `mve_selected_legs`. Use [Multivariate Event Collections](https://docs.kalshi.com/api-reference/multivariate/get-multivariate-event-collections.md) to discover eligible combinations.
+
+## RFQ batch children
+
+An RFQ batch requests quotes on several combos at once, for example every
+parlay of a round robin. Each child of a batch is also an ordinary RFQ, with
+`rfq_batch_id` set: it arrives as `rfq_created` on WebSocket and as a
+`QuoteRequest` (`35=R`) on FIX, is listed by `GET /communications/rfqs`, and
+closes with `rfq_deleted` (`35=AG`) unless you traded it. You can quote it
+like any RFQ. Your quote competes with other makers' quotes on the batch, and
+the requester accepts every child at once, each at its best quote.
+
+A quote on a batch child differs from a quote on a single RFQ:
+
+* It counts for 30 seconds after you send it. Resending an unchanged price
+  keeps its time priority only within those 30 seconds.
+* Nothing executes until every child's winning maker confirms. A confirmed
+  quote can still close without a fill, as `batch closed`, if another winner
+  doesn't confirm in time.
+* Once accepted, it can't be cancelled. Not confirming it lapses with the same
+  penalty as cancelling.
+* `rfq_creator_id` on its messages and in its REST responses is the shared
+  placeholder, and the requester never sees your quote before accepting.
+* Your balance must cover every child you quote on one batch at once, on
+  either side.
+* Its `quote_id` comes back in lowercase, as the exchange stores it.
+
+## Subaccounts
+
+Requesters can create an RFQ under a numbered subaccount by passing
+`subaccount` on `POST /communications/rfqs`. Makers can likewise pass
+`subaccount` on `POST /communications/quotes`. Execution, fills, and
+settlement follow the subaccount the RFQ or quote was created under.
+
+The full REST RFQ lifecycle — including combo-market creation — is also
+available to [subaccount-restricted API keys](https://docs.kalshi.com/getting_started/subaccounts.md#restricted-api-keys),
+scoped to the key's locked subaccount. On FIX, restricted keys support the
+maker quote lifecycle only.
+
+## Common errors
+
+| Error | What's going on |
+| - | - |
+| `invalid_parameters` | Price not on a valid step, or RFQ already closed |
+| `RFQ_CLOSED` | RFQ was deleted, expired, or already executed |
+| `INSUFFICIENT_BALANCE` | Not enough funds for the trade |
+| `409 Conflict` | Open RFQ already exists on this market ticker |
+
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.
