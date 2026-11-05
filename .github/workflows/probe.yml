@@ -32,17 +32,15 @@ jobs:
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
           get() { curl -sS -L -m 40 -A "$UA" -H "Accept-Language: en-US" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" || echo "$1 failed"; }
-          set +e; Y=$(TZ=America/New_York date -d "-1 day" +%Y%m%d); B=https://site.api.espn.com/apis/site/v2/sports
-          for sl in basketball/nba football/nfl hockey/nhl soccer/uefa.champions soccer/eng.1 basketball/mens-college-basketball football/college-football baseball/mlb tennis/atp mma/ufc basketball/wnba; do
-            f=$(echo $sl | tr '/.' '__')
-            curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard?dates=$Y" -o sb.json || true
-            id=$(jq -r 'try ([.events[]? | select(.status.type.completed==true or .competitions[0].status.type.completed==true) | .id] | first // empty) catch empty' sb.json)
-            [ -z "$id" ] && id=$(jq -r 'try ([.events[]?.id] | first // empty) catch empty' sb.json)
-            [ -z "$id" ] && { curl -sS --compressed -m 40 -A "$UA" "$B/$sl/scoreboard" -o sb.json; id=$(jq -r 'try ([.events[]? | select(.status.type.completed==true) | .id] | first // ([.events[]?.id] | first) // empty) catch empty' sb.json); }
-            echo "$sl $id" >> out/ids.txt
-            [ -n "$id" ] && curl -sS --compressed -m 40 -A "$UA" "$B/$sl/summary?event=$id" -o "out/sum_$f.json" -w "$sl %{http_code} %{size_download}\n" >> out/ids.txt
-            cp sb.json "out/sb_$f.json"
+          set +e; K=https://api.elections.kalshi.com/trade-api/v2
+          kget() { curl -sS --compressed -m 40 -A "$UA" -o "out/$1" -w "$1 %{http_code} %{size_download}\n" "$2" >> out/ids.txt; }
+          kget k_series_sports.json "$K/series?category=Sports"
+          kget k_mve.json "$K/multivariate_event_collections?status=open&limit=200"
+          for s in KXNBAGAME KXNBASPREAD KXNBATOTAL KXNFLGAME KXNFLSPREAD KXNFLTOTAL KXNCAAFGAME KXNCAAMBGAME KXNHLGAME KXEPLGAME KXUCLGAME KXATPMATCH KXUFCFIGHT KXWNBAGAME KXMLBGAME KXNCAAWBGAME; do
+            kget "k_ev_$s.json" "$K/events?series_ticker=$s&status=open&with_nested_markets=true&limit=200"
           done
+          curl -sS -m 30 -o /dev/null -D out/k_cors.txt -X OPTIONS -H "Origin: https://bobbys-boardroom.pages.dev" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: kalshi-access-key,kalshi-access-signature,kalshi-access-timestamp,content-type" "$K/portfolio/orders"
+          curl -sS -m 30 -o out/k_get_cors.json -D out/k_get_cors.txt -H "Origin: https://bobbys-boardroom.pages.dev" "$K/series?category=Sports&limit=1"
           cd out && git init -q -b probe && git add -A
           git -c user.name=probe -c user.email=probe@users.noreply.github.com commit -q -m "probe $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" probe
