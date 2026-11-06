@@ -1,0 +1,27 @@
+// THE BOOK: the chart as data, and the hand checker reading it.
+import { UP, HARD, SOFT, PAIRS, SURRENDER, bookCall } from "../src/book.js";
+let pass = 0, fail = 0;
+const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d)); } };
+check("every row has all ten upcards", [HARD, SOFT, PAIRS, SURRENDER].every(t => t.every(([, r]) => r.length === 10)) && UP.length === 10);
+const C = (h, u, o) => bookCall(h, u, o);
+check("hard 16 vs 10: surrender", C({ type: "hard", total: 16 }, "10").act === "Surrender");
+check("hard 16 vs 10, no surrender: hit", C({ type: "hard", total: 16 }, "10", { surrender: false }).act === "Hit");
+check("hard 16 vs 6: stand", C({ type: "hard", total: 16 }, "6").act === "Stand");
+check("hard 15 vs 9: hit (surrender only vs 10)", C({ type: "hard", total: 15 }, "9").act === "Hit");
+check("hard 12 vs 3: hit, vs 4: stand", C({ type: "hard", total: 12 }, "3").act === "Hit" && C({ type: "hard", total: 12 }, "4").act === "Stand");
+check("hard 11 vs A: double", /^Double/.test(C({ type: "hard", total: 11 }, "A").act));
+check("hard 10 vs 10: hit", C({ type: "hard", total: 10 }, "10").act === "Hit");
+check("hard 9 vs 2: hit, vs 3: double", C({ type: "hard", total: 9 }, "2").act === "Hit" && /^Double/.test(C({ type: "hard", total: 9 }, "3").act));
+check("hard 5 and 20 off the chart's ends", C({ type: "hard", total: 5 }, "6").act === "Hit" && C({ type: "hard", total: 20 }, "A").act === "Stand");
+check("soft A,7 vs 3: double, stand if you can't", C({ type: "soft", key: "A,7" }, "3").code === "Ds");
+check("soft A,7 vs 9: hit; vs 8: stand", C({ type: "soft", key: "A,7" }, "9").act === "Hit" && C({ type: "soft", key: "A,7" }, "8").act === "Stand");
+check("soft A,8 vs 6: double (stand)", C({ type: "soft", key: "A,8" }, "6").code === "Ds");
+check("8,8 and A,A always split", UP.every(u => C({ type: "pair", key: "8,8" }, u).act === "Split" && C({ type: "pair", key: "A,A" }, u).act === "Split"));
+check("T,T never: stand on 20", UP.every(u => C({ type: "pair", key: "T,T" }, u).act === "Stand"));
+check("9,9 vs 7: don't split, stand on 18", C({ type: "pair", key: "9,9" }, "7").act === "Stand");
+check("5,5 vs 6: don't split, double the 10", /^Double/.test(C({ type: "pair", key: "5,5" }, "6").act));
+check("2,2 vs 2: split with DAS, otherwise hit", C({ type: "pair", key: "2,2" }, "2").act === "Split" && C({ type: "pair", key: "2,2" }, "2", { das: false }).act === "Hit");
+check("4,4 vs 5: split with DAS, otherwise double the 8? no: hit 8", C({ type: "pair", key: "4,4" }, "5", { das: false }).act === "Hit");
+check("6,6 vs 2 without DAS: play hard 12 vs 2 = hit", C({ type: "pair", key: "6,6" }, "2", { das: false }).act === "Hit");
+console.log(`book: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

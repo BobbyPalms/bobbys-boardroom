@@ -183,3 +183,98 @@ export function readSets(away, home, live = true) {
   }
   return { sa, sb, ga: 0, gb: 0, sets: n };
 }
+
+// men's or women's: the draw says it (a scoreboard can carry both tours)
+export const tourOf = m => (/^womens/.test(m?.draw || "") ? "wta" : /^mens/.test(m?.draw || "") ? "atp" : m?.tour || "atp");
+// ---------- tennis profiles from the match record: form, sets, games, tiebreaks, head to head ----------
+// sets "6-7 3-6" are from A's side. Returns per-set game counts, or null for a match that wasn't played out.
+export function parseSetScores(s) {
+  const sets = String(s || "").trim().split(/\s+/).filter(Boolean).map(x => x.match(/^(\d+)-(\d+)/)).filter(Boolean).map(m => [Number(m[1]), Number(m[2])]);
+  return sets.length ? sets : null;
+}
+export function tennisProfiles(matches, now = new Date()) {
+  const cut = new Date(now.getTime() - 365 * 864e5).toISOString(), active = new Date(now.getTime() - 400 * 864e5).toISOString();
+  const P = {}, H = {};
+  const blank = (id, name, tour) => ({ id, name, tour, n: 0, w: 0, l: 0, sw: 0, sl: 0, gw: 0, gl: 0, tbw: 0, tbl: 0, ss: 0, games3: 0, n3: 0, form: [], last: "" });
+  const done = matches.filter(m => m.completed && m.winner && !m.unrated && m.date).sort((x, y) => (x.date < y.date ? -1 : 1));
+  for (const m of done) {
+    const sets = parseSetScores(m.sets), aWon = m.winner === "a";
+    for (const [me, op, won, flip] of [[m.a, m.b, aWon, false], [m.b, m.a, !aWon, true]]) {
+      const p = (P[me.id] = P[me.id] || blank(me.id, me.name, m.tour));
+      p.name = me.name; p.tour = tourOf(m) || p.tour; p.last = m.date.slice(0, 10);
+      p.form.push(won ? "W" : "L"); if (p.form.length > 10) p.form.shift();
+      if (m.date < cut) continue;
+      p.n++; won ? p.w++ : p.l++;
+      if (sets) {
+        let s1 = 0, s2 = 0, g = 0;
+        for (const [x, y] of sets) { const [a, b] = flip ? [y, x] : [x, y]; p.gw += a; p.gl += b; g += a + b; if (a > b) s1++; else if (b > a) s2++; if ((a === 7 && b === 6) || (a === 6 && b === 7)) a > b ? p.tbw++ : p.tbl++; }
+        p.sw += s1; p.sl += s2; if (won && s2 === 0) p.ss++;
+        if ((m.bo || 3) === 3) { p.games3 += g; p.n3++; }
+      }
+    }
+    if (m.date >= active || true) {
+      const [x, y] = m.a.id < m.b.id ? [m.a, m.b] : [m.b, m.a], k = `${x.id}-${y.id}`, h = (H[k] = H[k] || [0, 0, "", "", ""]);
+      (m.winner === "a" ? m.a.id : m.b.id) === x.id ? h[0]++ : h[1]++;
+      h[2] = m.date.slice(0, 10); h[3] = m.event || ""; h[4] = x.id === m.a.id ? m.sets || "" : (parseSetScores(m.sets) || []).map(([a, b]) => `${b}-${a}`).join(" ");
+    }
+  }
+  const players = {};
+  for (const [id, p] of Object.entries(P)) if (p.last >= active.slice(0, 10)) players[id] = [p.name, p.tour, p.n, p.w, p.l, p.sw, p.sl, p.gw, p.gl, p.tbw, p.tbl, p.ss, p.n3 ? Math.round(p.games3 / p.n3 * 10) / 10 : null, p.form.join(""), p.last];
+  const h2h = {};
+  for (const [k, h] of Object.entries(H)) { const [x, y] = k.split("-"); if (players[x] && players[y]) h2h[k] = h; }
+  return { fields: ["name", "tour", "n", "w", "l", "setsW", "setsL", "gamesW", "gamesL", "tbW", "tbL", "straightSetWins", "avgGamesBo3", "last10", "last"], players, h2h };
+}
+// head-to-head files are split by the lower player id so a page loads only the one it needs
+export const h2hShard = (idA, idB) => { const lo = String(idA) < String(idB) ? String(idA) : String(idB); let h = 0; for (const c of lo) h = (h * 31 + c.charCodeAt(0)) % 16; return h; };
+
+// ---------- tennis Monte Carlo: 10,000 matches point by point, from any score ----------
+// Returns the win chance, set scores, total games, game margin, tiebreak and deciding-set chances.
+export function tennisSim({ sa = 0, sb = 0, ga = 0, gb = 0, gamesSoFar = 0, marginSoFar = 0 } = {}, pA, pB, bo = 3, slam = false, n = 10000, rnd = Math.random) {
+  const need = bo === 5 ? 3 : 2, out = { n, aWins: 0, sets: {}, games: {}, margin: {}, tb: 0, decider: 0, aGames: 0, bGames: 0 };
+  for (let i = 0; i < n; i++) {
+    let A = sa, B = sb, x = ga, y = gb, aSrv = rnd() < 0.5, gA = 0, gB = 0, anyTb = false;
+    while (A < need && B < need) {
+      const last = A + B === bo - 1, tbTo = slam && last ? 10 : 7;
+      if (x === 6 && y === 6) {                                           // tiebreak
+        let p = 0, q = 0, k = 0; const first = aSrv;
+        while (!((p >= tbTo || q >= tbTo) && Math.abs(p - q) >= 2)) { const srvA = k === 0 ? first : (Math.floor((k - 1) / 2) % 2 === 0) !== first; if (rnd() < (srvA ? pA : 1 - pB)) p++; else q++; k++; }
+        anyTb = true; p > q ? (x++, gA++) : (y++, gB++); aSrv = !first;
+      } else {
+        let p = 0, q = 0;                                                  // a game
+        while (!((p >= 4 || q >= 4) && Math.abs(p - q) >= 2)) { if (rnd() < (aSrv ? pA : 1 - pB)) p++; else q++; }
+        const aWonGame = aSrv ? p > q : q < p; p > q ? (x++, gA++) : (y++, gB++); aSrv = !aSrv; void aWonGame;
+      }
+      if ((x >= 6 && x - y >= 2) || x === 7) { A++; x = 0; y = 0; } else if ((y >= 6 && y - x >= 2) || y === 7) { B++; x = 0; y = 0; }
+    }
+    const total = gamesSoFar + gA + gB, mg = marginSoFar + gA - gB, key = `${A}-${B}`;
+    if (A > B) out.aWins++;
+    out.sets[key] = (out.sets[key] || 0) + 1; out.games[total] = (out.games[total] || 0) + 1; out.margin[mg] = (out.margin[mg] || 0) + 1;
+    if (anyTb) out.tb++; if (A + B === bo) out.decider++;
+    out.aGames += gA; out.bGames += gB;
+  }
+  out.pA = out.aWins / n; out.tbPct = out.tb / n; out.deciderPct = out.decider / n;
+  out.avgA = out.aGames / n; out.avgB = out.bGames / n;
+  out.avgGames = Object.entries(out.games).reduce((s, [k, v]) => s + Number(k) * v, 0) / n;
+  out.avgMargin = Object.entries(out.margin).reduce((s, [k, v]) => s + Number(k) * v, 0) / n;
+  return out;
+}
+// how far a game total / game spread clears: P(total > line) and P(A's game margin + line > 0)
+export const overProb = (S, line) => Object.entries(S.games).reduce((s, [k, v]) => s + (Number(k) > line ? v : 0), 0) / S.n;
+export const coverProb = (S, line) => Object.entries(S.margin).reduce((s, [k, v]) => s + (Number(k) + line > 0 ? v : 0), 0) / S.n;
+// Serve level for this pair: set so the model's expected total games (best of 3, from the start) matches how their
+// matches have gone (each player's games per match vs the tour, shrunk by sample), with the Elo win chance held fixed.
+export const TOUR_GAMES = { atp: 23.6, wta: 21.7 };
+export function fitServe(pMatchBo3, tour = "atp", prof = {}, rnd = Math.random) {
+  const avg = TOUR_GAMES[tour] || TOUR_GAMES.atp, dev = p => (p && p.avg3 > 0 && p.n3 > 0 ? (p.avg3 - avg) * (p.n3 / (p.n3 + 15)) : 0);
+  const target = Math.max(avg - 4, Math.min(avg + 4, avg + dev(prof.a) + dev(prof.b)));
+  const at = b => { const d = solveD(pMatchBo3, b); return { b, d, g: tennisSim({}, b + d, b - d, 3, false, 2500, rnd).avgGames }; };
+  const tb = TOUR_SERVE[tour] || TOUR_SERVE.atp;
+  let lo = tb - 0.06, hi = tb + 0.06, best = null;                                    // stays within 6 points of the tour's serve level
+  for (let i = 0; i < 7; i++) { const m = (lo + hi) / 2, r = at(m); best = r; if (r.g < target) lo = m; else hi = m; }
+  return { pA: best.b + best.d, pB: best.b - best.d, base: best.b, target };
+}
+function solveD(p, base) {
+  let lo = -0.24, hi = 0.24;
+  for (let i = 0; i < 40; i++) { const d = (lo + hi) / 2; if (tennisLive({}, base + d, base - d, 3).p < p) lo = d; else hi = d; }
+  return (lo + hi) / 2;
+}

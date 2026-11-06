@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { parseFinal, finalRundown, teamStatRows, colOrder, groupTitle } from "./postgame.js";
-import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets } from "./ratings.js";
+import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
+import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE } from "./bets.js";
 import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT } from "./kalshi.js";
@@ -1846,8 +1847,7 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 @media (max-width:440px){.bb-sports{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
 @media (max-width:640px){.bb-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.bb-subtabs{grid-template-columns:repeat(4,minmax(0,1fr))}
-@media (max-width:480px){.bb-subtabs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.bb-subtabs{grid-template-columns:repeat(3,minmax(0,1fr))}
 .bb-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
 @media (max-width:560px){.bb-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}`;
@@ -2147,7 +2147,7 @@ function LiveScores({ sport, onPick, onFinal, onBox }) {
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
+function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
@@ -2168,6 +2168,11 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <span style={{fontSize:18}}>🎟</span>
       <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>BET SLIPS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Add your slips · auto-graded · leaderboards</span></span>
       <span style={{fontFamily:F.d,color:T.chrome}}>▸</span>
+    </button>
+    <button onClick={()=>onTools&&onTools()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:8,padding:"13px 14px",border:`1px solid ${NEON.gold}99`,background:"linear-gradient(90deg,rgba(255,194,38,.14),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left"}}>
+      <span style={{fontSize:18}}>🧰</span>
+      <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>TOOLS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>The Book · Kalshi</span></span>
+      <span style={{fontFamily:F.d,color:NEON.gold}}>▸</span>
     </button>
     <Panel title="TODAY'S SLATE" right={SPORT_CFG[sport].label}>
       <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${SPORT_CFG[sport].label} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
@@ -2718,7 +2723,7 @@ function FitNote({ fit, sport }) {
     Elo from {fit.matches.toLocaleString()} {sport === "Tennis" ? "matches" : "fights"} on record.{t ? ` Tested on the latest ${t.n.toLocaleString()} the fit never saw: picked the winner ${(t.acc * 100).toFixed(1)}% of the time (Brier ${t.brier.toFixed(3)}).` : ""} No odds on these routes, so these are model picks, not priced bets.
   </div>;
 }
-function IndivCard({ m, sport, big }) {
+function IndivCard({ m, sport, big, onSim }) {
   const a = m.a, b = m.b, fav = m.fav === "a" ? a : b, pf = m.fav === "a" ? m.pA : 1 - m.pA;
   const info = (p, r) => `Elo ${Math.round(r.r)} · ${r.n} ${sport === "Tennis" ? "matches" : "fights"} on file${r.last ? ` · last ${r.last.slice(0, 10)}` : ""}${p.rec ? ` · ${p.rec}` : ""}`;
   return <div style={{ border: `1px solid ${m.known ? T.chrome : T.line}`, padding: big ? "14px 14px" : "11px 12px", background: "rgba(14,4,26,.6)" }}>
@@ -2732,9 +2737,10 @@ function IndivCard({ m, sport, big }) {
       {m.scores.map(([sc, p]) => <span key={sc} style={{ fontSize: 11, padding: "3px 7px", border: `1px solid ${T.line}`, color: T.ink }}>{sc} {pct1(p)}</span>)}</div>}
     <div style={{ fontSize: 11, color: T.dim, marginTop: 8, lineHeight: 1.6 }}>{a.name}: {info(a, m.ra)}<br />{b.name}: {info(b, m.rb)}</div>
     {!m.known && <div style={{ fontSize: 11, color: "#FFB3C0", marginTop: 6 }}>Not enough {sport === "Tennis" ? "matches" : "fights"} on file for one side: shown, but never picked as the best.</div>}
+    {onSim && <button onClick={() => onSim(m)} style={{ ...btnStyle(), marginTop: 10, width: "100%" }}>SIMULATE ▸</button>}
   </div>;
 }
-function IndivSlateScreen({ res, best, onBack, onRefresh, onToggle, refreshing }) {
+function IndivSlateScreen({ res, best, onBack, onRefresh, onToggle, refreshing, onSim }) {
   const sp = res.sport, cfg = SPORT_CFG[sp];
   return <Shell status={best ? "best of slate" : "slate ready"}>
     <Panel title={best ? "★ BEST OF SLATE" : `${cfg.label.toUpperCase()} SLATE`} right={`${res.list.length} ${sp === "Tennis" ? "matches" : "fights"}`}>
@@ -2745,8 +2751,8 @@ function IndivSlateScreen({ res, best, onBack, onRefresh, onToggle, refreshing }
         <button onClick={onRefresh} disabled={refreshing} style={btnStyle(!refreshing)}>{refreshing ? "REFRESHING…" : "↻ REFRESH"}</button>
       </div>
     </Panel>
-    {best ? (res.best ? <IndivCard m={res.best} sport={sp} big /> : <Panel title="NO PLAY"><div style={{ fontSize: 12, color: T.dim }}>No {sp === "Tennis" ? "match" : "fight"} on the board has enough history on both sides to pick.</div></Panel>)
-      : res.list.length ? <div style={{ display: "grid", gap: 10 }}>{res.list.slice(0, 80).map(m => <IndivCard key={m.id} m={m} sport={sp} />)}</div>
+    {best ? (res.best ? <IndivCard m={res.best} sport={sp} big onSim={onSim} /> : <Panel title="NO PLAY"><div style={{ fontSize: 12, color: T.dim }}>No {sp === "Tennis" ? "match" : "fight"} on the board has enough history on both sides to pick.</div></Panel>)
+      : res.list.length ? <div style={{ display: "grid", gap: 10 }}>{res.list.slice(0, 80).map(m => <IndivCard key={m.id} m={m} sport={sp} onSim={onSim} />)}</div>
       : <Panel title="NOTHING SCHEDULED"><div style={{ fontSize: 12, color: T.dim }}>{sp === "Tennis" ? "No tennis matches left today or tomorrow." : "No UFC fights in the next 8 days."}</div></Panel>}
   </Shell>;
 }
@@ -2806,6 +2812,259 @@ function IndivMatchScreen({ res, onBack }) {
     <button onClick={onBack} style={{ ...btnStyle(), width: "100%", padding: 12 }}>◂ BACK</button>
   </Shell>;
 }
+// ─── TENNIS SIMULATION: the same screen every sport gets. 10,000 matches played point by point from the ratings, each
+// player's last 12 months, the head to head, Kalshi's prices, and (live) the current score. ─────────────────────────
+const TPF = ["name", "tour", "n", "w", "l", "sw", "sl", "gw", "gl", "tbw", "tbl", "ss", "avg3", "form", "last"];
+async function tennisProfile(id) { const f = await dataFile("tennis/players.json"), r = f?.players?.[id]; return r ? Object.fromEntries(TPF.map((k, i) => [k, r[i]])) : null; }
+async function tennisH2H(a, b) {
+  const f = await dataFile(`tennis/h2h-${h2hShard(a, b)}.json`), lo = String(a) < String(b) ? a : b, h = f?.h2h?.[[a, b].sort().join("-")];
+  if (!h) return null;
+  const aIsLo = String(a) === String(lo);
+  return { a: aIsLo ? h[0] : h[1], b: aIsLo ? h[1] : h[0], last: h[2], event: h[3], score: aIsLo ? h[4] : (parseSetScores(h[4]) || []).map(([x, y]) => `${y}-${x}`).join(" ") };
+}
+async function tennisMarket(m) {
+  try {
+    const tour = tourOf(m), series = tour === "wta" ? "KXWTAMATCH" : "KXATPMATCH";
+    const evs = await kalshiEvents("live", series), leg = { sport: "Tennis", league: tour, date: m.date, away: { name: m.a.name, abbr: "" }, home: { name: m.b.name, abbr: "" }, market: "ml" };
+    const ka = mapLeg({ ...leg, side: "away" }, { [series]: evs }), kb = mapLeg({ ...leg, side: "home" }, { [series]: evs });
+    return ka.ok || kb.ok ? { a: ka.ok ? ka : null, b: kb.ok ? kb : null } : null;
+  } catch (_) { return null; }
+}
+async function tennisSimData(res, rowNow) {
+  const m = res.match;
+  const [pa, pb, h2h] = await Promise.all([tennisProfile(m.a.id), tennisProfile(m.b.id), tennisH2H(m.a.id, m.b.id).catch(() => null)]);
+  const tour = m.draw ? tourOf(m) : pa?.tour || pb?.tour || "atp", slam = SLAM.test(m.event || ""), bo = m.bo || (slam && tour === "atp" ? 5 : 3);
+  const mkt = await tennisMarket({ ...m, draw: m.draw || (tour === "wta" ? "womens-singles" : "mens-singles") });
+  const p0 = eloP(m.ra.r, m.rb.r), fit = fitServe(p0, tour, { a: pa ? { avg3: pa.avg3, n3: pa.n } : null, b: pb ? { avg3: pb.avg3, n3: pb.n } : null });
+  const row = rowNow || res.row, live = row && row.state === "in" ? readSets(row.away.score, row.home.score, true) : null;
+  if (live) { const sa = String(row.away.score || "").split(" ").filter(Boolean).map(Number), sb = String(row.home.score || "").split(" ").filter(Boolean).map(Number); live.gamesSoFar = sa.reduce((x, y) => x + y, 0) + sb.reduce((x, y) => x + y, 0); live.marginSoFar = sa.reduce((x, y) => x + y, 0) - sb.reduce((x, y) => x + y, 0); live.detail = row.detail || ""; }
+  const S = tennisSim(live || {}, fit.pA, fit.pB, bo, slam, 10000), pre = live ? tennisSim({}, fit.pA, fit.pB, bo, slam, 4000) : S;
+  const known = m.ra.known && m.rb.known, dq = known ? 5 : 2;
+  const bets = [];
+  if (mkt && !live) for (const [side, k, wc, nm] of [["a", mkt.a, S.pA, m.a.name], ["b", mkt.b, 1 - S.pA, m.b.name]]) {
+    if (!k) continue;
+    const c = k.price + 0.07 * k.price * (1 - k.price);                          // price plus Kalshi's fee per contract
+    bets.push({ key: side, market: "ML", label: `${nm} to win`, wc, fair: k.price, price: k.price, am: k.am, edge: (wc - k.price) * 100, ev: wc / c - 1, kelly: (wc - c) / (1 - c) });
+  }
+  return { m, tour, slam, bo, pa, pb, h2h, mkt, fit, S, pre, live, row, bets, known, dq, p0 };
+}
+const surname = n => String(n || "").trim().split(/\s+/).slice(-1)[0];
+const tPct = x => `${(x * 100).toFixed(1)}%`;
+const rate = (w, l) => (w + l ? w / (w + l) : null);
+function tennisMini(D) {
+  const { m, S, pre, live, bets, fit } = D, A = surname(m.a.name), B = surname(m.b.name), fav = S.pA >= 0.5 ? A : B, fp = Math.max(S.pA, 1 - S.pA), out = [];
+  if (live) out.push(`LIVE, ${live.detail}: sets ${live.sa}-${live.sb}${live.ga || live.gb ? `, ${live.ga}-${live.gb} in the current set` : ""}. The sims play out every remaining point from here. Before the start the model had ${pre.pA >= 0.5 ? A : B} at ${tPct(Math.max(pre.pA, 1 - pre.pA))}.`);
+  const top = Object.entries(S.sets).sort((x, y) => y[1] - x[1])[0];
+  out.push(`${fav} wins ${tPct(fp)} of 10,000 simulations, averaging ${S.avgGames.toFixed(1)} games (${A} ${S.avgA.toFixed(1)}, ${B} ${S.avgB.toFixed(1)}${live ? " from here" : ""}). Most likely result: ${top[0]} (${tPct(top[1] / S.n)}).`);
+  const eloGap = Math.round(m.ra.r - m.rb.r);
+  out.push(`${fav} is favored on the ratings: ${Math.abs(eloGap)} Elo points ${eloGap >= 0 ? `to ${A}` : `to ${B}`}, which the model turns into ${A} winning ${tPct(fit.pA)} of points on serve and ${B} ${tPct(fit.pB)}.`);
+  if (D.h2h) out.push(`Head to head: ${A} ${D.h2h.a}-${D.h2h.b} ${B}${D.h2h.last ? `, last met ${D.h2h.last} (${D.h2h.score})` : ""}.`);
+  out.push(...tennisCall(D));
+  return out;
+}
+function tennisCall(D) {
+  if (D.live) return ["Best bet: no in-game call. The algo makes its call before the first point."];
+  if (!D.bets.length) return ["No Kalshi prices for this match, so this is a lean, not a priced bet."];
+  const v = bestValue(D.bets), c = algoCall(D.bets, { dq: D.dq }), sg = x => (x > 0 ? "+" : "") + x;
+  return [v ? `Best value: ${v.label}, the algo's ${tPct(v.wc)} against ${tPct(v.fair)} on Kalshi (${sg(v.edge.toFixed(1))} pts, ${sg((v.ev * 100).toFixed(1))}% expected return after fees).` : "Best value: none. Neither side clears Kalshi's price after fees.",
+    c ? `Best bet (the algo's call): ${c.b.label}. Grade ${c.g}, ${tPct(c.b.wc)} to win against ${tPct(c.b.fair)} priced, ${sg(c.b.edge.toFixed(1))} pts. A quarter-Kelly stake is about ${(Math.max(0, c.b.kelly) / 4 * 100).toFixed(1)}% of a bankroll.` : "Best bet (the algo's call): pass. Nothing earns a grade."];
+}
+function tennisRundownSections(D) {
+  const { m, S, pa, pb, h2h, fit, tour, bo, slam } = D, A = m.a.name, B = m.b.name, a = surname(A), b = surname(B), sec = [];
+  const sets = Object.entries(S.sets).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${tPct(v / S.n)}`).join(", ");
+  sec.push({ title: "What 10,000 simulations say", body: `${a} wins ${tPct(S.pA)}, ${b} ${tPct(1 - S.pA)}. Set scores (${a} first): ${sets}. It goes the distance ${tPct(S.deciderPct)} of the time and has at least one tiebreak ${tPct(S.tbPct)}. Expected games: ${S.avgGames.toFixed(1)} in all, ${a} by ${S.avgMargin >= 0 ? "+" : ""}${S.avgMargin.toFixed(1)}. Format: best of ${bo}${slam ? ", Slam rules (10-point tiebreak in the final set)" : ""}.` });
+  const who = (nm, r, p) => {
+    if (!p) return `${nm}: Elo ${Math.round(r.r)} from ${r.n} matches on file. No matches in the last 12 months on record, so the rating carries it.`;
+    const wr = rate(p.w, p.l), sr = rate(p.sw, p.sl), gr = rate(p.gw, p.gl), tr = rate(p.tbw, p.tbl);
+    return `${nm}: Elo ${Math.round(r.r)} (${r.n} matches on file). Last 12 months: ${p.w}-${p.l}${wr != null ? ` (${tPct(wr)})` : ""}, sets ${p.sw}-${p.sl}${sr != null ? ` (${tPct(sr)})` : ""}, games ${tPct(gr || 0)} won, tiebreaks ${p.tbw}-${p.tbl}${tr != null ? ` (${tPct(tr)})` : ""}, ${p.ss} straight-set wins. Their best-of-3 matches run ${p.avg3 ?? "–"} games. Last 10: ${p.form || "–"}${p.last ? ` (last played ${p.last})` : ""}.`;
+  };
+  sec.push({ title: `How the algo rates ${A}`, body: who(A, m.ra, pa) });
+  sec.push({ title: `How the algo rates ${B}`, body: who(B, m.rb, pb) });
+  sec.push({ title: "Head to head", body: h2h ? `${a} ${h2h.a}-${h2h.b} ${b} all-time on record. Last meeting: ${h2h.last}${h2h.event ? ` at ${h2h.event}` : ""}, ${h2h.score} (${a} first). The head to head is shown, not weighted: the ratings already carry each result.` : "They haven't met in the matches on record." });
+  sec.push({ title: "The matchup math", body: `The ratings give ${a} ${tPct(D.p0)} in a best-of-3 match. The model finds the serve-point shares that produce exactly that: ${a} ${tPct(fit.pA)} on serve, ${b} ${tPct(fit.pB)}. The serve level (${tPct(fit.base)}) is set so these two average ${fit.target.toFixed(1)} games a best-of-3 match, from how their matches have gone against the ${tour.toUpperCase()} average of ${TOUR_GAMES[tour]}. Every simulated point is drawn from those shares, with tiebreaks at 6-6.` });
+  if (D.bets.length) sec.push({ title: "Against the market", body: D.bets.map(x => `${x.label}: Kalshi ${cents(x.price)} (${tPct(x.fair)}, ${fmtAm(x.am)}) against the algo's ${tPct(x.wc)}: ${x.edge >= 0 ? "+" : ""}${x.edge.toFixed(1)} pts, ${(x.ev * 100).toFixed(1)}% expected return after fees.`).join("\n") });
+  else sec.push({ title: "Against the market", body: "Kalshi has no price on this match right now, so there's nothing to compare against." });
+  sec.push({ title: "Bottom line", body: tennisCall(D).join("\n") });
+  return sec;
+}
+function tennisFactors(D) {
+  const { m, pa, pb, h2h, S, bo, known } = D, a = surname(m.a.name), b = surname(m.b.name), out = [];
+  const gap = m.ra.r - m.rb.r; out.push({ icon: "📈", label: "Rating gap", side: gap >= 0 ? "a" : "b", desc: `${Math.abs(Math.round(gap))} Elo to ${gap >= 0 ? a : b}` });
+  const f = p => (p?.form ? (p.form.match(/W/g) || []).length : null), fa = f(pa), fb = f(pb);
+  if (fa != null && fb != null) out.push({ icon: "🔥", label: "Form (last 10)", side: fa > fb ? "a" : fb > fa ? "b" : "neutral", desc: `${a} ${fa}-${pa.form.length - fa}, ${b} ${fb}-${pb.form.length - fb}` });
+  const rest = p => (p?.last ? Math.round((Date.now() - Date.parse(p.last)) / 864e5) : null), ra = rest(pa), rb = rest(pb);
+  if (ra != null && rb != null) out.push({ icon: "😴", label: "Days since last match", side: "neutral", desc: `${a} ${ra}, ${b} ${rb}` });
+  const tb = p => rate(p?.tbw || 0, p?.tbl || 0); if (pa && pb && (pa.tbw + pa.tbl) >= 3 && (pb.tbw + pb.tbl) >= 3) out.push({ icon: "🎯", label: "Tiebreaks (12 months)", side: tb(pa) > tb(pb) ? "a" : "b", desc: `${a} ${pa.tbw}-${pa.tbl}, ${b} ${pb.tbw}-${pb.tbl}; a tiebreak in ${tPct(S.tbPct)} of sims` });
+  if (h2h) out.push({ icon: "🤝", label: "Head to head", side: h2h.a > h2h.b ? "a" : h2h.b > h2h.a ? "b" : "neutral", desc: `${a} ${h2h.a}-${h2h.b}` });
+  out.push({ icon: "🎾", label: "Format", side: "neutral", desc: `best of ${bo}: the better player wins ${bo === 5 ? "more" : "less"} often than over five` });
+  if (!known) out.push({ icon: "⚠️", label: "Sample size", side: "neutral", desc: "one side has few rated matches on file: a lean, never the best of the slate" });
+  return out;
+}
+
+function TennisSimScreen({ res, onBack, onReset }) {
+  const [tab, setTab] = useState("overview"), [D, setD] = useState(null), [err, setErr] = useState(null), [at, setAt] = useState(null);
+  useEffect(() => {
+    let on = true, t = null;
+    const run = async rowNow => {
+      try { const d = await tennisSimData(res, rowNow); if (on) { setD(d); setAt(new Date()); } } catch (e) { if (on) setErr(e.message || "Couldn't run the simulation."); }
+    };
+    run(null);
+    const poll = async () => {
+      if (typeof document !== "undefined" && document.hidden) { t = setTimeout(poll, 15000); return; }
+      try { const j = await getJSON(scoreboardUrl("Tennis", res.row.slug, ymd(new Date(res.row.date)))); const r = liveBoard(j, "Tennis").find(x => x.id === res.row.id); if (r && on) { await run({ ...r, slug: res.row.slug }); if (r.state === "post") return; } } catch (_) { /* next time */ }
+      if (on) t = setTimeout(poll, 30000);
+    };
+    if (res.row && res.row.state === "in") t = setTimeout(poll, 30000);
+    return () => { on = false; clearTimeout(t); };
+  }, [res]);
+  if (err) return <Shell status="simulation"><Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel><button onClick={onBack} style={{ ...btnStyle(), width: "100%", padding: 12, marginTop: 14 }}>◂ BACK</button></Shell>;
+  if (!D) return <Shell status="simulating"><Panel><div style={{ fontSize: 12, color: T.dim }}>Running 10,000 matches point by point…</div></Panel></Shell>;
+  const { m, S, pa, pb, live, bo, mkt, bets } = D, A = m.a.name, B = m.b.name, a = surname(A), b = surname(B);
+  const AC = AWAY_DEF, HC = HOME_DEF, conf = !D.known ? "LEAN" : Math.abs(S.pA - 0.5) >= 0.2 ? "HIGH" : Math.abs(S.pA - 0.5) >= 0.08 ? "MODERATE" : "LEAN";
+  const confC = { HIGH: "#FFFFFF", MODERATE: T.chrome, LEAN: T.dim }[conf], favC = S.pA >= 0.5 ? AC : HC;
+  const chip = (l, v, c = T.ink) => <div key={l} style={{ fontSize: 11, border: `1px solid ${T.line}`, padding: "4px 9px", color: c, whiteSpace: "nowrap" }}><span style={{ color: T.dim }}>{l} </span>{v}</div>;
+  const rec = p => (p ? `${p.w}-${p.l} (12 mo)` : "no recent record");
+  const Side = ({ nm, r, p, c, al }) => <div style={{ textAlign: al, minWidth: 0 }}>
+    <div style={{ fontFamily: F.d, fontWeight: 900, fontSize: "clamp(20px,6vw,38px)", color: c, textShadow: `0 0 18px ${c}99`, lineHeight: 1.05, overflowWrap: "anywhere" }}>{surname(nm).toUpperCase()}</div>
+    <div style={{ fontSize: 11, color: T.dim, marginTop: 5, overflowWrap: "anywhere" }}>{nm}</div>
+    <div style={{ fontSize: 13, color: c, marginTop: 2 }}>{rec(p)}</div>
+    <div style={{ fontSize: 10, color: T.faint, marginTop: 3 }}>Elo {Math.round(r.r)} · {r.n} on file</div>
+  </div>;
+  const TABS = ["overview", "betting", "rundown", "factors", "players", "scorelines"];
+  const mini = tennisMini(D), sections = tennisRundownSections(D), factors = tennisFactors(D);
+  const setsSorted = Object.entries(S.sets).sort((x, y) => y[1] - x[1]);
+  const prof = p => p ? [["Win % (12 mo)", rate(p.w, p.l)], ["Sets won %", rate(p.sw, p.sl)], ["Games won %", rate(p.gw, p.gl)], ["Tiebreaks won %", rate(p.tbw, p.tbl)]] : [];
+  return <Shell status={live ? "live simulation" : "simulation complete"}>
+    <Panel color={favC} style={{ marginTop: 16 }}>
+      <div style={{ textAlign: "center", fontSize: 11, color: T.dim, marginBottom: 12, overflowWrap: "anywhere" }}>{[m.event, m.round, `best of ${bo}`, m.date ? etDayLabel(m.date) : ""].filter(Boolean).join(" · ")}</div>
+      {live && <div style={{ textAlign: "center", fontSize: 12, color: NEON.red, marginTop: -6, marginBottom: 12, fontFamily: F.d, letterSpacing: 1, overflowWrap: "anywhere" }}>● LIVE · {live.detail} · sets {live.sa}-{live.sb}{live.ga || live.gb ? ` · ${live.ga}-${live.gb}` : ""} · simulating what's left{at ? ` · ${at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)", alignItems: "center", gap: 12 }}>
+        <Side nm={A} r={m.ra} p={pa} c={AC} al="right"/>
+        <div style={{ position: "relative", width: 56, height: 56 }}>
+          <svg width="56" height="56" viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="none" stroke={T.line} strokeWidth="2"/><circle cx="32" cy="32" r="28" fill="none" stroke={T.chrome} strokeWidth="2" strokeDasharray="30 146" style={{ transformOrigin: "32px 32px", animation: "spin 6s linear infinite" }}/></svg>
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.d, fontSize: 13, color: T.chrome }}>VS</div>
+        </div>
+        <Side nm={B} r={m.rb} p={pb} c={HC} al="left"/>
+      </div>
+      <div style={{ display: "flex", height: 6, marginTop: 16, WebkitMaskImage: SEG, maskImage: SEG }}>
+        <div style={{ width: `${S.pA * 100}%`, background: AC, boxShadow: `0 0 10px ${AC}`, transition: "width 1.4s" }}/><div style={{ flex: 1, background: HC, boxShadow: `0 0 10px ${HC}` }}/>
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 14 }}>
+        {chip("confidence", conf, confC)}{chip("xGames", S.avgGames.toFixed(1))}{chip("factors", String(factors.length))}
+        {onReset && <button onClick={onReset} style={{ fontSize: 11, color: T.chrome, border: `1px solid ${T.chrome}66`, padding: "4px 10px", background: "none", cursor: "pointer" }}>new matchup</button>}
+      </div>
+    </Panel>
+    <nav className="bb-tabs" style={{ display: "grid", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
+      {TABS.map(t => <button key={t} onClick={() => setTab(t)} style={{ minWidth: 0, padding: "12px 6px", border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", borderBottom: `2px solid ${tab === t ? T.chrome : "transparent"}`, background: tab === t ? "rgba(143,0,255,0.18)" : "none", color: tab === t ? "#fff" : T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 1, cursor: "pointer" }}>{t}</button>)}
+    </nav>
+
+    {tab === "overview" && <div>
+      <Panel title="MATCHUP CONTEXT">
+        <div style={{ fontSize: 13, color: T.dim, lineHeight: 1.8 }}>
+          <div><b style={{ color: AC }}>{a}</b> {pa ? `${pa.w}-${pa.l} over the last 12 months, last 10 ${pa.form}` : "no matches in the last 12 months on record"}</div>
+          <div style={{ marginTop: 6 }}><b style={{ color: HC }}>{b}</b> {pb ? `${pb.w}-${pb.l} over the last 12 months, last 10 ${pb.form}` : "no matches in the last 12 months on record"}</div>
+          {D.h2h && <div style={{ marginTop: 6 }}>Head to head: {a} {D.h2h.a}-{D.h2h.b}</div>}
+        </div>
+      </Panel>
+      <Panel title="WIN PROBABILITY" right="10,000 simulations">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 6, alignItems: "center" }}>
+          <Ring pct={S.pA * 100} color={AC} label={a.slice(0, 10)}/>
+          <Ring pct={S.deciderPct * 100} color={T.dim} label="decider" size={92}/>
+          <Ring pct={(1 - S.pA) * 100} color={HC} label={b.slice(0, 10)}/>
+        </div>
+      </Panel>
+      <Panel title="EXPECTED GAMES">
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)", alignItems: "center", gap: 10 }}>
+          <div style={{ textAlign: "center" }}><div style={{ fontFamily: F.d, fontSize: 30, fontWeight: 700, color: AC, textShadow: `0 0 12px ${AC}77` }}>{S.avgA.toFixed(1)}</div><div style={{ fontSize: 11, color: T.dim }}>{a}</div></div>
+          <div style={{ textAlign: "center" }}><div style={{ fontSize: 11, color: T.dim }}>game margin</div><div style={{ fontFamily: F.d, fontSize: 16, color: favC }}>{S.avgMargin >= 0 ? a : b} {Math.abs(S.avgMargin).toFixed(1)}</div><div style={{ fontSize: 11, color: T.dim }}>xGames {S.avgGames.toFixed(1)}</div></div>
+          <div style={{ textAlign: "center" }}><div style={{ fontFamily: F.d, fontSize: 30, fontWeight: 700, color: HC, textShadow: `0 0 12px ${HC}77` }}>{S.avgB.toFixed(1)}</div><div style={{ fontSize: 11, color: T.dim }}>{b}</div></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8, marginTop: 14 }}>
+          {[[`${a.toUpperCase()} (KALSHI)`, mkt?.a ? `${cents(mkt.a.price)} · ${fmtAm(mkt.a.am)}` : "not listed", mkt?.a ? `model ${tPct(S.pA)}` : ""], [`${b.toUpperCase()} (KALSHI)`, mkt?.b ? `${cents(mkt.b.price)} · ${fmtAm(mkt.b.am)}` : "not listed", mkt?.b ? `model ${tPct(1 - S.pA)}` : ""], ["TIEBREAK IN MATCH", tPct(S.tbPct), `straight sets ${tPct(1 - S.deciderPct)}`]].map(([k, v, sub]) =>
+            <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, padding: "10px", textAlign: "center" }}><div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, overflowWrap: "anywhere" }}>{k}</div><div style={{ fontFamily: F.d, fontSize: 15, color: "#fff", marginTop: 4 }}>{v}</div>{sub && <div style={{ fontSize: 10, color: T.dim, marginTop: 3 }}>{sub}</div>}</div>)}
+        </div>
+      </Panel>
+      <Panel title="PLAYER COMPARISON">
+        <StatBar label="Elo rating" valA={m.ra.r} valB={m.rb.r} colorA={AC} colorB={HC} fmtA={String(Math.round(m.ra.r))} fmtB={String(Math.round(m.rb.r))}/>
+        {pa && pb && prof(pa).map(([l, x], i) => { const y = prof(pb)[i][1]; return x != null && y != null ? <StatBar key={l} label={l} valA={x} valB={y} colorA={AC} colorB={HC} fmtA={tPct(x)} fmtB={tPct(y)}/> : null; })}
+        {pa && pb && pa.avg3 && pb.avg3 && <StatBar label="games per best-of-3 match" valA={pa.avg3} valB={pb.avg3} colorA={AC} colorB={HC} fmtA={String(pa.avg3)} fmtB={String(pb.avg3)}/>}
+      </Panel>
+      <Panel title="MODEL PREDICTION" right={<span style={{ color: confC }}>{conf} confidence</span>}>
+        {mini.map((p, i) => <p key={i} style={{ margin: i ? "10px 0 0" : 0, fontSize: 13, color: T.ink, lineHeight: 1.7 }}>{keepScores(p)}</p>)}
+        <div style={{ fontSize: 10, color: T.faint, marginTop: 10 }}>The full walkthrough is on the rundown tab.</div>
+      </Panel>
+      <Panel title="MOST LIKELY FINAL SCORE">
+        <div style={{ textAlign: "center", fontFamily: F.d, fontSize: 22, color: "#fff" }}>{a} {setsSorted[0][0]} {b}</div>
+        <div style={{ textAlign: "center", fontSize: 11, color: T.dim, marginTop: 4 }}>occurs in {tPct(setsSorted[0][1] / S.n)} of 10,000 simulations</div>
+      </Panel>
+    </div>}
+
+    {tab === "betting" && <div>
+      <Panel title="KALSHI MARKET" right={mkt ? "match winner" : "not listed"}>
+        {!bets.length && <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.6 }}>{live ? "Live: these are the prices before the first point, not in-play, so there's no edge to read." : "Kalshi has no price on this match right now."}</div>}
+        {bets.map(x => <div key={x.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "baseline", padding: "8px 0", borderTop: `1px solid ${T.line}` }}>
+          <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, color: T.ink, overflowWrap: "anywhere" }}>{x.label}</div><div style={{ fontSize: 11, color: T.dim, marginTop: 2 }}>Kalshi {cents(x.price)} ({fmtAm(x.am)}) · algo {tPct(x.wc)}</div></div>
+          <div style={{ textAlign: "right" }}><div style={{ fontFamily: F.d, fontSize: 14, color: x.ev > 0 ? NEON.green : T.dim }}>{x.edge >= 0 ? "+" : ""}{x.edge.toFixed(1)} pts</div><div style={{ fontSize: 10, color: T.dim }}>{(x.ev * 100).toFixed(1)}% EV</div></div>
+        </div>)}
+      </Panel>
+      <Panel title="THE ALGO'S CALL">{tennisCall(D).map((p, i) => <p key={i} style={{ margin: i ? "10px 0 0" : 0, fontSize: 13, color: T.ink, lineHeight: 1.7 }}>{p}</p>)}</Panel>
+      <Panel title="PUBLIC BETTING"><div style={{ fontSize: 12, color: T.dim, lineHeight: 1.6 }}>The public betting sources don't post splits for tennis.</div></Panel>
+    </div>}
+
+    {tab === "rundown" && <Panel title="GAME RUNDOWN">
+      <div style={{ fontFamily: F.d, fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.4, marginBottom: 16, textShadow: "0 0 14px rgba(143,0,255,0.63)", overflowWrap: "anywhere" }}>{S.pA >= 0.5 ? a : b} {tPct(Math.max(S.pA, 1 - S.pA))}{live ? " from here" : ""}: {setsSorted[0][0]} the likeliest result</div>
+      {sections.map((sc, i) => <div key={i} style={{ marginBottom: 16 }}>
+        <div style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: T.chrome, marginBottom: 5 }}>{sc.title}</div>
+        <div style={{ fontSize: 13, color: T.ink, opacity: .85, lineHeight: 1.8, whiteSpace: "pre-line" }}>{keepScores(sc.body)}</div></div>)}
+      <div style={{ fontSize: 10, color: T.faint, marginTop: 12 }}>Written from the sourced data and simulation output only.</div>
+    </Panel>}
+
+    {tab === "factors" && <Panel title="FACTORS" right={`${factors.length} in play`}>
+      {factors.map((f, i) => <div key={i} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline", padding: "8px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+        <span>{f.icon}</span>
+        <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, color: T.ink }}>{f.label}</div><div style={{ fontSize: 11, color: T.dim, marginTop: 2, lineHeight: 1.5 }}>{f.desc}</div></div>
+        <span style={{ fontFamily: F.d, fontSize: 11, color: f.side === "a" ? AC : f.side === "b" ? HC : T.faint, whiteSpace: "nowrap" }}>{f.side === "a" ? a : f.side === "b" ? b : "—"}</span>
+      </div>)}
+    </Panel>}
+
+    {tab === "players" && [[A, m.ra, pa, AC], [B, m.rb, pb, HC]].map(([nm, r, p, c]) => <Panel key={nm} title={nm.toUpperCase()} color={c} right={p ? p.tour.toUpperCase() : ""}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8 }}>
+        {[["ELO", String(Math.round(r.r))], ["ON FILE", `${r.n} matches`], ["12 MONTHS", p ? `${p.w}-${p.l}` : "–"], ["SETS", p ? `${p.sw}-${p.sl}` : "–"], ["GAMES WON", p ? tPct(rate(p.gw, p.gl) || 0) : "–"], ["TIEBREAKS", p ? `${p.tbw}-${p.tbl}` : "–"], ["STRAIGHT-SET WINS", p ? String(p.ss) : "–"], ["GAMES / BO3", p?.avg3 ? String(p.avg3) : "–"]].map(([k, v]) =>
+          <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, background: "rgba(9,2,17,.5)", padding: "9px 10px" }}><div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div><div style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: T.ink, marginTop: 3 }}>{v}</div></div>)}
+      </div>
+      {p?.form && <div style={{ marginTop: 12 }}><div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}>LAST 10 (OLDEST → NEWEST)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{p.form.split("").map((x, i) => <span key={i} style={{ width: 22, height: 22, display: "inline-flex", alignItems: "center", justifyContent: "center", fontFamily: F.d, fontSize: 11, border: `1px solid ${x === "W" ? NEON.green : NEON.red}88`, color: x === "W" ? NEON.green : NEON.red }}>{x}</span>)}</div>
+        <div style={{ fontSize: 11, color: T.dim, marginTop: 8 }}>Last played {p.last}.</div></div>}
+    </Panel>)}
+
+    {tab === "scorelines" && <div>
+      <Panel title="SET SCORES" right={`${a} first`}>
+        {setsSorted.map(([k, v], i) => { const aw = +k.split("-")[0] > +k.split("-")[1], col = aw ? AC : HC;
+          return <div key={k} style={{ display: "grid", gridTemplateColumns: "28px 52px minmax(0,1fr) 54px", gap: 10, alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${T.line}` }}>
+            <span style={{ fontSize: 11, color: T.faint }}>#{i + 1}</span><span style={{ fontFamily: F.d, fontSize: 13, fontWeight: 700, color: col }}>{k}</span>
+            <div style={{ height: 4, background: "rgba(143,0,255,0.18)" }}><div style={{ height: "100%", width: `${(v / setsSorted[0][1]) * 100}%`, background: col, boxShadow: `0 0 8px ${col}` }}/></div>
+            <span style={{ textAlign: "right", fontSize: 12, color: col }}>{tPct(v / S.n)}</span></div>; })}
+      </Panel>
+      <Panel title="TOTAL GAMES" right={`avg ${S.avgGames.toFixed(1)}`}>
+        {(() => { const ks = Object.keys(S.games).map(Number).sort((x, y) => x - y), mx = Math.max(...Object.values(S.games));
+          return <div style={{ display: "grid", gridTemplateColumns: `repeat(${ks.length},minmax(0,1fr))`, alignItems: "end", gap: 2, height: 110 }}>
+            {ks.map(k => <div key={k} title={`${k} games: ${tPct(S.games[k] / S.n)}`} style={{ height: `${(S.games[k] / mx) * 100}%`, background: T.chrome, opacity: .8, minHeight: 1 }}/>)}
+          </div>; })()}
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: T.faint, marginTop: 4 }}><span>{Math.min(...Object.keys(S.games).map(Number))}</span><span>games</span><span>{Math.max(...Object.keys(S.games).map(Number))}</span></div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8, marginTop: 12 }}>
+          {[Math.floor(S.avgGames) - 1.5, Math.floor(S.avgGames) + 0.5, Math.floor(S.avgGames) + 2.5].map(l => <div key={l} style={{ border: `1px solid ${T.line}`, padding: "8px 10px", fontSize: 12, color: T.ink }}>Over {l}: <b style={{ fontFamily: F.d }}>{tPct(overProb(S, l))}</b></div>)}
+        </div>
+      </Panel>
+      <Panel title="GAME SPREAD" right={`${a} margin`}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8 }}>
+          {[-4.5, -2.5, 2.5, 4.5].map(l => <div key={l} style={{ border: `1px solid ${T.line}`, padding: "8px 10px", fontSize: 12, color: T.ink }}>{a} {l > 0 ? "+" : ""}{l}: <b style={{ fontFamily: F.d }}>{tPct(coverProb(S, l))}</b></div>)}
+        </div>
+      </Panel>
+    </div>}
+    <button onClick={onBack} style={{ ...btnStyle(), width: "100%", padding: 12, marginTop: 14 }}>◂ BACK</button>
+  </Shell>;
+}
+
 const btnStyle = (on = true) => ({ padding: "9px 12px", border: `1px solid ${on ? T.chrome : T.line}`, background: on ? "rgba(143,0,255,0.2)" : "none", color: on ? "#fff" : T.faint, fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, cursor: on ? "pointer" : "not-allowed" });
 
 
@@ -2851,7 +3110,7 @@ const fieldStyle = (c = T.chrome) => ({ width: "100%", minWidth: 0, boxSizing: "
 const shortGame = l => (l.sport === "Tennis" || l.sport === "MMA" ? gameTxt(l) : `${l.away.abbr || l.away.name} @ ${l.home.abbr || l.home.name}`);
 const gameTxt = l => (l.sport === "Tennis" || l.sport === "MMA") ? `${l.away.name} vs ${l.home.name}` : `${l.away.name} @ ${l.home.name}`;
 
-function BetSlipsScreen({ onBack }) {
+function BetSlipsScreen({ onBack, onTools }) {
   const [me, setMe] = useState({ loading: true });
   const [tab, setTab] = useState("slip");
   const [who, setWho] = useState(null);                       // a username whose page is open
@@ -2870,11 +3129,10 @@ function BetSlipsScreen({ onBack }) {
     {!me.loading && !me.err && !me.username && <UsernamePanel onDone={u => setMe({ username: u })}/>}
     {me.username && <>
       <nav className="bb-subtabs" style={{ display: "grid", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
-        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"], ["kalshi", kal ? "KALSHI ✓" : "KALSHI"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); setFlash(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
+        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); setFlash(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
       </nav>
-      {tab === "slip" && <NewSlip kal={kal} onPlaced={msg => { setFlash(msg || null); setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "slip" && <NewSlip kal={kal} onTools={onTools} onPlaced={msg => { setFlash(msg || null); setVer(v => v + 1); setTab("mine"); }}/>}
       {tab === "mine" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
-      {tab === "kalshi" && <KalshiPanel username={me.username} kal={kal} setKal={setKal}/>}
       {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
       {tab === "board" && <Leaderboard key={`lb${ver}`} onOpen={open}/>}
       {tab === "user" && who && <Bettor key={`u${who}${ver}`} path={`user/${encodeURIComponent(who)}`} onBackBoard={() => setTab("board")}/>}
@@ -2899,7 +3157,7 @@ function UsernamePanel({ onDone, current = "" }) {
 // ---------- the slip: one pick per line, odds on the right, + for another line; the amount underneath ----------
 let _lineId = 1;
 const blankLine = () => ({ id: _lineId++, text: "", odds: "", choice: null });
-function NewSlip({ onPlaced, kal }) {
+function NewSlip({ onPlaced, kal, onTools }) {
   const [lines, setLines] = useState(() => [blankLine()]);
   const [stake, setStake] = useState("");
   const [board, setBoard] = useState(null);
@@ -2941,6 +3199,7 @@ function NewSlip({ onPlaced, kal }) {
   };
   return <Panel title="NEW SLIP" right={board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"}>
     <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay.</div>
+    {!kal && onTools && <button onClick={onTools} style={{ display: "block", width: "100%", marginBottom: 12, padding: "9px 12px", border: `1px dashed ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, textAlign: "left", cursor: "pointer", lineHeight: 1.5 }}>Want slips sent to your Kalshi account? Connect it in <span style={{ color: T.chrome, textDecoration: "underline" }}>Tools → Kalshi</span>.</button>}
     {kal && <button onClick={() => { setKOn(!kOn); setReview(false); }} aria-pressed={toK} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", marginBottom: 12, padding: "10px 12px", border: `1px solid ${toK ? NEON.teal : T.line}`, background: toK ? "rgba(23,242,208,.08)" : "none", color: T.ink, cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
       <span style={{ width: 34, height: 18, borderRadius: 9, background: toK ? NEON.teal : T.line, position: "relative", display: "inline-block" }}><span style={{ position: "absolute", top: 2, left: toK ? 18 : 2, width: 14, height: 14, borderRadius: 7, background: "#fff", transition: "left .15s" }}/></span>
       <span style={{ minWidth: 0, fontSize: 12, lineHeight: 1.4 }}>{toK ? `Send to Kalshi${kal.env === "demo" ? " (demo)" : ""}: priced at Kalshi's odds, confirmed before it's bought` : "Track only (not sent to Kalshi)"}</span>
@@ -3047,6 +3306,87 @@ function KalshiPanel({ username, kal, setKal }) {
     {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
     <button onClick={save} disabled={!ok} style={{ width: "100%", marginTop: 12, padding: 13, border: `1px solid ${ok ? T.chrome : T.line}`, background: ok ? "rgba(143,0,255,0.3)" : "none", color: ok ? "#fff" : T.faint, fontFamily: F.d, fontSize: 12, letterSpacing: 2, cursor: ok ? "pointer" : "not-allowed" }}>{busy ? "CHECKING WITH KALSHI…" : "SAVE ON THIS DEVICE"}</button>
   </Panel>;
+}
+
+// ─── TOOLS: Kalshi (each person's own key) and THE BOOK (blackjack basic strategy) ──────────────────────────────────
+function ToolsScreen({ onBack, start = "book" }) {
+  const [tab, setTab] = useState(start), [me, setMe] = useState({ loading: true }), [kal, setKal] = useState(null);
+  useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message })); }, []);
+  useEffect(() => { if (me.username) savedKey(me.username).then(k => setKal(k || null)).catch(() => setKal(null)); }, [me.username]);
+  return <Shell status="tools">
+    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
+      <button onClick={onBack} style={btnStyle()}>◂ BACK</button>
+      <div style={{ textAlign: "right", fontFamily: F.d, fontSize: 18, letterSpacing: 4, color: "#fff", textShadow: `0 0 14px ${T.brand}` }}>TOOLS</div>
+    </div>
+    <nav style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
+      {[["book", "THE BOOK"], ["kalshi", kal ? "KALSHI ✓" : "KALSHI"]].map(([k, t]) => <button key={k} onClick={() => setTab(k)} style={{ padding: "12px 4px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, cursor: "pointer" }}>{t}</button>)}
+    </nav>
+    {tab === "book" && <TheBook/>}
+    {tab === "kalshi" && <>
+      {me.loading && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading…</div></Panel>}
+      {me.err && <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095", lineHeight: 1.6 }}>{me.err}</div></Panel>}
+      {!me.loading && !me.err && !me.username && <UsernamePanel onDone={u => setMe({ username: u })}/>}
+      {me.username && <KalshiPanel username={me.username} kal={kal} setKal={setKal}/>}
+    </>}
+  </Shell>;
+}
+
+// THE BOOK: the chart, in the Boardroom's colors, plus a checker for one hand
+const BOOK_C = { H: { bg: "rgba(241,230,255,.06)", fg: T.ink }, S: { bg: "rgba(255,194,38,.85)", fg: "#1a0f00" }, D: { bg: "rgba(43,255,136,.78)", fg: "#03140a" }, Ds: { bg: "rgba(23,242,208,.62)", fg: "#021412" },
+  Y: { bg: "rgba(43,255,136,.78)", fg: "#03140a" }, N: { bg: "rgba(241,230,255,.06)", fg: T.dim }, "Y/N": { bg: "rgba(23,242,208,.62)", fg: "#021412" }, SUR: { bg: "rgba(255,51,85,.82)", fg: "#fff" }, "-": { bg: "transparent", fg: "transparent" } };
+function BookGrid({ title, rows }) {
+  const cell = { display: "flex", alignItems: "center", justifyContent: "center", height: "clamp(24px,6.4vw,34px)", fontFamily: F.d, fontWeight: 700, fontSize: "clamp(8px,2.5vw,13px)", letterSpacing: 0, whiteSpace: "nowrap", overflow: "hidden" };
+  const cols = "minmax(34px,1.15fr) repeat(10,minmax(0,1fr))";
+  return <Panel title={title} right="dealer upcard →">
+    <div style={{ display: "grid", gridTemplateColumns: cols, gap: 2 }}>
+      <span style={{ ...cell, color: T.faint, fontSize: "clamp(7px,2.1vw,10px)" }}>HAND</span>
+      {UP.map(u => <span key={u} style={{ ...cell, color: T.chrome, background: "rgba(143,0,255,.16)" }}>{u}</span>)}
+      {rows.map(([k, r]) => [
+        <span key={`k${k}`} style={{ ...cell, justifyContent: "flex-start", paddingLeft: 4, color: "#fff", background: "rgba(143,0,255,.10)", fontSize: k.length > 4 ? "clamp(7px,2.1vw,11px)" : cell.fontSize }}>{k}</span>,
+        ...r.map((x, i) => <span key={`${k}${i}`} title={`${k} vs ${UP[i]}: ${KEY.find(([c]) => c === x)?.[1] || ""}`} style={{ ...cell, background: BOOK_C[x].bg, color: BOOK_C[x].fg, boxShadow: x === "S" || x === "D" || x === "Y" || x === "SUR" ? `inset 0 0 0 1px rgba(255,255,255,.12)` : "none" }}>{x === "-" ? "" : x}</span>),
+      ])}
+    </div>
+  </Panel>;
+}
+const HAND_OPTS = [...Array.from({ length: 17 }, (_, i) => ({ v: `h${21 - i}`, t: `Hard ${21 - i}`, h: { type: "hard", total: 21 - i } })),
+  ...["A,9", "A,8", "A,7", "A,6", "A,5", "A,4", "A,3", "A,2"].map(k => ({ v: `s${k}`, t: `Soft ${k}`, h: { type: "soft", key: k } })),
+  ...["A,A", "T,T", "9,9", "8,8", "7,7", "6,6", "5,5", "4,4", "3,3", "2,2"].map(k => ({ v: `p${k}`, t: `Pair ${k}`, h: { type: "pair", key: k } }))];
+function TheBook() {
+  const [hand, setHand] = useState("h16"), [up, setUp] = useState("10"), [das, setDas] = useState(true), [sur, setSur] = useState(true);
+  const h = HAND_OPTS.find(o => o.v === hand), call = bookCall(h.h, up, { das, surrender: sur }), c = BOOK_C[call.code] || BOOK_C.H;
+  const tog = (on, set, label) => <button onClick={() => set(!on)} aria-pressed={on} style={{ padding: "8px 6px", border: `1px solid ${on ? T.chrome : T.line}`, background: on ? "rgba(143,0,255,.2)" : "none", color: on ? "#fff" : T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer", lineHeight: 1.35, overflowWrap: "anywhere" }}>{on ? "✓ " : ""}{label}</button>;
+  return <>
+    <Panel color={NEON.gold} style={{ marginTop: 14 }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontFamily: F.d, fontSize: "clamp(22px,7vw,34px)", fontWeight: 900, letterSpacing: 4, color: "#fff", textShadow: `0 0 18px ${NEON.gold}88` }}>THE BOOK</div>
+        <div style={{ fontSize: 12, color: T.dim, marginTop: 6, lineHeight: 1.6 }}>Blackjack basic strategy · Bobby's Boardroom edition</div>
+      </div>
+    </Panel>
+    <Panel title="WHAT DO I DO?" right="your hand vs the dealer">
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 10 }}>
+        <label style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>YOUR HAND
+          <select aria-label="your hand" value={hand} onChange={e => setHand(e.target.value)} style={{ ...fieldStyle(), marginTop: 6, fontFamily: F.d, appearance: "auto" }}>{HAND_OPTS.map(o => <option key={o.v} value={o.v}>{o.t}</option>)}</select>
+        </label>
+        <div><div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}>DEALER SHOWS</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 4 }}>{UP.map(u => <button key={u} onClick={() => setUp(u)} aria-pressed={up === u} style={{ padding: "9px 0", border: `1px solid ${up === u ? T.chrome : T.line}`, background: up === u ? "rgba(143,0,255,.3)" : "none", color: up === u ? "#fff" : T.dim, fontFamily: F.d, fontSize: 13, cursor: "pointer" }}>{u}</button>)}</div></div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 6 }}>{tog(das, setDas, "double after split")}{tog(sur, setSur, "surrender offered")}</div>
+      </div>
+      <div style={{ marginTop: 14, padding: "14px", textAlign: "center", border: `1px solid ${T.line}`, background: c.bg === BOOK_C.H.bg ? "rgba(143,0,255,.12)" : c.bg }}>
+        <div style={{ fontFamily: F.d, fontSize: "clamp(20px,6vw,28px)", fontWeight: 900, letterSpacing: 2, color: c.bg === BOOK_C.H.bg ? "#fff" : c.fg }}>{call.act.toUpperCase()}</div>
+        <div style={{ fontSize: 12, marginTop: 4, color: c.bg === BOOK_C.H.bg ? T.dim : c.fg }}>{h.t} vs {up}{call.note ? ` · ${call.note}` : ""}</div>
+      </div>
+    </Panel>
+    <BookGrid title="HARD TOTALS" rows={HARD}/>
+    <BookGrid title="SOFT TOTALS" rows={SOFT}/>
+    <BookGrid title="PAIR SPLITTING" rows={PAIRS}/>
+    <BookGrid title="SURRENDER" rows={SURRENDER}/>
+    <Panel color={NEON.red}><div style={{ textAlign: "center", fontFamily: F.d, fontSize: "clamp(11px,3.4vw,14px)", letterSpacing: 2, color: "#fff", lineHeight: 1.5 }}>INSURANCE OR EVEN MONEY: DON'T TAKE</div></Panel>
+    <Panel title="KEY">
+      <div style={{ display: "grid", gap: 6 }}>{KEY.map(([k, d]) => <div key={k} style={{ display: "grid", gridTemplateColumns: "48px minmax(0,1fr)", gap: 10, alignItems: "center" }}>
+        <span style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 26, fontFamily: F.d, fontWeight: 700, fontSize: 12, background: BOOK_C[k].bg, color: BOOK_C[k].fg === "transparent" ? T.ink : BOOK_C[k].fg, border: `1px solid ${T.line}` }}>{k}</span>
+        <span style={{ fontSize: 12, color: T.ink, lineHeight: 1.4 }}>{d}</span></div>)}</div>
+    </Panel>
+  </>;
 }
 
 // What each line maps to on Kalshi (or why it can't), from Kalshi's current markets
@@ -3473,6 +3813,7 @@ export default function App() {
   const [indiv,setIndiv]=useState(null);
   const [indivMatch,setIndivMatch]=useState(null);
   const [finalRow,setFinalRow]=useState(null);
+  const [toolsTab,setToolsTab]=useState("book");
   // Lineups: while a game hasn't started and a side's lineup isn't posted yet, check the game every 90 seconds;
   // the moment it's posted, the matchup is re-pulled with it and re-simulated.
   const [lineupNote,setLineupNote]=useState(null);
@@ -3573,9 +3914,10 @@ export default function App() {
   }
   const runFull=(row,from)=>{setBackTo(from);handleFetch({away:row.md.away.name,home:row.md.home.name,neutral:row.neutral,sport:slateRec.data.sport,from});};
 
-  if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
-  if (phase==="indivMatch"&&indivMatch) return <IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
-  if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")}/>;
+  if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onSim={indiv.sport==="Tennis"?m=>{setIndivMatch({sport:"Tennis",match:m,fit:indiv.fit,from:phase});setPhase("indivMatch");}:null} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
+  if (phase==="indivMatch"&&indivMatch) return indivMatch.sport==="Tennis"?<TennisSimScreen res={indivMatch} onBack={()=>setPhase(indivMatch.from||"setup")} onReset={()=>setPhase("setup")}/>:<IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
+  if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")} onTools={()=>{setToolsTab("kalshi");setPhase("tools");}}/>;
+  if (phase==="tools") return <ToolsScreen start={toolsTab} onBack={()=>setPhase("setup")}/>;
   if (phase==="final"&&finalRow) return <FinalScreen sport={finalRow.sport} row={finalRow.row} onBack={()=>setPhase("setup")}/>;
   if (phase==="box"&&finalRow) { const r=finalRow.row; return <FinalScreen live sport={finalRow.sport} row={r} onBack={()=>setPhase("setup")} onSim={()=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport:finalRow.sport,row:r})}/>; }
   if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
@@ -3588,6 +3930,6 @@ export default function App() {
   }
   if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
   return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
+    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onTools={()=>{setToolsTab("book");setPhase("tools");}} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
     onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport,row:r})}/>;
 }

@@ -10,7 +10,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { powerTeamUrl, parsePower, SPLITS, anSplitsUrl, dkSplitsUrl, parseANSplits, parseDKSplits } from "../src/routes.js";
 import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd } from "../src/routes.js";
-import { parseTennis, parseUFC, fitElo } from "../src/ratings.js";
+import { parseTennis, parseUFC, fitElo, tennisProfiles, h2hShard } from "../src/ratings.js";
 
 const FORCE_BACKFILL = process.argv.includes("--backfill");
 const ONLY = (process.argv.find(a => a.startsWith("--sports=")) || "").slice(9).split(",").filter(Boolean);
@@ -199,6 +199,15 @@ function ratings(sport, all) {
   write(`data/ratings/${sport}.json`, { fit: { scale: f.scale, initW: f.initW, matches: f.matches, train: f.train, test: f.test, cut: f.cut || null }, players });
 }
 
+// tennis player profiles (last 12 months: form, sets, games, tiebreaks) and head-to-head records, from every match on file
+function profiles(all) {
+  const { fields, players, h2h } = tennisProfiles(Object.values(all));
+  write("data/tennis/players.json", { fields, players });
+  const shards = Array.from({ length: 16 }, () => ({}));
+  for (const [k, v] of Object.entries(h2h)) { const [a, b] = k.split("-"); shards[h2hShard(a, b)][k] = v; }
+  shards.forEach((h, i) => write(`data/tennis/h2h-${i}.json`, { fields: ["winsLowId", "winsHighId", "lastDate", "lastEvent", "lastScoreLowIdFirst"], h2h: h }));
+}
+
 // ---- EA SPORTS FC player ratings (the ratings on ea.com), once a day: soccer lineups blend them with the stats ----
 async function fifa() {
   if (!due("fifa", 20 * 60)) return;
@@ -220,7 +229,7 @@ if (!ONLY.length || ONLY.includes("Soccer")) { try { await fifa(); } catch (e) {
 for (const s of sports) {
   try {
     if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); await splits(s); await power(s); }
-    else if (s === "Tennis") ratings("Tennis", await tennis());
+    else if (s === "Tennis") { const all = await tennis(); ratings("Tennis", all); profiles(all); }
     else if (s === "MMA") ratings("MMA", await mma());
   } catch (e) { console.error(s, e); fails++; }
   console.log(`${s}: done (${calls} requests so far)`);
