@@ -3382,7 +3382,8 @@ function NewSlip({ onPlaced, kal, onTools }) {
   }), [lines, board, fmt]);
   const kmap = useKalshiMap(kal, toK, read.map(x => (x.empty ? null : x.leg)));
   // sending to Kalshi: each line's price is Kalshi's, and every line has to be on Kalshi
-  const rd = toK ? read.map((x, i) => (x.empty ? x : { ...x, k: kmap[i], odds: kmap[i]?.ok ? kmap[i].am : null, ready: !!x.leg && x.leg.state === "pre" && !!kmap[i]?.ok })) : read;
+  // a game in progress can be bought live on Kalshi (its live price); a slip that's only tracked stays pre-game
+  const rd = toK ? read.map((x, i) => (x.empty ? x : { ...x, k: kmap[i], odds: kmap[i]?.ok ? kmap[i].am : null, ready: !!x.leg && (x.leg.state === "pre" || x.leg.state === "in") && !!kmap[i]?.ok })) : read;
   const used = rd.filter(x => !x.empty);
   const amt = Math.round(Number(stake) * 100) / 100;
   const price = used.length && used.every(x => x.odds != null) ? slipPrice(used.map(x => x.odds), amt) : null;
@@ -3405,7 +3406,7 @@ function NewSlip({ onPlaced, kal, onTools }) {
     } catch (e) { setReview(false); setErr(`${r.summary} It's on Kalshi, but saving it here failed: ${e.message} Add it again with Kalshi switched off to track it.`); }
   };
   return <Panel title="NEW SLIP" right={board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"}>
-    <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay.</div>
+    <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay. Games already underway can be bet live when the slip goes to Kalshi.</div>
     {!kal && onTools && <button onClick={onTools} style={{ display: "block", width: "100%", marginBottom: 12, padding: "9px 12px", border: `1px dashed ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, textAlign: "left", cursor: "pointer", lineHeight: 1.5 }}>Want slips sent to your Kalshi account? Connect it in <span style={{ color: T.chrome, textDecoration: "underline" }}>Tools → Kalshi</span>.</button>}
     {kal && <button onClick={() => { setKOn(!kOn); setReview(false); }} aria-pressed={toK} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", marginBottom: 12, padding: "10px 12px", border: `1px solid ${toK ? NEON.teal : T.line}`, background: toK ? "rgba(23,242,208,.08)" : "none", color: T.ink, cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
       <span style={{ width: 34, height: 18, borderRadius: 9, background: toK ? NEON.teal : T.line, position: "relative", display: "inline-block" }}><span style={{ position: "absolute", top: 2, left: toK ? 18 : 2, width: 14, height: 14, borderRadius: 7, background: "#fff", transition: "left .15s" }}/></span>
@@ -3423,15 +3424,15 @@ function NewSlip({ onPlaced, kal, onTools }) {
       const last = i === read.length - 1;
       return <div key={x.l.id} style={{ marginBottom: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8 }}>
-          <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={fieldStyle()}/>
+          <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={x.l.choice ? { ...fieldStyle(NEON.green), color: NEON.green, fontWeight: 700 } : fieldStyle()}/>
           {toK ? <input aria-label={`odds ${i + 1}`} readOnly value={rd[i].k?.ok ? (fmt === "pct" ? `${Math.round(rd[i].k.price * 100)}%` : fmtAm(rd[i].k.am)) : ""} placeholder="Kalshi" title="Kalshi's current price" style={{ ...fieldStyle(NEON.teal), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: "#fff" }}/>
             : <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: (fmt === "pct" ? e.target.value.replace(/[^\d.%]/g, "") : e.target.value.replace(/[^\d+-]/g, "")).slice(0, 7) })} placeholder={fmt === "pct" ? "52.4" : "-110"} inputMode={fmt === "pct" ? "decimal" : "numeric"} style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>}
           {last
             ? <button aria-label="add a line" onClick={() => setLines(ls => [...ls, blankLine()])} style={{ ...btnStyle(), padding: 0, fontSize: 18 }}>+</button>
             : <button aria-label={`remove line ${i + 1}`} onClick={() => setLines(ls => ls.filter(l => l.id !== x.l.id))} style={{ ...btnStyle(false), padding: 0, fontSize: 16, cursor: "pointer", color: T.dim }}>×</button>}
         </div>
-        <PickMatch fmt={fmt} x={toK ? { ...x, l: { ...x.l, odds: "k" }, odds: 0 } : x} onChoose={leg => set(x.l.id, { choice: leg, kline: null })}/>
-        {toK && x.leg && x.leg.state === "pre" && <KalshiLine k={rd[i].k} onLine={line => set(x.l.id, { kline: line })}/>}
+        <PickMatch fmt={fmt} toK={toK} x={toK ? { ...x, l: { ...x.l, odds: "k" }, odds: 0 } : x} onChoose={leg => set(x.l.id, { text: legLabel(leg), choice: leg, kline: null })}/>
+        {toK && x.leg && (x.leg.state === "pre" || x.leg.state === "in") && <KalshiLine k={rd[i].k} onLine={line => set(x.l.id, { kline: line })}/>}
       </div>;
     })}
     <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "4px 0 6px" }}>BET AMOUNT</div>
@@ -3606,14 +3607,14 @@ function TheBook() {
 function useKalshiMap(kal, on, legs) {
   const [ev, setEv] = useState({});
   const need = [...new Set(legs.filter(Boolean).flatMap(l => [seriesFor(l.sport, l.league, "ml"), l.market === "spread" || l.market === "total" ? seriesFor(l.sport, l.league, l.market) : null]).filter(Boolean))];
-  const key = need.join(",");
+  const key = need.join(","), anyLive = legs.some(l => l && l.state === "in");   // a game in progress: live prices every 10 seconds
   useEffect(() => {
     if (!kal || !on || !need.length) return;
     let alive = true;
     Promise.all(need.map(s => kalshiEvents(kal.env, s).then(e => [s, e]))).then(r => alive && setEv(o => ({ ...o, ...Object.fromEntries(r) })));
-    const t = setInterval(() => { need.forEach(s => delete _kx[`${kal.env}|${s}`]); Promise.all(need.map(s => kalshiEvents(kal.env, s).then(e => [s, e]))).then(r => alive && setEv(o => ({ ...o, ...Object.fromEntries(r) }))); }, 60000);
+    const t = setInterval(() => { need.forEach(s => delete _kx[`${kal.env}|${s}`]); Promise.all(need.map(s => kalshiEvents(kal.env, s).then(e => [s, e]))).then(r => alive && setEv(o => ({ ...o, ...Object.fromEntries(r) }))); }, anyLive ? 10000 : 60000);
     return () => { alive = false; clearInterval(t); };
-  }, [kal, on, key]);
+  }, [kal, on, key, anyLive]);
   return legs.map(l => (!l ? null : need.every(s => s in ev) || [seriesFor(l.sport, l.league, "ml")].every(s => s in ev) ? mapLeg(l, ev) : { loading: true }));
 }
 function KalshiLine({ k, onLine }) {
@@ -3717,18 +3718,19 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
 }
 
 // under each line: which game it matched (or why it didn't), and other games it could mean
-function PickMatch({ x, onChoose, fmt = "am" }) {
+function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
   if (x.empty) return null;
   const box = c => ({ marginTop: 6, padding: "7px 10px", borderLeft: `2px solid ${c}`, background: `${c}12`, fontSize: 11, lineHeight: 1.5, color: T.ink });
   if (x.res.status === "loading") return <div style={box(T.dim)}><span style={{ color: T.dim }}>Loading today's games…</span></div>;
   if (!x.leg) return <div style={box(NEON.red)}><span style={{ color: "#FF8095" }}>{x.res.status === "empty" ? "Type a team or player and a bet." : "No game today or tomorrow matches that. Try the team's name, city or abbreviation."}</span></div>;
-  const l = x.leg, started = l.state !== "pre";
-  return <div style={box(started ? NEON.red : NEON.green)}>
+  const l = x.leg, live = l.state === "in", over = l.state === "post", bettable = l.state === "pre" || (live && toK);
+  const c = bettable ? NEON.green : live ? NEON.gold : NEON.red;
+  return <div style={box(c)}>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
-      <span style={{ color: "#fff", overflowWrap: "anywhere" }}>{started ? "✗ " : "✓ "}{legLabel(l)}</span>
+      <span style={{ color: bettable ? NEON.green : "#fff", fontWeight: bettable ? 700 : 400, overflowWrap: "anywhere" }}>{bettable ? "✓ " : live ? "● " : "✗ "}{legLabel(l)}</span>
       <span style={{ color: T.dim, whiteSpace: "nowrap" }}>{SPORT_CFG[l.sport]?.label || l.sport}</span>
     </div>
-    <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {started ? "already started, can't bet it" : whenTxt(l.date)}</div>
+    <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {over ? "this game is over" : live ? (toK ? <span style={{ color: NEON.red }}>● LIVE: bet it now at Kalshi's live price</span> : "live: turn on Send to Kalshi to bet it live") : whenTxt(l.date)}</div>
     {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>{fmt === "pct" ? "Use a percentage from 1 to 99, like 54." : "Odds look like -110 or +150."}</div>}
     {!x.l.odds && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
     {(x.res.others || []).length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>

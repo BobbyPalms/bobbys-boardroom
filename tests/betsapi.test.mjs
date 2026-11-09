@@ -69,6 +69,15 @@ check("straight placed", r.status === 200 && r.j.slip.odds === 150 && r.j.slip.l
 r = await call("bob@x.com", "POST", "slips", { stake: 20, legs: [legNBA("Celtics -4.5", "401", "spread", "home", -4.5, "-110"), legNBA("76ers ML", "402", "ml", "away", null, "-110"), { pick: "Real Madrid ML", sport: "Soccer", league: "uefa.champions", eventId: "501", date: soon, market: "ml", side: "away", line: null, odds: "-200" }] });
 check("three-leg parlay priced", r.status === 200 && r.j.slip.odds === decToAmLocal([-110, -110, -200]), r.j);
 check("started game refused", (await call("bob@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Bucks ML", "403", "ml", "away", null, "-150")] })).status === 400);
+// a live game: only when it was actually bought live on Kalshi (filled order), and it's marked live
+await call("live@x.com", "POST", "me", { username: "LiveOne" });
+const kFilled = { env: "live", orders: [{ ticker: "KXNBAGAME-X-MIL", side: "yes", count: 10, price: 0.6, order_id: "o1", filled: 10 }] };
+r = await call("live@x.com", "POST", "slips", { stake: 6, legs: [legNBA("Bucks ML", "403", "ml", "away", null, "-150")], kalshi: kFilled });
+check("live game accepted when bought on Kalshi, and marked live", r.status === 200 && r.j.slip.legs[0].live === true && r.j.slip.kalshi.orders[0].filled === 10, r.j);
+check("live game refused when the Kalshi order didn't fill", (await call("live@x.com", "POST", "slips", { stake: 6, legs: [legNBA("Bucks ML", "403", "ml", "away", null, "-150")], kalshi: { ...kFilled, orders: [{ ...kFilled.orders[0], filled: 0 }] } })).status === 400);
+games["404"] = { sport: "basketball/nba", date: new Date(Date.now() - 4 * 3600e3).toISOString(), state: "post", away: ["CHI", "Chicago Bulls", "Bulls"], home: ["MIA", "Miami Heat", "Heat"], as: "100", hs: "99" };
+check("a finished game is always refused, Kalshi or not", (await call("live@x.com", "POST", "slips", { stake: 6, legs: [legNBA("Bulls ML", "404", "ml", "away", null, "-150")], kalshi: kFilled })).status === 400);
+delete games["404"];
 check("bad odds refused", (await call("bob@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "-50")] })).status === 400);
 check("no amount refused", (await call("bob@x.com", "POST", "slips", { stake: 0, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "+150")] })).status === 400);
 check("same pick twice refused", (await call("bob@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "+150"), legNBA("Lakers ML", "401", "ml", "away", null, "+150")] })).status === 400);

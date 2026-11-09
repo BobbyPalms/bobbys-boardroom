@@ -3,7 +3,7 @@
 //   GET  /api/me                 -> { username | null }
 //   POST /api/me {username}      -> pick or change your username
 //   GET  /api/slips              -> your slips and numbers
-//   POST /api/slips {stake, legs}-> place a slip (every game must not have started yet)
+//   POST /api/slips {stake, legs}-> place a slip (every game must not have started yet, unless it was bought live on Kalshi)
 //   DELETE /api/slips/:id        -> take back a slip before any of its games starts
 //   GET  /api/board              -> both leaderboards
 //   GET  /api/user/:username     -> anyone's numbers and slips (by username; emails are never shown)
@@ -115,6 +115,8 @@ async function placeSlip(env, email, body) {
   const legsIn = Array.isArray(body?.legs) ? body.legs.slice(0, 20) : [];
   if (!legsIn.length) return bad("Add at least one pick.");
   const legs = [], seen = new Set();
+  // a game already underway is only accepted when the slip was actually bought on Kalshi (filled orders, live prices)
+  const kalshi = cleanKalshi(body?.kalshi), boughtOnKalshi = !!kalshi && (kalshi.orders.some(o => o.filled > 0) || !!kalshi.combo?.contracts);
   for (const x of legsIn) {
     const odds = readOdds(x.odds);
     if (odds == null) return bad(`Odds for "${x.pick || "a pick"}" should look like -110 or +150.`);
@@ -127,14 +129,15 @@ async function placeSlip(env, email, body) {
     try { rows = await board(env, x.sport, x.league, ymd(new Date(x.date))); } catch (_) { return bad("Couldn't reach the scores routes to check the game. Try again.", 503); }
     const row = rows.find(r => r.id === String(x.eventId));
     if (!row) return bad(`Couldn't find the game for "${x.pick}".`);
-    if (row.state !== "pre" || Date.parse(row.date) <= Date.now()) return bad(`"${x.pick}": that game has already started.`);
+    const pre = row.state === "pre" && Date.parse(row.date) > Date.now(), live = row.state === "in" || (row.state === "pre" && Date.parse(row.date) <= Date.now());
+    if (row.state === "post") return bad(`"${x.pick}": that game is over.`);
+    if (!pre && !(live && boughtOnKalshi)) return bad(`"${x.pick}": that game has already started. Live games can be bet by sending the slip to Kalshi.`);
     const k = `${row.id}|${x.market}|${side}`;
     if (seen.has(k)) return bad(`"${x.pick}" is on the slip twice.`);
     seen.add(k);
     legs.push({ pick: String(x.pick || "").slice(0, 80), sport: x.sport, league: x.league, eventId: row.id, date: row.date, market: x.market, side, line,
-      odds, away: { name: row.away.name, abbr: row.away.abbr || "" }, home: { name: row.home.name, abbr: row.home.abbr || "" }, title: x.sport === "Tennis" || x.sport === "MMA" ? row.league : "", res: null });
+      odds, away: { name: row.away.name, abbr: row.away.abbr || "" }, home: { name: row.home.name, abbr: row.home.abbr || "" }, title: x.sport === "Tennis" || x.sport === "MMA" ? row.league : "", res: null, ...(pre ? {} : { live: true }) });
   }
-  const kalshi = cleanKalshi(body?.kalshi);
   // a Kalshi combo is priced as one contract: its price is the slip's odds, not the legs multiplied
   const dec = kalshi?.dec > 1 ? kalshi.dec : legs.reduce((a, l) => a * amToDec(l.odds), 1), odds = decToAm(dec);
   const id = crypto.randomUUID(), created = new Date().toISOString();
