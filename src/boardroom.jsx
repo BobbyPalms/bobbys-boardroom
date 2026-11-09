@@ -3724,6 +3724,9 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
   if (x.res.status === "loading") return <div style={box(T.dim)}><span style={{ color: T.dim }}>Loading today's games…</span></div>;
   if (!x.leg) return <div style={box(NEON.red)}><span style={{ color: "#FF8095" }}>{x.res.status === "empty" ? "Type a team or player and a bet." : "No game today or tomorrow matches that. Try the team's name, city or abbreviation."}</span></div>;
   const l = x.leg, live = l.state === "in", over = l.state === "post", bettable = l.state === "pre" || (live && toK);
+  // the other matches for what was typed: the typed match itself when another was chosen, never the one now in the line
+  const same = (a, b) => a.sport === b.sport && String(a.eventId) === String(b.eventId) && a.side === b.side && a.market === b.market;
+  const others = [...(x.res.leg && !same(x.res.leg, l) ? [x.res.leg] : []), ...(x.res.others || []).filter(o => !same(o, l))];
   const c = bettable ? NEON.green : live ? NEON.gold : NEON.red;
   return <div style={box(c)}>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
@@ -3733,9 +3736,9 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
     <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {over ? "this game is over" : live ? (toK ? <span style={{ color: NEON.red }}>● LIVE: bet it now at Kalshi's live price</span> : "live: turn on Send to Kalshi to bet it live") : whenTxt(l.date)}</div>
     {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>{fmt === "pct" ? "Use a percentage from 1 to 99, like 54." : "Odds look like -110 or +150."}</div>}
     {!x.l.odds && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
-    {(x.res.others || []).length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+    {others.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
       <span style={{ color: T.faint }}>or:</span>
-      {x.res.others.map(o => <button key={`${o.sport}${o.eventId}${o.side}`} onClick={() => onChoose(o)} style={{ ...oneLine, maxWidth: "100%", padding: "3px 8px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer" }}>{legLabel(o)} · {SPORT_CFG[o.sport]?.label}</button>)}
+      {others.map(o => <button key={`${o.sport}${o.eventId}${o.side}`} onClick={() => onChoose(o)} style={{ ...oneLine, maxWidth: "100%", padding: "3px 8px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer" }}>{legLabel(o)} · {SPORT_CFG[o.sport]?.label}</button>)}
     </div>}
   </div>;
 }
