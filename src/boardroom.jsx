@@ -4,7 +4,7 @@ import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3474,10 +3474,29 @@ async function kalshiCall(rec, method, sub, body) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const m = j?.error?.message || j?.error?.code || j?.message || j?.error || `Kalshi said no (${r.status})`;
-    throw new Error(r.status === 401 ? "Kalshi didn't accept the key. Check the Key ID and private key in the KALSHI tab." : /insufficient/i.test(String(m)) ? "Not enough money in your Kalshi account for this." : String(m));
+    throw new Error(r.status === 401 ? "Kalshi didn't accept the key. Check the Key ID and private key in the KALSHI tab." : /insufficient/i.test(String(m)) ? `Kalshi says there isn't enough cash for this order where this market trades (Kalshi: "${String(m).slice(0, 160)}").` : String(m));
   }
   return j;
 }
+// the cash a buy needs, on the shard its market trades on (see planFunding in src/kalshi.js)
+async function kalshiFundingPlan(kal, ticker, need) {
+  const [mj, bal] = await Promise.all([kalshiCall({ env: kal.env }, "GET", `markets/${encodeURIComponent(ticker)}`).catch(() => null), kalshiCall(kal, "GET", "portfolio/balance")]);
+  const ix = mj?.market?.exchange_index, shard = Number.isInteger(ix) ? ix : null;
+  return planFunding(bal, shard, need);
+}
+// move the cash, then wait until Kalshi shows it on the market's shard (transfers settle asynchronously)
+async function kalshiMoveFunds(kal, plan) {
+  for (const m of plan.moves) await kalshiCall(kal, "POST", "portfolio/intra_exchange_instance_transfer", transferBody(m, crypto.randomUUID()));
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15000) {
+    await new Promise(r => setTimeout(r, 1200));                 // the balance endpoint allows about one call a second
+    const b = await kalshiCall(kal, "GET", "portfolio/balance").catch(() => null);
+    const v = parseFloat((b?.balance_breakdown || []).find(x => Number(x.exchange_index) === plan.shard)?.balance || "0");
+    if (v >= plan.need - 1e-9) return true;
+  }
+  return false;
+}
+const shardName = ix => (ix === 3 ? "sports (tennis, baseball, basketball)" : ix === 1 ? "combos" : ix === 2 ? "crypto and commodities" : ix === 0 ? "default" : `#${ix}`);
 // Kalshi's markets for the series a slip needs, refreshed every minute
 const _kx = {};
 async function kalshiEvents(env, series) {
@@ -3657,9 +3676,31 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
   useEffect(() => () => { cancelled.current = true; }, []);
   const straight = plan.length === 1, k = plan[0].k, size = straight ? sizeOrder(stake, k.price) : null;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // the cash this buy needs, checked before anything is sent: where it sits and what has to move to the market's shard
+  const need = straight ? Math.round(((size?.cost || 0) + (size?.fee || 0)) * 100) / 100 : stake;
+  const [fund, setFund] = useState(null);
+  useEffect(() => {
+    if (!straight || !size) return;
+    let on = true;
+    setFund(null);
+    kalshiFundingPlan(kal, k.ticker, need).then(p => on && setFund(p)).catch(e => on && setFund({ err: e.message }));
+    return () => { on = false; };
+  }, [k?.ticker, need, kal?.env]);
+  const short = p => `Not enough cash in your Kalshi account: ${kalshiMoney(p.total)} available, this needs ${kalshiMoney(p.need)} with the fee. Nothing was bought.`;
+  // fund the market's shard if needed (what the Kalshi app does on its own), then the order can go
+  const fundFor = async (ticker, amount) => {
+    const p = await kalshiFundingPlan(kal, ticker, amount);
+    if (!p.covered) throw new Error(short(p));
+    if (p.moves.length) {
+      setSt({ step: "sending", what: `Moving ${kalshiMoney(p.moves.reduce((a, m) => a + m.amount, 0))} to Kalshi's ${shardName(p.shard)} shard…` });
+      if (!(await kalshiMoveFunds(kal, p))) throw new Error("The cash move inside your Kalshi account hasn't landed yet. Nothing was bought. Try again in a few seconds.");
+    }
+  };
   const buyStraight = async () => {
     setSt({ step: "sending" });
     try {
+      await fundFor(k.ticker, need);
+      setSt({ step: "sending" });
       const yesPrice = k.side === "yes" ? k.price : 1 - k.price;
       const o = await kalshiCall(kal, "POST", "portfolio/events/orders", { ticker: k.ticker, side: k.side === "yes" ? "bid" : "ask", count: size.count.toFixed(2), price: yesPrice.toFixed(2), time_in_force: "fill_or_kill", self_trade_prevention_type: "taker_at_cross", client_order_id: crypto.randomUUID() });
       const filled = parseFloat(o.fill_count || "0");
@@ -3693,6 +3734,8 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
     const { best, rfq, market, coll } = st;
     setSt({ ...st, step: "accepting" });
     try {
+      await fundFor(market, stake);                                                              // combos trade on their own shard
+      setSt({ ...st, step: "accepting" });
       await kalshiCall(kal, "PUT", `communications/rfqs/${rfq}/quotes/${best.quote.id}/accept`, { accepted_side: "no" });   // the maker's NO side = buying YES
       const t0 = Date.now();
       while (Date.now() - t0 < 12000) {
@@ -3716,6 +3759,9 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
     <div style={{ marginTop: 8 }}>{plan.map((p, i) => <div key={i} style={{ fontSize: 12, color: T.ink, padding: "3px 0", overflowWrap: "anywhere" }}>{plan.length > 1 ? `${i + 1}. ` : ""}{p.k.label} · {p.k.side.toUpperCase()} {cents(p.k.price)}</div>)}</div>
     {straight && size && <div style={{ marginTop: 8 }}>
       {row("Contracts", size.count.toFixed(2))}{row("Price", `${cents(k.price)} (${fmtAm(k.am)})`)}{row("Cost", kalshiMoney(size.cost))}{row("Kalshi fee (est.)", kalshiMoney(size.fee))}{row("Pays if it wins", kalshiMoney(size.payout), NEON.green)}
+      {row("Your Kalshi cash", !fund ? "checking…" : fund.err ? "couldn't check" : kalshiMoney(fund.total), fund && !fund.err && !fund.covered ? NEON.red : undefined)}
+      {fund && !fund.err && fund.covered && fund.moves.length > 0 && <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginTop: 6 }}>This market trades on Kalshi's {shardName(fund.shard)} shard, which holds {kalshiMoney(fund.here)} of your cash. The slip moves {kalshiMoney(fund.moves.reduce((a, m) => a + m.amount, 0))} there first, inside your Kalshi account (the Kalshi app does this on its own), then buys.</div>}
+      {fund && !fund.err && !fund.covered && <div style={{ marginTop: 8, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>Not enough cash in your Kalshi account: {kalshiMoney(fund.total)} available, this needs {kalshiMoney(fund.need)} with the fee.</div>}
     </div>}
     {!straight && st.step === "review" && <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.6, marginTop: 8 }}>Kalshi prices a combo by asking market makers for a quote. Ask now and you'll see the price before anything is bought; {kalshiMoney(stake)} is the most it can cost, fees included.</div>}
     {st.step === "quoting" && <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>Asking market makers for a quote… ({st.left}s)</div>}
@@ -3724,7 +3770,8 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
       <div style={{ fontSize: 11, color: T.faint, marginTop: 6 }}>Quotes last only seconds on combos.</div>
     </div>}
     {st.step === "failed" && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{st.msg}</div>}
-    {straight && (st.step === "review" || st.step === "sending") && big(st.step === "review", st.step === "sending" ? "SENDING TO KALSHI…" : `CONFIRM: BUY ON KALSHI FOR ${kalshiMoney(size?.cost || 0)}`, buyStraight, NEON.teal)}
+    {st.step === "sending" && st.what && <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>{st.what}</div>}
+    {straight && (st.step === "review" || st.step === "sending") && big(st.step === "review" && !(fund && !fund.err && !fund.covered), st.step === "sending" ? "SENDING TO KALSHI…" : `CONFIRM: BUY ON KALSHI FOR ${kalshiMoney(size?.cost || 0)}`, buyStraight, NEON.teal)}
     {!straight && st.step === "review" && big(true, "GET A KALSHI QUOTE", askCombo, NEON.teal)}
     {(st.step === "quote" || st.step === "accepting") && big(st.step === "quote", st.step === "accepting" ? "BUYING…" : `CONFIRM: BUY THE COMBO AT ${cents(st.best.price)}`, acceptCombo, NEON.teal)}
     {st.step === "failed" && big(true, "TRY AGAIN", () => setSt({ step: "review" }))}

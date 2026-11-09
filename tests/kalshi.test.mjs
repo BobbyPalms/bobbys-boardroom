@@ -93,5 +93,17 @@ check("bad paste explained", /doesn't look like a private key/.test(threw));
   check("quote: the live YES ask", q.ok && q.price === 0.42 && q.side === "yes" && q.am === 138, q);
   check("quote: a closed market can't be bought", !K.quoteMarket({ status: "closed", yes_ask_dollars: "0.42" }, leg).ok);
 }
+// ---- funding the market's shard: cash is held per shard, and API orders don't move it (the Kalshi app does) ----
+{
+  const K = await import("../src/kalshi.js");
+  const bal = { balance: 52000, balance_dollars: "520.00", balance_breakdown: [{ exchange_index: 0, balance: "520.00" }, { exchange_index: 3, balance: "0.00" }] };
+  const p = K.planFunding(bal, 3, 5.31);
+  check("funding: $520 on shard 0, a $5.31 tennis buy on shard 3 moves $5.36 there first", p.covered && p.moves.length === 1 && p.moves[0].from === 0 && p.moves[0].to === 3 && p.moves[0].amount === 5.36, p);
+  check("funding: cash already on the shard moves nothing", K.planFunding({ ...bal, balance_breakdown: [{ exchange_index: 0, balance: "500" }, { exchange_index: 3, balance: "20" }] }, 3, 5.31).moves.length === 0);
+  check("funding: tops up only the shortfall, from several shards if needed", (q => q.covered && q.moves.reduce((a, m) => a + m.amount, 0) >= 7.9 && q.moves.length === 2)(K.planFunding({ balance_dollars: "10", balance_breakdown: [{ exchange_index: 0, balance: "5" }, { exchange_index: 2, balance: "3" }, { exchange_index: 3, balance: "2" }] }, 3, 9.9)));
+  check("funding: an account that's really short says so", !K.planFunding({ balance_dollars: "3.00", balance_breakdown: [{ exchange_index: 0, balance: "3.00" }] }, 3, 5.31).covered);
+  check("funding: a key without per-shard balances falls back to the total", K.planFunding({ balance: 900 }, 3, 5.31).covered && K.planFunding({ balance: 900 }, 3, 5.31).moves.length === 0);
+  check("transfer body: centicents between shards", JSON.stringify(K.transferBody({ from: 0, to: 3, amount: 5.36 }, "id")) === JSON.stringify({ source: "event_contract", destination: "event_contract", amount: 53600, source_exchange_shard: 0, destination_exchange_shard: 3, client_transfer_id: "id" }));
+}
 console.log(`kalshi: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

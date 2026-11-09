@@ -212,3 +212,29 @@ export function quoteMarket(m, leg) {
   if (!(p > 0 && p < 1)) return { ok: false, why: "No one is selling YES on this market right now." };
   return { ok: true, ticker: m.ticker, event_ticker: m.event_ticker, side: "yes", price: p, am: priceToAm(p), line: null, label: `${m.yes_sub_title || leg?.name || m.ticker} · YES`, title: m.title };
 }
+
+// ---------- funding the right part of the exchange ----------
+// Kalshi runs several matching engines ("shards"): tennis, baseball and basketball markets trade on shard 3, combos on
+// shard 1, most others on shard 0, and cash is held per shard. The Kalshi app moves cash to the right shard on its own
+// when you buy; orders sent through the API don't, so an account with plenty of cash on shard 0 gets "insufficient
+// balance" on a tennis market. This plans the move: cash already on the market's shard first, then the rest from the
+// other shards (largest first), plus a nickel of room for rounding. bal is GET /portfolio/balance; need in dollars.
+export function planFunding(bal, shard, need) {
+  const total = bal?.balance_dollars != null ? parseFloat(bal.balance_dollars) : (Number(bal?.balance) || 0) / 100;
+  const bd = Array.isArray(bal?.balance_breakdown) ? bal.balance_breakdown.map(b => [Number(b.exchange_index), parseFloat(b.balance) || 0]) : null;
+  if (shard == null || !bd) return { shard, total, here: total, moves: [], need, covered: total >= need - 1e-9 };
+  const here = (bd.find(([i]) => i === shard) || [0, 0])[1], moves = [];
+  let short = need - here;
+  if (short > 1e-9) {
+    short = Math.ceil(short * 100) / 100 + 0.05;
+    for (const [i, b] of bd.filter(([i]) => i !== shard).sort((a, c) => c[1] - a[1])) {
+      if (short <= 1e-9) break;
+      const amt = Math.floor(Math.min(b, short) * 100) / 100;
+      if (amt >= 0.01) { moves.push({ from: i, to: shard, amount: amt }); short -= amt; }
+    }
+  }
+  const moved = moves.reduce((a, m) => a + m.amount, 0);
+  return { shard, total, here, moves, need, covered: here + moved >= need - 1e-9 };
+}
+// one move as Kalshi's transfer request (amounts in centicents: $1 = 10,000)
+export const transferBody = (m, id) => ({ source: "event_contract", destination: "event_contract", amount: Math.round(m.amount * 10000), source_exchange_shard: m.from, destination_exchange_shard: m.to, client_transfer_id: id });

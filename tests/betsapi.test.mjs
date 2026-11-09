@@ -141,6 +141,8 @@ check("relay: demo host and query string", kr.status === 200 && kalshiSeen.at(-1
 const before = kalshiSeen.length;
 kr = await onRequest({ request: new Request("https://x/api/kalshi/live/portfolio/withdrawals", { method: "POST", headers: { "x-dev-email": "bob@x.com" } }), env, params: { path: ["kalshi", "live", "portfolio", "withdrawals"] } });
 check("relay: anything outside the slip flow is refused (never reaches Kalshi)", kr.status === 403 && kalshiSeen.length === before);
+kr = await onRequest({ request: new Request("https://x/api/kalshi/live/portfolio/intra_exchange_instance_transfer", { method: "POST", headers: { "x-dev-email": "bob@x.com", "KALSHI-ACCESS-KEY": "kid", "KALSHI-ACCESS-SIGNATURE": "sig", "KALSHI-ACCESS-TIMESTAMP": "1" }, body: JSON.stringify({ source: "event_contract", destination: "event_contract", amount: 53600, source_exchange_shard: 0, destination_exchange_shard: 3 }) }), env, params: { path: ["kalshi", "live", "portfolio", "intra_exchange_instance_transfer"] } });
+check("relay: moving cash between your own Kalshi shards goes through (funding a tennis buy)", kr.status === 200 && kalshiSeen.at(-1).url === "https://external-api.kalshi.com/trade-api/v2/portfolio/intra_exchange_instance_transfer" && JSON.parse(kalshiSeen.at(-1).body).destination_exchange_shard === 3);
 kr = await onRequest({ request: new Request("https://x/api/kalshi/live/portfolio/balance"), env, params: { path: ["kalshi", "live", "portfolio", "balance"] } });
 check("relay: needs the site login", kr.status === 401);
 kalshi204 = true;

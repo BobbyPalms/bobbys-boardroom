@@ -185,7 +185,7 @@ export function kalshiResult(m, side = "yes") {
 // device with their own key. This passes it on unchanged: it never sees a key (only a signature that's good for this one
 // request and expires), keeps nothing, and only reaches the Kalshi paths the slip flow uses.
 const KALSHI = { live: "https://external-api.kalshi.com", demo: "https://external-api.demo.kalshi.co" };
-const KPATH = /^(portfolio\/balance|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|events|markets\/[\w.-]+|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
+const KPATH = /^(portfolio\/balance|portfolio\/intra_exchange_instance_transfer|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|events|markets\/[\w.-]+|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
 async function relayKalshi(request, env, path) {
   const host = (env.KALSHI_BASE && JSON.parse(env.KALSHI_BASE)[path[0]]) || KALSHI[path[0]], sub = path.slice(1).join("/");
   if (!host) return bad("Unknown Kalshi environment.", 404);
