@@ -36,9 +36,14 @@ const ev = (id, g) => ({ id, date: g.date, competitions: [{ id, date: g.date, st
   { homeAway: "away", score: g.as, winner: g.state === "post" && +g.as > +g.hs, team: { abbreviation: g.away[0], displayName: g.away[1], shortDisplayName: g.away[2], name: g.away[2] } },
   { homeAway: "home", score: g.hs, winner: g.state === "post" && +g.hs > +g.as, team: { abbreviation: g.home[0], displayName: g.home[1], shortDisplayName: g.home[2], name: g.home[2] } }] }] });
 let espnCalls = 0;
+// Kalshi markets the scoreboards don't carry (an ITF match)
+const kalshiMarkets = { "KXITFMATCH-26NOV09DUMHEI-HEI": { ticker: "KXITFMATCH-26NOV09DUMHEI-HEI", event_ticker: "KXITFMATCH-26NOV09DUMHEI", title: "Dummer Macedo vs Heineberg", yes_sub_title: "Eduardo Heineberg", status: "active", result: "", close_time: new Date(Date.now() + 864e5).toISOString() } };
 const kalshiSeen = []; let kalshi204 = false;
 globalThis.fetch = async (url, opts = {}) => {
   const u = new URL(String(url));
+  const mk = u.pathname.match(/\/markets\/([\w.-]+)$/);
+  if (/kalshi/.test(u.host) && mk && kalshiMarkets[mk[1]]) return new Response(JSON.stringify({ market: kalshiMarkets[mk[1]] }), { status: 200 });
+  if (/kalshi/.test(u.host) && mk) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
   if (/kalshi/.test(u.host)) { kalshiSeen.push({ url: String(url), method: opts.method, headers: opts.headers, body: opts.body }); if (kalshi204) return new Response(null, { status: 204 }); return new Response(JSON.stringify({ balance: 12345, order_id: "ord-1", fill_count: "17.85" }), { status: 200, headers: { "content-type": "application/json" } }); }
   espnCalls++;
   const m = u.pathname.match(/sports\/(.+)\/scoreboard/);
@@ -78,6 +83,16 @@ check("live game refused when the Kalshi order didn't fill", (await call("live@x
 games["404"] = { sport: "basketball/nba", date: new Date(Date.now() - 4 * 3600e3).toISOString(), state: "post", away: ["CHI", "Chicago Bulls", "Bulls"], home: ["MIA", "Miami Heat", "Heat"], as: "100", hs: "99" };
 check("a finished game is always refused, Kalshi or not", (await call("live@x.com", "POST", "slips", { stake: 6, legs: [legNBA("Bulls ML", "404", "ml", "away", null, "-150")], kalshi: kFilled })).status === 400);
 delete games["404"];
+// a Kalshi market with no scoreboard game behind it: only as a Kalshi purchase, graded from Kalshi's settlement
+const itf = { pick: "Heineberg", sport: "Tennis", league: "KXITFMATCH", eventId: "KXITFMATCH-26NOV09DUMHEI-HEI", date: kalshiMarkets["KXITFMATCH-26NOV09DUMHEI-HEI"].close_time, market: "kalshi", side: "yes", line: null, odds: "+150", ticker: "KXITFMATCH-26NOV09DUMHEI-HEI", name: "Eduardo Heineberg" };
+const kItf = { env: "live", orders: [{ ticker: itf.ticker, side: "yes", count: 5, price: 0.4, order_id: "o2", filled: 5 }] };
+check("a Kalshi market is refused when it wasn't bought on Kalshi", (await call("live@x.com", "POST", "slips", { stake: 2, legs: [itf] })).status === 400);
+r = await call("live@x.com", "POST", "slips", { stake: 2, legs: [itf], kalshi: kItf });
+check("a Kalshi market (ITF match) is placed when bought there, named from Kalshi", r.status === 200 && r.j.slip.legs[0].market === "kalshi" && r.j.slip.legs[0].name === "Eduardo Heineberg" && r.j.slip.legs[0].away.name === "Dummer Macedo", r.j);
+const itfSlip = r.j.slip?.id;
+check("a slip bought on Kalshi can't be taken back", (await call("live@x.com", "DELETE", `slips/${itfSlip}`)).status === 409);
+check("an unknown Kalshi market is refused", (await call("live@x.com", "POST", "slips", { stake: 2, legs: [{ ...itf, ticker: "KXNOPE-1", eventId: "KXNOPE-1" }], kalshi: { ...kItf, orders: [{ ...kItf.orders[0], ticker: "KXNOPE-1" }] } })).status === 400);
+kalshiMarkets["KXITFMATCH-26NOV09DUMHEI-HEI"] = { ...kalshiMarkets["KXITFMATCH-26NOV09DUMHEI-HEI"], status: "settled", result: "yes" };
 check("bad odds refused", (await call("bob@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "-50")] })).status === 400);
 check("no amount refused", (await call("bob@x.com", "POST", "slips", { stake: 0, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "+150")] })).status === 400);
 check("same pick twice refused", (await call("bob@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "+150"), legNBA("Lakers ML", "401", "ml", "away", null, "+150")] })).status === 400);
@@ -105,11 +120,13 @@ const st = Object.fromEntries(mine.j.slips.map(s => [s.legs.length, s]));
 check("straight graded a win: $10 at +150 pays $15", st[1].status === "won" && st[1].profit === 15 && st[1].legs[0].res === "W" && st[1].legs[0].final.a === "112", st[1]);
 check("parlay lost on the Celtics leg", st[3].status === "lost" && st[3].profit === -20 && st[3].legs.map(l => l.res).join("") === "LWW", st[3].legs.map(l => l.res));
 check("bob: 1 for 2, net -$5", mine.j.stats.W === 1 && mine.j.stats.L === 1 && mine.j.stats.net === -5, mine.j.stats);
+const liveSlips = (await call("live@x.com", "GET", "slips")).j.slips, itfDone = liveSlips.find(x => x.legs[0].market === "kalshi");
+check("a Kalshi market leg is graded from Kalshi's settlement ($2 at +150 wins $3)", itfDone && itfDone.status === "won" && itfDone.profit === 3 && itfDone.legs[0].res === "W", itfDone);
 
 // ---- leaderboards ----
 const b = (await call("zed@x.com", "GET", "board")).j;
-check("record board", b.record.map(p => `${p.username} ${p.W}-${p.L}`).join(", ") === "AmyBets 2-0, zed 1-0, BobbyPalmTrees 1-1", b.record.map(p => `${p.username} ${p.W}-${p.L}`));
-check("money board", b.money.map(p => `${p.username} ${p.net}`).join(", ") === "AmyBets 165.91, zed 9.09, BobbyPalmTrees -5", b.money.map(p => `${p.username} ${p.net}`));
+check("record board", b.record.map(p => `${p.username} ${p.W}-${p.L}`).join(", ") === "AmyBets 2-0, zed 1-0, LiveOne 1-0, BobbyPalmTrees 1-1", b.record.map(p => `${p.username} ${p.W}-${p.L}`));
+check("money board", b.money.map(p => `${p.username} ${p.net}`).join(", ") === "AmyBets 165.91, zed 9.09, LiveOne 3, BobbyPalmTrees -5", b.money.map(p => `${p.username} ${p.net}`));
 check("marks you", b.record.find(p => p.username === "zed").you === true && b.record.find(p => p.username === "AmyBets").you === false);
 check("no emails anywhere on the board", !JSON.stringify(b).includes("@"));
 const prof = await call("zed@x.com", "GET", "user/bobbypalmtrees");

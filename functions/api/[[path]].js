@@ -76,13 +76,17 @@ async function gradePending(env, force = false) {
   await setSetting(env, "graded_at", String(Date.now()));
   const { results } = await env.DB.prepare("SELECT * FROM slips WHERE status='pending'").all();
   const slips = results.map(rowToSlip), now = Date.now(), want = new Map();
-  for (const s of slips) for (const l of s.legs) if (!l.res && Date.parse(l.date) < now) want.set(`${l.sport}|${l.league}|${ymd(new Date(l.date))}`, null);
+  for (const s of slips) for (const l of s.legs) if (!l.res && l.market !== "kalshi" && Date.parse(l.date) < now) want.set(`${l.sport}|${l.league}|${ymd(new Date(l.date))}`, null);
+  const kx = new Map();
+  for (const s of slips) for (const l of s.legs) if (!l.res && l.market === "kalshi" && kx.size < 40) kx.set(`${l.kenv || "live"}|${l.ticker}`, null);
+  await Promise.all([...kx.keys()].map(async k => { const [e, t] = k.split("|"); kx.set(k, await kalshiMarket(env, e, t)); }));
   const keys = [...want.keys()].slice(0, 40);
   await Promise.all(keys.map(async k => { const [sp, lg, d] = k.split("|"); try { want.set(k, new Map((await board(env, sp, lg, d)).map(r => [r.id, r]))); } catch (_) { /* next time */ } }));
   const writes = [];
   for (const s of slips) {
     let changed = false;
     for (const l of s.legs) {
+      if (!l.res && l.market === "kalshi") { const res = kalshiResult(kx.get(`${l.kenv || "live"}|${l.ticker}`), l.side); if (res) { l.res = res; changed = true; } continue; }
       if (l.res || Date.parse(l.date) >= now) continue;
       const rows = want.get(`${l.sport}|${l.league}|${ymd(new Date(l.date))}`);
       if (!rows) continue;
@@ -120,6 +124,22 @@ async function placeSlip(env, email, body) {
   for (const x of legsIn) {
     const odds = readOdds(x.odds);
     if (odds == null) return bad(`Odds for "${x.pick || "a pick"}" should look like -110 or +150.`);
+    // a market picked straight from Kalshi (no scoreboard game behind it): only as a Kalshi purchase of that market
+    if (x.market === "kalshi") {
+      const ticker = String(x.ticker || "").slice(0, 120);
+      if (!/^[A-Z0-9][\w.-]+$/.test(ticker)) return bad(`Couldn't read "${x.pick}".`);
+      const bought = boughtOnKalshi && (kalshi.orders.some(o => o.ticker === ticker && o.filled > 0) || !!kalshi.combo?.contracts);
+      if (!bought) return bad(`"${x.pick}" is a Kalshi market: it can only be added by buying it on Kalshi.`);
+      const mkt = await kalshiMarket(env, kalshi.env, ticker);
+      if (!mkt) return bad(`Couldn't find "${x.pick}" on Kalshi.`);
+      if (seen.has(ticker)) return bad(`"${x.pick}" is on the slip twice.`);
+      seen.add(ticker);
+      const title = String(mkt.title || x.title || "").slice(0, 140), vs = title.split(/\s+vs\.?\s+|\s+at\s+/i);
+      legs.push({ pick: String(x.pick || "").slice(0, 80), sport: String(x.sport || "Kalshi").slice(0, 20), league: "kalshi", eventId: ticker, ticker, kenv: kalshi.env, date: mkt.close_time || mkt.expected_expiration_time || new Date().toISOString(),
+        market: "kalshi", side: "yes", line: null, odds, name: String(mkt.yes_sub_title || x.name || ticker).slice(0, 80), title,
+        away: { name: vs.length === 2 ? vs[0] : title, abbr: "" }, home: { name: vs.length === 2 ? vs[1] : "", abbr: "" }, res: null, live: true });
+      continue;
+    }
     if (!ROUTES[x.sport] || !ROUTES[x.sport].leagues.includes(x.league)) return bad(`Couldn't place "${x.pick}".`);
     if (!["ml", "spread", "total", "draw"].includes(x.market)) return bad(`Couldn't read "${x.pick}".`);
     const side = x.market === "total" ? (x.side === "over" || x.side === "under" ? x.side : null) : x.market === "draw" ? "draw" : (x.side === "away" || x.side === "home" ? x.side : null);
@@ -143,6 +163,21 @@ async function placeSlip(env, email, body) {
   const id = crypto.randomUUID(), created = new Date().toISOString();
   await env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)").bind(id, email, created, stake, odds, JSON.stringify(legs), kalshi ? JSON.stringify(kalshi) : null).run();
   return json({ slip: { id, created, stake, odds, status: "pending", profit: null, settled: null, legs, kalshi } });
+}
+
+// one Kalshi market (public market data: no key needed), used to check a Kalshi-market leg and to grade it
+async function kalshiMarket(env, which, ticker) {
+  const host = (env.KALSHI_BASE && JSON.parse(env.KALSHI_BASE)[which === "demo" ? "demo" : "live"]) || KALSHI[which === "demo" ? "demo" : "live"];
+  try { const r = await fetch(`${host}/trade-api/v2/markets/${encodeURIComponent(ticker)}`, { headers: { accept: "application/json", "user-agent": "bobbys-boardroom/1.0" } }); return r.ok ? (await r.json()).market || null : null; }
+  catch (_) { return null; }
+}
+// a settled Kalshi market -> the leg's result: W / L on its side, P when Kalshi voids it
+export function kalshiResult(m, side = "yes") {
+  if (!m) return null;
+  const r = String(m.result || "").toLowerCase();
+  if (r === "yes" || r === "no") return r === side ? "W" : "L";
+  if (/void|cancel/.test(r) || (/settled|finalized/.test(String(m.status || "")) && !r)) return "P";
+  return null;
 }
 
 // ---------- Kalshi relay ----------
@@ -192,7 +227,7 @@ export async function onRequest({ request, env, params }) {
     const r = await env.DB.prepare("SELECT * FROM slips WHERE id=? AND email=?").bind(path[1], email).first();
     if (!r) return bad("Slip not found.", 404);
     const s = rowToSlip(r);
-    if (s.status !== "pending" || s.legs.some(l => Date.parse(l.date) <= Date.now() || l.res)) return bad("A game on that slip has started, so it stays.", 409);
+    if (s.status !== "pending" || s.legs.some(l => Date.parse(l.date) <= Date.now() || l.res || l.live || l.market === "kalshi")) return bad("A game on that slip has started (or it was bought live on Kalshi), so it stays.", 409);
     await env.DB.prepare("DELETE FROM slips WHERE id=?").bind(s.id).run();
     return json({ ok: true });
   }

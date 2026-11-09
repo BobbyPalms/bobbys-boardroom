@@ -73,5 +73,25 @@ for (const [label, type, enc] of [["RSA PKCS#1", "rsa", "pkcs1"], ["RSA PKCS#8",
 }
 let threw = ""; try { readPem("hello"); } catch (e) { threw = e.message; }
 check("bad paste explained", /doesn't look like a private key/.test(threw));
+// ---- every Kalshi sports market: the index the slip searches when the scoreboards don't carry a pick ----
+{
+  const K = await import("../src/kalshi.js");
+  const idx = K.indexMarkets({ ev: [
+    ["KXITFMATCH-26NOV09DUMHEI", "KXITFMATCH", "Dummer Macedo vs Heineberg", "", null, [["KXITFMATCH-26NOV09DUMHEI-DUM", "Tomas Dummer Macedo", "2026-11-09T22:00Z"], ["KXITFMATCH-26NOV09DUMHEI-HEI", "Eduardo Heineberg", "2026-11-09T22:00Z"]]],
+    ["KXATPCHALLENGERMATCH-26NOV09HARBRO", "KXATPCHALLENGERMATCH", "Billy Harris vs Liam Broady", "", null, [["KXATPCHALLENGERMATCH-26NOV09HARBRO-BRO", "Liam Broady", "2026-11-09T20:00Z"]]],
+    ["KXATPSETWINNER-26NOV09RINKEC-1", "KXATPSETWINNER", "Arthur Rinderknech vs Miomir Kecmanovic: Set 1 Winner", "", null, [["KXATPSETWINNER-26NOV09RINKEC-1-RIN", "Arthur Rinderknech", "2026-11-09T19:00Z"]]],
+    ["KXATP-27USO", "KXATP", "2027 US Open Men's Singles Winner", "", null, [["KXATP-27USO-SIN", "Jannik Sinner", "2027-09-13T00:00Z"]]]] });
+  check("index: every market, tagged with its sport", idx.length === 5 && idx.every(m => m.sport === "Tennis"));
+  check("search: an ITF player by surname", K.kalshiSearch("Heineberg ML", idx)[0]?.ticker === "KXITFMATCH-26NOV09DUMHEI-HEI");
+  check("search: accents and full names", K.kalshiSearch("tomas dummer macedo to win", idx)[0]?.ticker === "KXITFMATCH-26NOV09DUMHEI-DUM");
+  check("search: a set winner market", K.kalshiSearch("Rinderknech set 1", idx)[0]?.ticker === "KXATPSETWINNER-26NOV09RINKEC-1-RIN");
+  check("search: a future", K.kalshiSearch("Sinner US Open", idx)[0]?.ticker === "KXATP-27USO-SIN");
+  check("search: nothing for a name Kalshi doesn't list", K.kalshiSearch("Federer", idx).length === 0);
+  const leg = K.kalshiLeg(idx[1]);
+  check("a Kalshi leg: YES on the market, both players from the title", leg.market === "kalshi" && leg.side === "yes" && leg.away.name === "Dummer Macedo" && leg.home.name === "Heineberg" && leg.name === "Eduardo Heineberg");
+  const q = K.quoteMarket({ ticker: "T", event_ticker: "E", status: "active", yes_ask_dollars: "0.42", yes_sub_title: "Eduardo Heineberg" }, leg);
+  check("quote: the live YES ask", q.ok && q.price === 0.42 && q.side === "yes" && q.am === 138, q);
+  check("quote: a closed market can't be bought", !K.quoteMarket({ status: "closed", yes_ask_dollars: "0.42" }, leg).ok);
+}
 console.log(`kalshi: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

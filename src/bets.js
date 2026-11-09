@@ -52,6 +52,7 @@ export function parsePick(text) {
 }
 const MARKET_WORD = { ml: "ML", spread: "spread", total: "total", draw: "draw" };
 export const legLabel = leg => {
+  if (leg.market === "kalshi") return `${leg.name || leg.ticker}${leg.side === "no" ? " (NO)" : ""}`;          // a Kalshi market: YES on its name
   const who = leg.side === "away" ? leg.away?.name : leg.side === "home" ? leg.home?.name : null;
   if (leg.market === "total") return `${leg.away?.name} / ${leg.home?.name} ${leg.side === "over" ? "over" : "under"} ${leg.line}`;
   if (leg.market === "draw") return `${leg.away?.name} vs ${leg.home?.name}: draw`;

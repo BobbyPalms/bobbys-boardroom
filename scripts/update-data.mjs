@@ -240,7 +240,57 @@ async function fifa() {
   if (players.length > 1000) { write("data/fifa/players.json", { source: "EA SPORTS FC ratings (ea.com)", fields: ["id", "name", "first", "last", "team", "league", "ovr", "pos", "nation"], players }); JOBS.fifa = new Date().toISOString(); }
 }
 
+// ---- Kalshi: an index of every open Kalshi sports market (data/kalshi/sports.json) ----
+// The slip matches picks the scoreboards don't carry (Challenger / ITF tennis, set winners, doubles, props, futures)
+// against this, then prices and buys them live on Kalshi. Hourly: every open event, to find the sports series. Every run:
+// the series that hold single games / matches (they list and close all day); the season-long ones hourly.
+const KALSHI_API = "https://external-api.kalshi.com/trade-api/v2";
+async function kalshiIndex() {
+  const metaP = "data/kalshi/series.json", meta = read(metaP, { fast: [], slow: [], at: "" });
+  if (due("kalshi:series", 55) || !meta.fast.length) {
+    const sports = new Map();
+    let cursor = "", pages = 0;
+    do {
+      const j = await get(`${KALSHI_API}/events?status=open&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      if (!j) break;
+      for (const e of j.events || []) if (e.category === "Sports" && !/^KXMVE/.test(e.series_ticker || "")) {
+        const x = sports.get(e.series_ticker) || { fast: false };
+        if (/\bvs\.?\b|\sat\s/i.test(e.title || "")) x.fast = true;
+        sports.set(e.series_ticker, x);
+      }
+      cursor = j.cursor || ""; pages++;
+    } while (cursor && pages < 400);
+    if (sports.size) {
+      meta.fast = [...sports].filter(([, x]) => x.fast).map(([k]) => k).sort();
+      meta.slow = [...sports].filter(([, x]) => !x.fast).map(([k]) => k).sort();
+      meta.at = new Date().toISOString();
+      write(metaP, meta);
+    }
+    JOBS["kalshi:series"] = new Date().toISOString();
+  }
+  const pull = async series => {
+    const evs = [];
+    let cursor = "", pages = 0;
+    do {
+      const j = await get(`${KALSHI_API}/events?series_ticker=${encodeURIComponent(series)}&status=open&with_nested_markets=true&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      if (!j) break;
+      for (const e of j.events || []) {
+        const ms = (e.markets || []).filter(m => !m.status || m.status === "active" || m.status === "open").map(m => [m.ticker, m.yes_sub_title || m.subtitle || "", m.close_time || m.expected_expiration_time || null]);
+        if (ms.length) evs.push([e.event_ticker, series, e.title || "", e.sub_title || "", e.strike_date || null, ms]);
+      }
+      cursor = j.cursor || ""; pages++;
+    } while (cursor && pages < 10);
+    return evs;
+  };
+  const slowP = "data/kalshi/slow.json", slow = read(slowP, { ev: [] });
+  if (due("kalshi:slow", 55) || !slow.ev.length) { slow.ev = (await pool(meta.slow, 6, pull)).flat(); write(slowP, slow); JOBS["kalshi:slow"] = new Date().toISOString(); }
+  const fast = (await pool(meta.fast, 6, pull)).flat();
+  const ev = [...fast, ...slow.ev];
+  if (ev.length) write("data/kalshi/sports.json", { series: meta.fast.length + meta.slow.length, markets: ev.reduce((a, e) => a + e[5].length, 0), ev });
+}
+
 if (!ONLY.length || ONLY.includes("Soccer")) { try { await fifa(); } catch (e) { console.error("fifa", e); fails++; } }
+if (!ONLY.length || ONLY.includes("Kalshi")) { try { await kalshiIndex(); console.log(`Kalshi index: done (${calls} requests so far)`); } catch (e) { console.error("kalshi", e); fails++; } }
 for (const s of sports) {
   try {
     if (TEAM_SPORTS.includes(s)) { if (HOURLY || !existsSync(`data/history/${s}.json`)) await history(s); await live(s); await splits(s); await power(s); }

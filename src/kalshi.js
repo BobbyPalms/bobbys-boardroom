@@ -160,3 +160,55 @@ const tx = async (mode, fn) => { const db = await idb(); return new Promise((res
 export const savedKey = who => tx("readonly", s => s.get(String(who).toLowerCase())).catch(() => null);
 export const saveKey = (who, rec) => tx("readwrite", s => s.put(rec, String(who).toLowerCase()));
 export const forgetKey = who => tx("readwrite", s => s.delete(String(who).toLowerCase()));
+
+// ---------- every Kalshi sports market, not just the ones tied to a game on our scoreboards ----------
+// The data job keeps an index of every open Kalshi sports market (data/kalshi/sports.json: matches in every tennis
+// tour down to ITF, set winners, doubles, props, futures...). A pick the scoreboards don't know is matched here, and
+// bought and graded on Kalshi's own market.
+const SERIES_SPORT = [[/^KX(ATP|WTA|ITF|TENNIS|GRANDSLAM|DAVIS|BJK|UNITEDCUP|NEXTGEN)/, "Tennis"], [/^KXUFC|^KXMMA|^KXPFL/, "MMA"], [/^KXNBA/, "NBA"], [/^KXWNBA/, "WNBA"],
+  [/^KXNFL|^KXSB/, "NFL"], [/^KXNCAAF/, "CFB"], [/^KXNCAAMB|^KXMARCH/, "CBB"], [/^KXNCAAWB/, "CBBW"], [/^KXNHL|^KXSTANLEY/, "NHL"], [/^KXMLB|^KXWS/, "MLB"],
+  [/^KX(EPL|LALIGA|BUNDESLIGA|SERIEA|LIGUE1|MLS|LIGAMX|UCL|UEL|UECL|WC|INTLFRIENDLY|FACUP|EFL|SOCCER|CONCACAF|COPA|EURO)/, "Soccer"], [/^KX(PGA|LIV|GOLF|MASTERS|USOPENGOLF|RYDER)/, "Golf"],
+  [/^KX(F1|NASCAR|INDY)/, "Racing"]];
+export const sportOfSeries = s => (SERIES_SPORT.find(([re]) => re.test(String(s || ""))) || [null, "Kalshi"])[1];
+// the index file -> one flat list of markets: { ticker, event, series, sub, title, esub, close, sport }
+export function indexMarkets(file) {
+  const out = [];
+  for (const [event, series, title, esub, close, ms] of file?.ev || []) for (const [ticker, sub, mclose] of ms || []) out.push({ ticker, event, series, sub: sub || "", title: title || "", esub: esub || "", close: mclose || close || null, sport: sportOfSeries(series), _s: norm(sub), _t: norm(title) });
+  return out;
+}
+// a typed pick against the index: every word has to be in the market's name or its event's title, the market's own
+// name counts most, a single game / match beats a season-long market, and the soonest to close comes first
+const STOP = new Set(["ml", "moneyline", "money", "line", "to", "win", "wins", "the", "vs", "v", "at", "bet", "yes", "straight", "match", "game"]);
+export function kalshiSearch(text, markets, max = 6) {
+  const words = norm(text).split(" ").filter(w => w && !STOP.has(w));
+  if (!words.length || !markets?.length) return [];
+  const hits = [];
+  for (const m of markets) {
+    let s = 0, ok = true;
+    for (const w of words) {
+      const inS = (` ${m._s} `).includes(` ${w} `) || (w.length >= 4 && m._s.includes(w)), inT = (` ${m._t} `).includes(` ${w} `) || (w.length >= 4 && m._t.includes(w));
+      if (!inS && !inT) { ok = false; break; }
+      s += inS ? 3 : 1;
+    }
+    if (!ok) continue;
+    if (/\bvs\b| at /i.test(m.title)) s += 2;                          // one match / game
+    if (m._s && words.join(" ") === m._s) s += 3;                       // typed the market's name exactly
+    hits.push({ m, s });
+  }
+  hits.sort((a, b) => b.s - a.s || String(a.m.close || "9").localeCompare(String(b.m.close || "9")));
+  return hits.slice(0, max).map(h => h.m);
+}
+// an indexed market as a slip leg (bought as YES on that market)
+export function kalshiLeg(m) {
+  const vs = String(m.title).split(/\s+vs\.?\s+|\s+at\s+/i);
+  return { market: "kalshi", kalshi: true, side: "yes", line: null, ticker: m.ticker, eventTicker: m.event, series: m.series, sport: m.sport, league: m.series, eventId: m.ticker,
+    date: m.close, state: "pre", name: m.sub, title: m.title, away: { name: vs.length === 2 ? vs[0] : m.title }, home: { name: vs.length === 2 ? vs[1] : "" } };
+}
+// one market straight from Kalshi -> the slip's price for YES on it
+export function quoteMarket(m, leg) {
+  if (!m) return { ok: false, why: "Couldn't read this market on Kalshi." };
+  if (!open(m)) return { ok: false, why: "That market isn't open on Kalshi right now." };
+  const p = ask(m, "yes");
+  if (!(p > 0 && p < 1)) return { ok: false, why: "No one is selling YES on this market right now." };
+  return { ok: true, ticker: m.ticker, event_ticker: m.event_ticker, side: "yes", price: p, am: priceToAm(p), line: null, label: `${m.yes_sub_title || leg?.name || m.ticker} · YES`, title: m.title };
+}

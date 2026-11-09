@@ -4,7 +4,7 @@ import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3307,8 +3307,8 @@ const sCash = v => (v == null ? "–" : `${v > 0 ? "+" : ""}${cash(v)}`);
 const whenTxt = iso => `${etDayLabel(iso)} · ${new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })} ET`;
 const oneLine = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const fieldStyle = (c = T.chrome) => ({ width: "100%", minWidth: 0, boxSizing: "border-box", background: "rgba(9,2,17,.85)", border: `1px solid ${c}55`, color: T.ink, fontFamily: F.m, fontSize: "clamp(13px,3.6vw,14px)", padding: "11px 10px", outline: "none" });
-const shortGame = l => (l.sport === "Tennis" || l.sport === "MMA" ? gameTxt(l) : `${l.away.abbr || l.away.name} @ ${l.home.abbr || l.home.name}`);
-const gameTxt = l => (l.sport === "Tennis" || l.sport === "MMA") ? `${l.away.name} vs ${l.home.name}` : `${l.away.name} @ ${l.home.name}`;
+const shortGame = l => (l.market === "kalshi" ? (l.title || "Kalshi market") : l.sport === "Tennis" || l.sport === "MMA" ? gameTxt(l) : `${l.away.abbr || l.away.name} @ ${l.home.abbr || l.home.name}`);
+const gameTxt = l => l.market === "kalshi" ? (l.title || "Kalshi market") : (l.sport === "Tennis" || l.sport === "MMA") ? `${l.away.name} vs ${l.home.name}` : `${l.away.name} @ ${l.home.name}`;
 
 function BetSlipsScreen({ onBack, onTools }) {
   const [me, setMe] = useState({ loading: true });
@@ -3371,15 +3371,20 @@ function NewSlip({ onPlaced, kal, onTools }) {
   // switching converts whatever odds are already typed
   const setFmt = f => { if (f === fmt) return; setLines(ls => ls.map(l => { const a = readOddsAs(l.odds, fmt); return a == null ? l : { ...l, odds: f === "pct" ? pctTxt1(a) : fmtAm(a) }; })); setFmtState(f); try { localStorage.setItem(ODDS_LS, f); } catch (_) { /* fine */ } };
   const toK = !!kal && kOn;
-  useEffect(() => { let on = true; loadBetRows().then(b => on && setBoard(b)); return () => { on = false; }; }, []);
+  // every open Kalshi sports market (the data job's index): picks the scoreboards don't carry are matched here
+  const [kidx, setKidx] = useState(null);
+  useEffect(() => { let on = true; loadBetRows().then(b => on && setBoard(b)); dataFile("kalshi/sports.json").then(f => on && setKidx(indexMarkets(f))).catch(() => on && setKidx([])); return () => { on = false; }; }, []);
   const rows = board?.rows || [];
   const read = useMemo(() => lines.map(l => {
     if (!l.text.trim()) return { l, empty: true };
-    const res = board ? resolvePick(parsePick(l.text), rows) : { status: "loading" };
+    const res0 = board ? resolvePick(parsePick(l.text), rows) : { status: "loading" };
+    const kh = board && kidx ? kalshiSearch(l.text, kidx, 6).map(kalshiLeg) : [];
+    // the scoreboards first; when they have nothing, Kalshi's own markets; Kalshi's matches also go in the "or:" list
+    const res = res0.leg ? { ...res0, others: [...(res0.others || []), ...kh.slice(0, 3)] } : kh.length ? { status: "ok", leg: kh[0], others: kh.slice(1, 5) } : res0;
     const base = l.choice || res.leg || null, leg = base && l.kline != null ? { ...base, line: l.kline } : base;
     const odds = readOddsAs(l.odds, fmt);
-    return { l, res, leg, odds, ready: !!leg && leg.state === "pre" && odds != null };
-  }), [lines, board, fmt]);
+    return { l, res, leg, odds, ready: !!leg && !leg.kalshi && leg.state === "pre" && odds != null };
+  }), [lines, board, kidx, fmt]);
   const kmap = useKalshiMap(kal, toK, read.map(x => (x.empty ? null : x.leg)));
   // sending to Kalshi: each line's price is Kalshi's, and every line has to be on Kalshi
   // a game in progress can be bought live on Kalshi (its live price); a slip that's only tracked stays pre-game
@@ -3389,7 +3394,8 @@ function NewSlip({ onPlaced, kal, onTools }) {
   const price = used.length && used.every(x => x.odds != null) ? slipPrice(used.map(x => x.odds), amt) : null;
   const canPlace = used.length > 0 && used.every(x => x.ready) && amt > 0 && !busy;
   const set = (id, patch) => setLines(ls => ls.map(l => (l.id === id ? { ...l, ...patch } : l)));
-  const legsOut = odds => used.map((x, i) => ({ pick: x.l.text.trim(), sport: x.leg.sport, league: x.leg.league, eventId: x.leg.eventId, date: x.leg.date, market: x.leg.market, side: x.leg.side, line: x.leg.line, odds: odds ? odds[i] : x.odds }));
+  const legsOut = odds => used.map((x, i) => ({ pick: x.l.text.trim(), sport: x.leg.sport, league: x.leg.league, eventId: x.leg.eventId, date: x.leg.date, market: x.leg.market, side: x.leg.side, line: x.leg.line, odds: odds ? odds[i] : x.odds,
+    ...(x.leg.kalshi ? { ticker: x.leg.ticker, name: x.leg.name, title: x.leg.title } : {}) }));
   const place = async () => {
     if (toK) { setErr(null); setNote(null); setReview(true); return; }
     setBusy(true); setErr(null);
@@ -3432,7 +3438,7 @@ function NewSlip({ onPlaced, kal, onTools }) {
             : <button aria-label={`remove line ${i + 1}`} onClick={() => setLines(ls => ls.filter(l => l.id !== x.l.id))} style={{ ...btnStyle(false), padding: 0, fontSize: 16, cursor: "pointer", color: T.dim }}>×</button>}
         </div>
         <PickMatch fmt={fmt} toK={toK} x={toK ? { ...x, l: { ...x.l, odds: "k" }, odds: 0 } : x} onChoose={leg => set(x.l.id, { text: legLabel(leg), choice: leg, kline: null })}/>
-        {toK && x.leg && (x.leg.state === "pre" || x.leg.state === "in") && <KalshiLine k={rd[i].k} onLine={line => set(x.l.id, { kline: line })}/>}
+        {toK && x.leg && (x.leg.kalshi || x.leg.state === "pre" || x.leg.state === "in") && <KalshiLine k={rd[i].k} onLine={line => set(x.l.id, { kline: line })}/>}
       </div>;
     })}
     <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1, margin: "4px 0 6px" }}>BET AMOUNT</div>
@@ -3605,9 +3611,18 @@ function TheBook() {
 
 // What each line maps to on Kalshi (or why it can't), from Kalshi's current markets
 function useKalshiMap(kal, on, legs) {
-  const [ev, setEv] = useState({});
-  const need = [...new Set(legs.filter(Boolean).flatMap(l => [seriesFor(l.sport, l.league, "ml"), l.market === "spread" || l.market === "total" ? seriesFor(l.sport, l.league, l.market) : null]).filter(Boolean))];
-  const key = need.join(","), anyLive = legs.some(l => l && l.state === "in");   // a game in progress: live prices every 10 seconds
+  const [ev, setEv] = useState({}), [mk, setMk] = useState({});
+  // a market picked straight from Kalshi's index: its own live quote, every 10 seconds
+  const tickers = [...new Set(legs.filter(l => l && l.kalshi).map(l => l.ticker))], tkey = tickers.join(",");
+  useEffect(() => {
+    if (!kal || !on || !tickers.length) return;
+    let alive = true;
+    const pull = () => Promise.all(tickers.map(t => kalshiCall({ env: kal.env }, "GET", `markets/${encodeURIComponent(t)}`).then(j => [t, j.market || null]).catch(() => [t, null]))).then(r => alive && setMk(o => ({ ...o, ...Object.fromEntries(r) })));
+    pull(); const iv = setInterval(pull, 10000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [kal, on, tkey]);
+  const need = [...new Set(legs.filter(l => l && !l.kalshi).flatMap(l => [seriesFor(l.sport, l.league, "ml"), l.market === "spread" || l.market === "total" ? seriesFor(l.sport, l.league, l.market) : null]).filter(Boolean))];
+  const key = need.join(","), anyLive = legs.some(l => l && !l.kalshi && l.state === "in");   // a game in progress: live prices every 10 seconds
   useEffect(() => {
     if (!kal || !on || !need.length) return;
     let alive = true;
@@ -3615,7 +3630,7 @@ function useKalshiMap(kal, on, legs) {
     const t = setInterval(() => { need.forEach(s => delete _kx[`${kal.env}|${s}`]); Promise.all(need.map(s => kalshiEvents(kal.env, s).then(e => [s, e]))).then(r => alive && setEv(o => ({ ...o, ...Object.fromEntries(r) }))); }, anyLive ? 10000 : 60000);
     return () => { alive = false; clearInterval(t); };
   }, [kal, on, key, anyLive]);
-  return legs.map(l => (!l ? null : need.every(s => s in ev) || [seriesFor(l.sport, l.league, "ml")].every(s => s in ev) ? mapLeg(l, ev) : { loading: true }));
+  return legs.map(l => (!l ? null : l.kalshi ? (l.ticker in mk ? quoteMarket(mk[l.ticker], l) : { loading: true }) : need.every(s => s in ev) || [seriesFor(l.sport, l.league, "ml")].every(s => s in ev) ? mapLeg(l, ev) : { loading: true }));
 }
 function KalshiLine({ k, onLine }) {
   if (!k) return null;
@@ -3723,7 +3738,7 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
   const box = c => ({ marginTop: 6, padding: "7px 10px", borderLeft: `2px solid ${c}`, background: `${c}12`, fontSize: 11, lineHeight: 1.5, color: T.ink });
   if (x.res.status === "loading") return <div style={box(T.dim)}><span style={{ color: T.dim }}>Loading today's games…</span></div>;
   if (!x.leg) return <div style={box(NEON.red)}><span style={{ color: "#FF8095" }}>{x.res.status === "empty" ? "Type a team or player and a bet." : "No game today or tomorrow matches that. Try the team's name, city or abbreviation."}</span></div>;
-  const l = x.leg, live = l.state === "in", over = l.state === "post", bettable = l.state === "pre" || (live && toK);
+  const l = x.leg, kx = !!l.kalshi, live = !kx && l.state === "in", over = !kx && l.state === "post", bettable = kx ? toK : l.state === "pre" || (live && toK);
   // the other matches for what was typed: the typed match itself when another was chosen, never the one now in the line
   const same = (a, b) => a.sport === b.sport && String(a.eventId) === String(b.eventId) && a.side === b.side && a.market === b.market;
   const others = [...(x.res.leg && !same(x.res.leg, l) ? [x.res.leg] : []), ...(x.res.others || []).filter(o => !same(o, l))];
@@ -3731,14 +3746,14 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
   return <div style={box(c)}>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
       <span style={{ color: bettable ? NEON.green : "#fff", fontWeight: bettable ? 700 : 400, overflowWrap: "anywhere" }}>{bettable ? "✓ " : live ? "● " : "✗ "}{legLabel(l)}</span>
-      <span style={{ color: T.dim, whiteSpace: "nowrap" }}>{SPORT_CFG[l.sport]?.label || l.sport}</span>
+      <span style={{ color: T.dim, whiteSpace: "nowrap" }}>{kx ? `Kalshi · ${SPORT_CFG[l.sport]?.label || l.sport}` : SPORT_CFG[l.sport]?.label || l.sport}</span>
     </div>
-    <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {over ? "this game is over" : live ? (toK ? <span style={{ color: NEON.red }}>● LIVE: bet it now at Kalshi's live price</span> : "live: turn on Send to Kalshi to bet it live") : whenTxt(l.date)}</div>
+    <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {kx ? (toK ? <span style={{ color: NEON.teal }}>on Kalshi, live or upcoming{l.date ? ` · closes ${whenTxt(l.date)}` : ""}</span> : "a Kalshi market: turn on Send to Kalshi to bet it") : over ? "this game is over" : live ? (toK ? <span style={{ color: NEON.red }}>● LIVE: bet it now at Kalshi's live price</span> : "live: turn on Send to Kalshi to bet it live") : whenTxt(l.date)}</div>
     {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>{fmt === "pct" ? "Use a percentage from 1 to 99, like 54." : "Odds look like -110 or +150."}</div>}
-    {!x.l.odds && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
+    {!x.l.odds && !kx && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
     {others.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
       <span style={{ color: T.faint }}>or:</span>
-      {others.map(o => <button key={`${o.sport}${o.eventId}${o.side}`} onClick={() => onChoose(o)} style={{ ...oneLine, maxWidth: "100%", padding: "3px 8px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer" }}>{legLabel(o)} · {SPORT_CFG[o.sport]?.label}</button>)}
+      {others.map(o => <button key={`${o.sport}${o.eventId}${o.side}`} onClick={() => onChoose(o)} style={{ ...oneLine, maxWidth: "100%", padding: "3px 8px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer" }}>{legLabel(o)} · {o.kalshi ? `Kalshi · ${o.title}` : SPORT_CFG[o.sport]?.label}</button>)}
     </div>}
   </div>;
 }
