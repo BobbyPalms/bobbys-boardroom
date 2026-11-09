@@ -1,5 +1,5 @@
 // Bet slips: reading typed picks, matching them to games, odds math, grading and the leaderboards (no network).
-import { parsePick, resolvePick, slipPrice, amToDec, decToAm, gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, legLabel } from "../src/bets.js";
+import { parsePick, resolvePick, slipPrice, amToDec, decToAm, gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, legLabel, readPct, amToPct, fmtPct, fmtOdds, readOddsAs } from "../src/bets.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 400)); } };
 
@@ -82,5 +82,11 @@ check("record board: win % first", lb.record.map(p => p.username).join() === "ze
 check("money board: net first", lb.money.map(p => p.username).join() === "amy,bob,zed", lb.money.map(p => p.username));
 check("no graded bets, not ranked yet", !lb.record.some(p => p.username === "new"));
 
+// ---- percentages (Kalshi-style) ----
+check("54% is -117, 40% is +150, 50% is +100", readPct("54") === -117 && readPct("40%") === 150 && readPct("50") === 100, [readPct("54"), readPct("40%"), readPct("50")]);
+check("cents and decimals read too", readPct("56¢") === readPct("56") && readPct("0.56") === readPct("56") && readPct("33.3") === 200);
+check("out of range or junk refused", readPct("0") === null && readPct("100") === null && readPct("abc") === null && readPct("") === null && readPct("-5") === null);
+check("back the other way", Math.abs(amToPct(-110) - 52.38) < 0.01 && fmtPct(-110) === "52.4%" && fmtPct(150) === "40%" && fmtOdds(-110, "am") === "-110" && fmtOdds(-110, "pct") === "52.4%");
+check("read by format", readOddsAs("-120", "am") === -120 && readOddsAs("54", "pct") === -117 && readOddsAs("54", "am") === null);
 console.log(`bets: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

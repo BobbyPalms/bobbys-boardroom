@@ -8,6 +8,19 @@ export const decToAm = d => (d >= 2 ? Math.round((d - 1) * 100) : Math.round(-10
 export const fmtAm = a => (a == null ? "" : a > 0 ? `+${a}` : String(a));
 export const money = v => `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const readOdds = s => amOdds(String(s ?? "").trim().replace(/^\+/, ""));
+// percentages (Kalshi-style: "54", "54%", "54¢", "0.54") <-> American odds
+export const amToPct = a => (a == null ? null : 100 / amToDec(a));
+export function readPct(s) {
+  let t = String(s ?? "").trim().replace(/[%¢\s]/g, "");
+  if (!/^\d*\.?\d+$/.test(t)) return null;
+  let x = parseFloat(t);
+  if (x > 0 && x < 1 && /^0?\./.test(t)) x *= 100;                    // 0.54 means 54%
+  if (!(x >= 1 && x <= 99)) return null;
+  return decToAm(100 / x);
+}
+export const readOddsAs = (s, fmt) => (fmt === "pct" ? readPct(s) : readOdds(s));
+export const fmtPct = a => (a == null ? "" : `${(Math.round(amToPct(a) * 10) / 10).toString()}%`);
+export const fmtOdds = (a, fmt) => (fmt === "pct" ? fmtPct(a) : fmtAm(a));
 // a slip's price: one leg is a straight bet; two or more multiply (a parlay)
 export function slipPrice(oddsList, stake) {
   const ds = oddsList.map(o => (o == null ? null : amToDec(o)));

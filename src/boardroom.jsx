@@ -3,7 +3,7 @@ import { parseFinal, finalRundown, teamStatRows, colOrder, groupTitle } from "./
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
-import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE } from "./bets.js";
+import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs } from "./bets.js";
 import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
 
@@ -3155,6 +3155,10 @@ function UsernamePanel({ onDone, current = "" }) {
 }
 
 // ---------- the slip: one pick per line, odds on the right, + for another line; the amount underneath ----------
+// odds shown as American (-120) or as percentages (54%, the way Kalshi prices): remembered on this device
+const ODDS_LS = "bb.oddsFmt";
+const oddsPref = () => { try { return localStorage.getItem(ODDS_LS) === "pct" ? "pct" : "am"; } catch (_) { return "am"; } };
+const pctTxt1 = a => String(Math.round(amToPct(a) * 10) / 10);
 let _lineId = 1;
 const blankLine = () => ({ id: _lineId++, text: "", odds: "", choice: null });
 function NewSlip({ onPlaced, kal, onTools }) {
@@ -3163,6 +3167,9 @@ function NewSlip({ onPlaced, kal, onTools }) {
   const [board, setBoard] = useState(null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState(null);
   const [kOn, setKOn] = useState(true), [review, setReview] = useState(false), [note, setNote] = useState(null);
+  const [fmt, setFmtState] = useState(oddsPref);
+  // switching converts whatever odds are already typed
+  const setFmt = f => { if (f === fmt) return; setLines(ls => ls.map(l => { const a = readOddsAs(l.odds, fmt); return a == null ? l : { ...l, odds: f === "pct" ? pctTxt1(a) : fmtAm(a) }; })); setFmtState(f); try { localStorage.setItem(ODDS_LS, f); } catch (_) { /* fine */ } };
   const toK = !!kal && kOn;
   useEffect(() => { let on = true; loadBetRows().then(b => on && setBoard(b)); return () => { on = false; }; }, []);
   const rows = board?.rows || [];
@@ -3170,9 +3177,9 @@ function NewSlip({ onPlaced, kal, onTools }) {
     if (!l.text.trim()) return { l, empty: true };
     const res = board ? resolvePick(parsePick(l.text), rows) : { status: "loading" };
     const base = l.choice || res.leg || null, leg = base && l.kline != null ? { ...base, line: l.kline } : base;
-    const odds = readOdds(l.odds);
+    const odds = readOddsAs(l.odds, fmt);
     return { l, res, leg, odds, ready: !!leg && leg.state === "pre" && odds != null };
-  }), [lines, board]);
+  }), [lines, board, fmt]);
   const kmap = useKalshiMap(kal, toK, read.map(x => (x.empty ? null : x.leg)));
   // sending to Kalshi: each line's price is Kalshi's, and every line has to be on Kalshi
   const rd = toK ? read.map((x, i) => (x.empty ? x : { ...x, k: kmap[i], odds: kmap[i]?.ok ? kmap[i].am : null, ready: !!x.leg && x.leg.state === "pre" && !!kmap[i]?.ok })) : read;
@@ -3205,19 +3212,25 @@ function NewSlip({ onPlaced, kal, onTools }) {
       <span style={{ minWidth: 0, fontSize: 12, lineHeight: 1.4 }}>{toK ? `Send to Kalshi${kal.env === "demo" ? " (demo)" : ""}: priced at Kalshi's odds, confirmed before it's bought` : "Track only (not sent to Kalshi)"}</span>
       <span style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 1, color: toK ? NEON.teal : T.faint }}>{toK ? "ON" : "OFF"}</span>
     </button>}
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8, fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}><span>PICK</span><span>{toK ? "KALSHI" : "ODDS"}</span><span/></div>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginBottom: 12 }}>
+      <span style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>ODDS AS</span>
+      <div role="group" aria-label="odds format" style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,auto))", border: `1px solid ${T.line}` }}>
+        {[["am", "−120"], ["pct", "54%"]].map(([k, t]) => <button key={k} onClick={() => setFmt(k)} aria-pressed={fmt === k} aria-label={k === "am" ? "American odds" : "percent odds"} style={{ padding: "7px 14px", border: "none", background: fmt === k ? "rgba(143,0,255,0.3)" : "none", color: fmt === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>)}
+      </div>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8, fontSize: 10, color: T.faint, letterSpacing: 1, marginBottom: 6 }}><span>PICK</span><span>{toK ? "KALSHI" : fmt === "pct" ? "ODDS %" : "ODDS"}</span><span/></div>
     {read.map((x, i) => {
       const last = i === read.length - 1;
       return <div key={x.l.id} style={{ marginBottom: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8 }}>
           <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={fieldStyle()}/>
-          {toK ? <input aria-label={`odds ${i + 1}`} readOnly value={rd[i].k?.ok ? fmtAm(rd[i].k.am) : ""} placeholder="Kalshi" title="Kalshi's current price" style={{ ...fieldStyle(NEON.teal), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: "#fff" }}/>
-            : <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: e.target.value.replace(/[^\d+-]/g, "").slice(0, 7) })} placeholder="-110" inputMode="numeric" style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>}
+          {toK ? <input aria-label={`odds ${i + 1}`} readOnly value={rd[i].k?.ok ? (fmt === "pct" ? `${Math.round(rd[i].k.price * 100)}%` : fmtAm(rd[i].k.am)) : ""} placeholder="Kalshi" title="Kalshi's current price" style={{ ...fieldStyle(NEON.teal), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: "#fff" }}/>
+            : <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: (fmt === "pct" ? e.target.value.replace(/[^\d.%]/g, "") : e.target.value.replace(/[^\d+-]/g, "")).slice(0, 7) })} placeholder={fmt === "pct" ? "52.4" : "-110"} inputMode={fmt === "pct" ? "decimal" : "numeric"} style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>}
           {last
             ? <button aria-label="add a line" onClick={() => setLines(ls => [...ls, blankLine()])} style={{ ...btnStyle(), padding: 0, fontSize: 18 }}>+</button>
             : <button aria-label={`remove line ${i + 1}`} onClick={() => setLines(ls => ls.filter(l => l.id !== x.l.id))} style={{ ...btnStyle(false), padding: 0, fontSize: 16, cursor: "pointer", color: T.dim }}>×</button>}
         </div>
-        <PickMatch x={toK ? { ...x, l: { ...x.l, odds: "k" }, odds: 0 } : x} onChoose={leg => set(x.l.id, { choice: leg, kline: null })}/>
+        <PickMatch fmt={fmt} x={toK ? { ...x, l: { ...x.l, odds: "k" }, odds: 0 } : x} onChoose={leg => set(x.l.id, { choice: leg, kline: null })}/>
         {toK && x.leg && x.leg.state === "pre" && <KalshiLine k={rd[i].k} onLine={line => set(x.l.id, { kline: line })}/>}
       </div>;
     })}
@@ -3229,7 +3242,7 @@ function NewSlip({ onPlaced, kal, onTools }) {
     <div style={{ marginTop: 12, border: `1px solid ${T.line}`, background: "rgba(143,0,255,.07)", padding: "12px" }}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
         <span style={{ ...oneLine, fontFamily: F.d, fontSize: 11, letterSpacing: 2, color: T.chrome }}>{used.length > 1 ? `PARLAY · ${used.length} LEGS` : "STRAIGHT BET"}</span>
-        <span style={{ fontFamily: F.d, fontSize: 20, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" }}>{toK && used.length > 1 ? "QUOTE" : price ? fmtAm(price.am) : "–"}</span>
+        <span style={{ fontFamily: F.d, fontSize: 20, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" }}>{toK && used.length > 1 ? "QUOTE" : price ? oddsAs(price.am, fmt) : "–"}</span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 10 }}>
         {(toK && used.length === 1 && rd.find(x => !x.empty)?.k?.ok && amt > 0 ? (z => [["COST", cash(z.cost)], ["TO WIN", cash(z.payout - z.cost)], ["PAYOUT", cash(z.payout)]])(sizeOrder(amt, rd.find(x => !x.empty).k.price))
@@ -3504,7 +3517,7 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
 }
 
 // under each line: which game it matched (or why it didn't), and other games it could mean
-function PickMatch({ x, onChoose }) {
+function PickMatch({ x, onChoose, fmt = "am" }) {
   if (x.empty) return null;
   const box = c => ({ marginTop: 6, padding: "7px 10px", borderLeft: `2px solid ${c}`, background: `${c}12`, fontSize: 11, lineHeight: 1.5, color: T.ink });
   if (x.res.status === "loading") return <div style={box(T.dim)}><span style={{ color: T.dim }}>Loading today's games…</span></div>;
@@ -3516,7 +3529,7 @@ function PickMatch({ x, onChoose }) {
       <span style={{ color: T.dim, whiteSpace: "nowrap" }}>{SPORT_CFG[l.sport]?.label || l.sport}</span>
     </div>
     <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {started ? "already started, can't bet it" : whenTxt(l.date)}</div>
-    {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>Odds look like -110 or +150.</div>}
+    {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>{fmt === "pct" ? "Use a percentage from 1 to 99, like 54." : "Odds look like -110 or +150."}</div>}
     {!x.l.odds && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
     {(x.res.others || []).length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
       <span style={{ color: T.faint }}>or:</span>
@@ -3566,7 +3579,7 @@ function SlipCard({ sl, canTakeBack, onTakeBack }) {
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
       <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: c }}>{sl.status.toUpperCase()}</span>
       <span style={{ ...oneLine, fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}</span> : null}</span>
-      <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{fmtAm(sl.odds)}</span>
+      <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{oddsAs(sl.odds, oddsPref())}</span>
     </div>
     <div style={{ marginTop: 8 }}>
       {sl.legs.map((l, i) => { const [m, mc] = mark(l.res); return <div key={i} style={{ display: "grid", gridTemplateColumns: "14px minmax(0,1fr) auto", gap: 8, alignItems: "baseline", padding: "4px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
@@ -3575,7 +3588,7 @@ function SlipCard({ sl, canTakeBack, onTakeBack }) {
           <div style={{ fontSize: 12, color: T.ink, overflowWrap: "anywhere" }}>{legLabel(l)}</div>
           <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere", marginTop: 1 }}>{shortGame(l)}{l.final && l.sport !== "Tennis" && l.sport !== "MMA" ? ` · final ${l.final.a}-${l.final.h}` : l.res ? "" : ` · ${whenTxt(l.date)}`}</div>
         </div>
-        <span style={{ fontFamily: F.d, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{fmtAm(l.odds)}</span>
+        <span style={{ fontFamily: F.d, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{oddsAs(l.odds, oddsPref())}</span>
       </div>; })}
     </div>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}` }}>
