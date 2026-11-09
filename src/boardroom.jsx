@@ -3381,7 +3381,8 @@ function NewSlip({ onPlaced, kal, onTools }) {
     const kh = board && kidx ? kalshiSearch(l.text, kidx, 6).map(kalshiLeg) : [];
     // the scoreboards first; when they have nothing, Kalshi's own markets; Kalshi's matches also go in the "or:" list
     const res = res0.leg ? { ...res0, others: [...(res0.others || []), ...kh.slice(0, 3)] } : kh.length ? { status: "ok", leg: kh[0], others: kh.slice(1, 5) } : res0;
-    const base = l.choice || res.leg || null, leg = base && l.kline != null ? { ...base, line: l.kline } : base;
+    // nothing is on the line until a match is clicked: typing only finds the matches
+    const base = l.choice || null, leg = base && l.kline != null ? { ...base, line: l.kline } : base;
     const odds = readOddsAs(l.odds, fmt);
     return { l, res, leg, odds, ready: !!leg && !leg.kalshi && leg.state === "pre" && odds != null };
   }), [lines, board, kidx, fmt]);
@@ -3461,7 +3462,7 @@ function NewSlip({ onPlaced, kal, onTools }) {
     {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
     {note && <div style={{ marginTop: 10, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>{note}</div>}
     {review && toK ? <KalshiReview kal={kal} plan={used.map(x => ({ k: x.k }))} stake={amt} onDone={kalshiDone} onCancel={() => setReview(false)}/>
-      : <button onClick={place} disabled={!canPlace} style={{ width: "100%", marginTop: 12, padding: 14, border: `1px solid ${canPlace ? (toK ? NEON.teal : T.chrome) : T.line}`, background: canPlace ? (toK ? "rgba(23,242,208,.18)" : "rgba(143,0,255,0.3)") : "none", color: canPlace ? "#fff" : T.faint, fontFamily: F.d, fontSize: 13, letterSpacing: 3, cursor: canPlace ? "pointer" : "not-allowed" }}>{busy ? "PLACING…" : toK ? "REVIEW ON KALSHI" : "PLACE SLIP"}</button>}
+      : <button onClick={place} disabled={!canPlace} style={{ width: "100%", marginTop: 12, padding: 14, border: `1px solid ${canPlace ? (toK ? NEON.teal : T.chrome) : T.line}`, background: canPlace ? (toK ? "rgba(23,242,208,.18)" : "rgba(143,0,255,0.3)") : "none", color: canPlace ? "#fff" : T.faint, fontFamily: F.d, fontSize: 13, letterSpacing: 3, cursor: canPlace ? "pointer" : "not-allowed" }}>{busy ? "PLACING…" : used.some(x => !x.leg) ? "TAP A PICK ON EVERY LINE" : toK ? "REVIEW ON KALSHI" : "PLACE SLIP"}</button>}
     {board && board.reached < board.tried && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{board.tried - board.reached} of {board.tried} scoreboards didn't answer; some games may be missing.</div>}
   </Panel>;
 }
@@ -3784,11 +3785,24 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
   if (x.empty) return null;
   const box = c => ({ marginTop: 6, padding: "7px 10px", borderLeft: `2px solid ${c}`, background: `${c}12`, fontSize: 11, lineHeight: 1.5, color: T.ink });
   if (x.res.status === "loading") return <div style={box(T.dim)}><span style={{ color: T.dim }}>Loading today's games…</span></div>;
-  if (!x.leg) return <div style={box(NEON.red)}><span style={{ color: "#FF8095" }}>{x.res.status === "empty" ? "Type a team or player and a bet." : "No game today or tomorrow matches that. Try the team's name, city or abbreviation."}</span></div>;
+  if (!x.leg) {
+    const opts = [...(x.res.leg ? [x.res.leg] : []), ...(x.res.others || [])];
+    if (!opts.length) return <div style={box(NEON.red)}><span style={{ color: "#FF8095" }}>{x.res.status === "empty" ? "Type a team or player and a bet." : "Nothing matches that today, tomorrow or on Kalshi. Try the team's or player's name, city or abbreviation."}</span></div>;
+    return <div style={box(T.chrome)}>
+      <div style={{ color: T.ink, marginBottom: 6 }}>Tap your pick to put it on this line:</div>
+      <div style={{ display: "grid", gap: 6 }}>
+        {opts.map(o => { const kx = !!o.kalshi, started = !kx && o.state !== "pre";
+          return <button key={`${o.sport}${o.eventId}${o.side}${o.market}`} onClick={() => onChoose(o)} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, width: "100%", padding: "8px 10px", border: `1px solid ${T.line}`, background: "rgba(14,4,26,.6)", color: T.ink, fontFamily: F.m, fontSize: 11, textAlign: "left", cursor: "pointer", lineHeight: 1.45 }}>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}><span style={{ color: "#fff", fontWeight: 700 }}>{legLabel(o)}</span><br/><span style={{ color: T.dim }}>{gameTxt(o)} · {kx ? "on Kalshi" : o.state === "in" ? "LIVE" : o.state === "post" ? "over" : whenTxt(o.date)}</span></span>
+            <span style={{ color: started ? NEON.gold : T.dim, whiteSpace: "nowrap" }}>{kx ? `Kalshi · ${SPORT_CFG[o.sport]?.label || o.sport}` : SPORT_CFG[o.sport]?.label || o.sport}</span>
+          </button>; })}
+      </div>
+    </div>;
+  }
   const l = x.leg, kx = !!l.kalshi, live = !kx && l.state === "in", over = !kx && l.state === "post", bettable = kx ? toK : l.state === "pre" || (live && toK);
   // the other matches for what was typed: the typed match itself when another was chosen, never the one now in the line
   const same = (a, b) => a.sport === b.sport && String(a.eventId) === String(b.eventId) && a.side === b.side && a.market === b.market;
-  const others = [...(x.res.leg && !same(x.res.leg, l) ? [x.res.leg] : []), ...(x.res.others || []).filter(o => !same(o, l))];
+  const others = [...(x.res.leg && !same(x.res.leg, l) ? [x.res.leg] : []), ...(x.res.others || []).filter(o => !same(o, l) && !(x.res.leg && same(o, x.res.leg)))];
   const c = bettable ? NEON.green : live ? NEON.gold : NEON.red;
   return <div style={box(c)}>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
