@@ -1,9 +1,16 @@
 // Every data route the app and the data job use, from github.com/pseudo-r/Public-ESPN-API (docs/sports/*.md).
 // One module shared by the browser app and the GitHub data job, so both read the data the same way.
+import { CATALOG } from "./leagues.js";
 export const SITE = "https://site.api.espn.com/apis/site/v2/sports";
 export const SITE2 = "https://site.api.espn.com/apis/v2/sports";        // standings live here (the site/v2 path is a stub)
 export const CORE = "https://sports.core.api.espn.com/v2/sports";
-// app sport key -> ESPN sport slug + leagues (+ query extras). Soccer runs several leagues on one board.
+// app sport key -> ESPN sport slug + leagues (+ query extras). Every league ESPN lists (src/leagues.js) is on exactly
+// one tab: the big US leagues keep their own tabs, and each ESPN sport's other leagues share one tab ("Hoops+" etc.).
+// `core` = the leagues a tab searched before it carried every league (the team-name search falls back to their
+// standings when a team has no game this week; doing that across 220 soccer leagues would be hundreds of calls).
+const slugs = sp => CATALOG[sp].map(r => r[0]);
+const rest = (sp, taken) => slugs(sp).filter(s => !taken.includes(s));
+const SOCCER_CORE = ["eng.1", "esp.1", "ger.1", "ita.1", "fra.1", "usa.1", "mex.1", "uefa.champions", "uefa.europa", "fifa.world", "fifa.worldq.uefa", "fifa.friendly"];
 export const ROUTES = {
   MLB:    { sport: "baseball",   leagues: ["mlb"] },
   NFL:    { sport: "football",   leagues: ["nfl"] },
@@ -13,17 +20,111 @@ export const ROUTES = {
   CBB:    { sport: "basketball", leagues: ["mens-college-basketball"], q: "groups=50&limit=500" },   // all Division I
   CBBW:   { sport: "basketball", leagues: ["womens-college-basketball"], q: "groups=50&limit=500" },
   NHL:    { sport: "hockey",     leagues: ["nhl"] },
-  Soccer: { sport: "soccer",     leagues: ["eng.1", "esp.1", "ger.1", "ita.1", "fra.1", "usa.1", "mex.1", "uefa.champions", "uefa.europa", "fifa.world", "fifa.worldq.uefa", "fifa.friendly"] },
+  Soccer: { sport: "soccer",     leagues: [...SOCCER_CORE, ...rest("soccer", SOCCER_CORE)], core: SOCCER_CORE },
   Tennis: { sport: "tennis",     leagues: ["atp", "wta"] },
-  MMA:    { sport: "mma",        leagues: ["ufc"] },
+  MMA:    { sport: "mma",        leagues: ["ufc", ...rest("mma", ["ufc"])], core: ["ufc"] },
+  // every other league ESPN lists, one tab per sport
+  BASE:   { sport: "baseball",   leagues: rest("baseball", ["mlb"]) },
+  HOOPS:  { sport: "basketball", leagues: rest("basketball", ["nba", "wnba", "mens-college-basketball", "womens-college-basketball"]) },
+  GRID:   { sport: "football",   leagues: rest("football", ["nfl", "college-football"]) },
+  PUCK:   { sport: "hockey",     leagues: rest("hockey", ["nhl"]) },
+  AFL:    { sport: "australian-football", leagues: slugs("australian-football") },
+  RUGBY:  { sport: "rugby",      leagues: slugs("rugby") },
+  RUGBYL: { sport: "rugby-league", leagues: slugs("rugby-league") },
+  LAX:    { sport: "lacrosse",   leagues: slugs("lacrosse") },
+  FHOCKEY:{ sport: "field-hockey", leagues: slugs("field-hockey") },
+  VOLLEY: { sport: "volleyball", leagues: slugs("volleyball") },
+  WPOLO:  { sport: "water-polo", leagues: slugs("water-polo") },
+  Golf:   { sport: "golf",       leagues: slugs("golf") },
+  Racing: { sport: "racing",     leagues: slugs("racing") },
 };
-export const TEAM_SPORTS = ["MLB", "NFL", "CFB", "NBA", "WNBA", "CBB", "CBBW", "NHL", "Soccer"];
+export const TEAM_SPORTS = ["MLB", "NFL", "CFB", "NBA", "WNBA", "CBB", "CBBW", "NHL", "Soccer", "BASE", "HOOPS", "GRID", "PUCK", "AFL", "RUGBY", "RUGBYL", "LAX", "FHOCKEY", "VOLLEY", "WPOLO"];
+// fields of many players (no two-sided game to simulate): leaderboards only
+export const FIELD_SPORTS = ["Golf", "Racing"];
+// month (0-11) a season starts: the label of the season being played now [J for the added tabs]
+export const SEASON_START = { MLB: 2, NFL: 7, CFB: 7, Soccer: 7, NBA: 9, NHL: 9, CBB: 10, CBBW: 10, WNBA: 4,
+  BASE: 1, HOOPS: 9, GRID: 2, PUCK: 9, AFL: 2, RUGBY: 7, RUGBYL: 2, LAX: 1, FHOCKEY: 7, VOLLEY: 7, WPOLO: 7 };
+export const seasonStartYear = (sport, d = new Date()) => (d.getMonth() >= (SEASON_START[sport] ?? 7) ? d.getFullYear() : d.getFullYear() - 1);
 // ESPN labels NBA/NHL/college-hoops seasons by the year they END (2026-27 = 2027); the app labels by the year they start.
-const ENDS_LABEL = new Set(["NBA", "NHL", "CBB", "CBBW"]);
+const ENDS_LABEL = new Set(["NBA", "NHL", "CBB", "CBBW", "HOOPS", "PUCK"]);
 export const espnSeason = (sport, startYear) => ENDS_LABEL.has(sport) ? startYear + 1 : startYear;
 export const startYearOf = (sport, espnYear) => ENDS_LABEL.has(sport) ? espnYear - 1 : espnYear;
 
 export const scoreboardUrl = (sport, league, ymd) => { const r = ROUTES[sport]; return `${SITE}/${r.sport}/${league}/scoreboard?dates=${ymd}${r.q ? "&" + r.q : ""}`; };
+// ---------- one call per day for the sports with hundreds of leagues ----------
+// ESPN's sport-wide "all" board returns every league's games for a day in one response, each game tagged with its
+// league id (uid "s:600~l:3918~e:..."). It is split back into one board per league, in the same shape a league's own
+// scoreboard has, so everything downstream reads it the same way. Sports with a handful of leagues keep one call each.
+export const ALL_BOARD = new Set(["soccer", "mma", "rugby", "golf"]);
+const LEAGUE_BY_ID = Object.fromEntries(Object.entries(CATALOG).map(([sp, rows]) => [sp, Object.fromEntries(rows.map(([slug, id, name]) => [String(id), { slug, id, name }]))]));
+export const leagueName = (sport, slug) => { const r = CATALOG[ROUTES[sport]?.sport]?.find(x => x[0] === slug); return r ? r[2] : slug; };
+const usesAll = (sport, day) => ALL_BOARD.has(ROUTES[sport]?.sport) && /^\d{8}$/.test(String(day)) && ROUTES[sport].leagues.length > 1;
+export const allBoardUrl = (sport, day) => `${SITE}/${ROUTES[sport].sport}/all/scoreboard?dates=${day}&limit=1000`;
+export function splitAllBoard(sport, j) {
+  const sp = ROUTES[sport].sport, mine = new Set(ROUTES[sport].leagues), by = {};
+  for (const e of j?.events || []) {
+    const id = String(e.uid || "").match(/~l:(\d+)/)?.[1], L = id && LEAGUE_BY_ID[sp]?.[id];
+    if (!L || !mine.has(L.slug)) continue;                   // a league ESPN added after the catalog was pulled: npm run leagues
+    (by[L.slug] = by[L.slug] || { leagues: [{ id: String(L.id), slug: L.slug, name: L.name, abbreviation: L.name }], events: [], day: j.day }).events.push(e);
+  }
+  return by;
+}
+// boards(fetchJSON): board(sport, league, day) and leaguesOn(sport, day). fetchJSON(url) resolves to JSON or throws.
+// The "all" board is cached for a minute per sport and day, so a screen that walks every league costs one request.
+export function makeBoards(fetchJSON, ttl = 60e3) {
+  const memo = new Map();
+  const all = (sport, day) => {
+    const key = `${sport}|${day}`, hit = memo.get(key);
+    if (hit && Date.now() - hit.t < ttl) return hit.p;
+    const p = Promise.resolve().then(() => fetchJSON(allBoardUrl(sport, day))).then(j => { if (!j || !Array.isArray(j.events)) throw new Error("no all board"); return splitAllBoard(sport, j); });
+    p.catch(() => memo.delete(key));
+    memo.set(key, { t: Date.now(), p });
+    return p;
+  };
+  const one = (sport, league, day) => fetchJSON(scoreboardUrl(sport, league, day));
+  const board = async (sport, league, day) => {
+    if (!usesAll(sport, day)) return one(sport, league, day);
+    try { const by = await all(sport, day); return by[league] || { leagues: [{ slug: league, name: leagueName(sport, league), abbreviation: leagueName(sport, league) }], events: [] }; }
+    catch (_) { return one(sport, league, day); }
+  };
+  // the leagues worth reading on a day: every league, or for an "all" sport only the ones with games that day
+  // (if the all board can't be read, the tab's core leagues, as before it carried every league)
+  const leaguesOn = async (sport, day) => {
+    const R = ROUTES[sport];
+    if (!R) return [];
+    if (!usesAll(sport, day)) return R.leagues;
+    try { const by = await all(sport, day); return R.leagues.filter(l => by[l]); }
+    catch (_) { return R.core || R.leagues; }
+  };
+  return { board, leaguesOn };
+}
+// run fn over items, n at a time
+export async function pool(items, n, fn) {
+  const out = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } }));
+  return out;
+}
+// ---------- golf and racing: a field of players, shown as a leaderboard ----------
+// Racing events hold several sessions (practice, qualifying, the race): the race once it starts, else the latest
+// session that has started, else the first one.
+export function fieldBoard(j) {
+  const lg = j?.leagues?.[0], out = [];
+  for (const e of j?.events || []) {
+    const comps = e.competitions || [], st = c => c?.status?.type?.state || "pre";
+    const c = comps.find(x => /^race$/i.test(x.type?.abbreviation || x.type?.text || "") && st(x) !== "pre")
+      || [...comps].reverse().find(x => st(x) !== "pre") || comps[0];
+    if (!c) continue;
+    const t = c.status?.type || e.status?.type || {}, et = e.status?.type || {};
+    const rows = [...(c.competitors || [])].sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9)).map(x => {
+      const sc = x.score && typeof x.score === "object" ? x.score.displayValue ?? x.score.value : x.score;
+      return { pos: x.order ?? null, name: x.athlete?.displayName || x.athlete?.fullName || x.team?.displayName || "", score: sc == null ? "" : String(sc),
+        rounds: (x.linescores || []).map(s => s.value).filter(v => v != null), win: x.winner === true };
+    });
+    out.push({ id: String(e.id), name: e.name || e.shortName || "", league: lg?.name || lg?.abbreviation || "", date: e.date, end: e.endDate || null,
+      session: comps.length > 1 ? (c.type?.text || c.type?.abbreviation || "") : "", state: et.state || t.state || "pre", detail: t.shortDetail || t.detail || et.shortDetail || et.detail || "", rows });
+  }
+  return out;
+}
 export const standingsUrl = (sport, league, espnYear) => `${SITE2}/${ROUTES[sport].sport}/${league}/standings${espnYear ? `?season=${espnYear}` : ""}`;
 export const summaryUrl = (sport, league, eventId) => `${SITE}/${ROUTES[sport].sport}/${league}/summary?event=${eventId}`;
 export const injuriesUrl = (sport, league) => `${SITE}/${ROUTES[sport].sport}/${league}/injuries`;

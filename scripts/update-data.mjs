@@ -9,7 +9,7 @@
 // State carries over between runs through the deployed site (scripts/restore-state.mjs) and a daily commit.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { powerTeamUrl, parsePower, SPLITS, anSplitsUrl, dkSplitsUrl, parseANSplits, parseDKSplits } from "../src/routes.js";
-import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd } from "../src/routes.js";
+import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd, makeBoards, seasonStartYear } from "../src/routes.js";
 import { parseTennis, parseUFC, fitElo, tennisProfiles, h2hShard } from "../src/ratings.js";
 
 const FORCE_BACKFILL = process.argv.includes("--backfill");
@@ -27,6 +27,8 @@ async function get(url, tries = 3) {
 }
 async function pool(items, size, fn) { const out = []; let i = 0; await Promise.all(Array.from({ length: size }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k]); } })); return out; }
 const read = (p, d) => { try { return JSON.parse(readFileSync(p, "utf8")); } catch (_) { return d; } };
+// one scoreboard per league per day; soccer, MMA, rugby and golf read every league in one call (src/routes.js)
+const BOARDS = makeBoards(async url => { const j = await get(url); if (!j) throw new Error("no board"); return j; });
 // write only when the content (ignoring the timestamp) changed, so unchanged files never churn
 function write(p, o) {
   const body = JSON.stringify({ ...o, updated: undefined });
@@ -36,7 +38,7 @@ function write(p, o) {
   writeFileSync(p, JSON.stringify({ ...o, updated: new Date().toISOString() }));
   return true;
 }
-const startYearNow = sport => { const d = new Date(), m = d.getUTCMonth(), y = d.getUTCFullYear(); const s = { MLB: 2, NFL: 7, CFB: 7, Soccer: 7, NBA: 9, NHL: 9, CBB: 10, CBBW: 10, WNBA: 4 }[sport] ?? 7; return m >= s ? y : y - 1; };
+const startYearNow = sport => seasonStartYear(sport, new Date());
 const sports = ONLY.length ? ONLY : Object.keys(ROUTES);
 // Standings and the UFC schedule change slowly: refresh them hourly (first run of each hour), live boards every run.
 // Runs come every few minutes now, so the slow jobs (standings history, UFC year list) go by the clock of the last
@@ -49,7 +51,7 @@ const HOURLY = due("hourly", 55);
 async function history(sport) {
   const file = `data/history/${sport}.json`, backfill = FORCE_BACKFILL || !existsSync(file);
   const H = read(file, { teams: {}, lg: {}, done: {} }), now = startYearNow(sport);
-  for (const league of ROUTES[sport].leagues) {
+  await pool(ROUTES[sport].leagues, 6, async league => {
     const years = backfill ? Array.from({ length: now - 1969 }, (_, i) => now - i) : [now, now - 1];
     let empty = 0;
     for (const y of years) {
@@ -69,7 +71,7 @@ async function history(sport) {
       if (y < now) H.done[key] = true;
       await sleep(80);
     }
-  }
+  });
   write(file, H);
 }
 
@@ -78,8 +80,11 @@ async function live(sport) {
   const days = [-1, 0, 1].map(k => ymd(new Date(Date.now() + k * 864e5)));
   const L = { days: {} }, lines = read(`data/lines/${sport}.json`, {}), offs = read(`data/officials/${sport}.json`, {});
   const finals = [];
-  for (const league of ROUTES[sport].leagues) for (const d of days) {
-    const j = await get(scoreboardUrl(sport, league, d));
+  const jobs = [];
+  for (const d of days) for (const league of await BOARDS.leaguesOn(sport, d)) jobs.push([league, d]);
+  const boards = await pool(jobs, 6, ([league, d]) => BOARDS.board(sport, league, d).catch(() => null));
+  for (let i = 0; i < jobs.length; i++) {
+    const [league, d] = jobs[i], j = boards[i];
     if (!j) continue;
     const games = parseScoreboard(j, sport, { league });
     (L.days[d] = L.days[d] || []).push(...games.map(g => ({ id: g.id, league, date: g.date, state: g.state, status: g.statusText, neutral: g.neutral, venue: g.venue,
@@ -189,6 +194,16 @@ async function mma() {
       meta.events[d] = 1;
     });
     meta.years[y] = 1;
+  }
+  // every other promotion ESPN lists: its cards from the last 10 days through the coming week, every run, so their
+  // fighters build Elo history from here on (the UFC year calendar above is UFC-only)
+  for (let k = -10; k <= 8; k++) {
+    const d = ymd(new Date(Date.now() + k * 864e5));
+    for (const lg of await BOARDS.leaguesOn("MMA", d)) {
+      if (lg === "ufc") continue;
+      const jj = await BOARDS.board("MMA", lg, d).catch(() => null);
+      if (jj) for (const m of parseUFC(jj)) if (m.completed || !all[m.id]) all[m.id] = compact(m);
+    }
   }
   saveMatches("MMA", all); write("data/matches/MMA.meta.json", meta);
   return all;

@@ -60,6 +60,7 @@ T.refreshLearned();                                         // price today's boa
 // ---- 1. log today's board ----
 const logged = {};
 for (const sp of T.SPORT_KEYS) {
+  if (T.isField(sp)) continue;                              // golf / racing: leaderboards only, nothing priced
   try {
     if (T.isIndiv(sp)) { const r = await T.fetchIndiv(sp); T.trackIndiv(r); logged[sp] = r.list.filter(m => m.known).length; continue; }
     const data = await T.fetchSlate(sp);

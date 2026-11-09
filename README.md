@@ -2,7 +2,7 @@
 
 Monte Carlo sports simulator, slate ranker, live scoreboard and background results tracker. Runs entirely on its own: every number comes from the public routes documented in [pseudo-r/Public-ESPN-API](https://github.com/pseudo-r/Public-ESPN-API). No AI calls, no API keys.
 
-**Tabs:** MLB · NFL · CFB · NBA · WNBA · NCAA men's (CBB) · NCAA women's (NCAAW) · NHL · Soccer (EPL, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Liga MX, Champions League, Europa League, World Cup + UEFA qualifiers, friendlies) · Tennis (ATP + WTA singles) · MMA (UFC)
+**Tabs:** every sport and league ESPN lists (359 leagues, `src/leagues.js`). MLB · NFL · CFB · NBA · WNBA · NCAA men's (CBB) · NCAA women's (NCAAW) · NHL · Soccer (all 220 competitions ESPN covers) · Tennis (ATP + WTA singles) · MMA (all 48 promotions) · Baseball+ (college baseball and softball, winter leagues, WBC, Little League, Olympics) · Hoops+ (G League, NBL, FIBA, summer leagues, Olympics) · Football+ (CFL, UFL, XFL) · Hockey+ (NCAA men's and women's, Olympics, World Cup) · AFL · Rugby (25 union competitions) · Rugby League · Lacrosse (NLL, PLL, NCAA) · Field Hockey · Volleyball · Water Polo · Golf and Racing (leaderboards: a field of players, nothing simulated). ESPN lists cricket as a sport but no cricket leagues. `npm run leagues` refreshes the catalog.
 
 ## What feeds the algo
 | Input | Route |

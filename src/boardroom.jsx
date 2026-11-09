@@ -5,7 +5,7 @@ import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tenni
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs } from "./bets.js";
 import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT } from "./kalshi.js";
-import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel } from "./routes.js";
+import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
 const SPORT_CFG = {
@@ -20,9 +20,29 @@ const SPORT_CFG = {
   CBBW:   { label:"NCAAW", icon:"🏀",  unit:"pts", unitFull:"pts",   gLabel:"PPG",    dLabel:"OPP PPG",gkLabel:"STAR", sk2:"PPG", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:false },
   Tennis: { label:"Tennis",icon:"🎾",  unit:"sets",unitFull:"sets",  gLabel:"Elo",    dLabel:"",       gkLabel:"",   sk2:"",   rRef:75, otLabel:"",   hasDraw:false, outdoor:true,  indiv:true },
   MMA:    { label:"MMA",   icon:"🥊",  unit:"rds", unitFull:"rounds",gLabel:"Elo",    dLabel:"",       gkLabel:"",   sk2:"",   rRef:75, otLabel:"",   hasDraw:false, outdoor:false, indiv:true },
+  // every other league ESPN lists: one tab per sport (src/routes.js)
+  BASE:   { label:"Baseball+",icon:"⚾", unit:"R",  unitFull:"runs",  gLabel:"R/G",    dLabel:"RA/G",   gkLabel:"SP",   sk2:"OPS×100", rRef:75, otLabel:"XI", hasDraw:false, outdoor:true  },
+  HOOPS:  { label:"Hoops+", icon:"🏀",  unit:"pts", unitFull:"pts",   gLabel:"PPG",    dLabel:"OPP PPG",gkLabel:"STAR", sk2:"PPG", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:false },
+  GRID:   { label:"Football+",icon:"🏈", unit:"pts", unitFull:"pts",  gLabel:"PPG",    dLabel:"PA/G",   gkLabel:"QB",   sk2:"EPA", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:true  },
+  PUCK:   { label:"Hockey+",icon:"🏒",  unit:"G",   unitFull:"goals", gLabel:"G/Game", dLabel:"GAA",    gkLabel:"GK",   sk2:"PTS", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:false },
+  AFL:    { label:"AFL",    icon:"🏉",  unit:"pts", unitFull:"pts",   gLabel:"PPG",    dLabel:"PA/G",   gkLabel:"STAR", sk2:"PTS", rRef:75, otLabel:"ET",  hasDraw:false, outdoor:true  },
+  RUGBY:  { label:"Rugby",  icon:"🏉",  unit:"pts", unitFull:"pts",   gLabel:"PPG",    dLabel:"PA/G",   gkLabel:"STAR", sk2:"PTS", rRef:75, otLabel:"ET",  hasDraw:false, outdoor:true  },
+  RUGBYL: { label:"Rugby Lg",icon:"🏉", unit:"pts", unitFull:"pts",   gLabel:"PPG",    dLabel:"PA/G",   gkLabel:"STAR", sk2:"PTS", rRef:75, otLabel:"GP",  hasDraw:false, outdoor:true  },
+  LAX:    { label:"Lacrosse",icon:"🥍", unit:"G",   unitFull:"goals", gLabel:"G/Game", dLabel:"GA/G",   gkLabel:"GK",   sk2:"PTS", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:true  },
+  FHOCKEY:{ label:"Field Hky",icon:"🏑",unit:"G",   unitFull:"goals", gLabel:"G/Game", dLabel:"GA/G",   gkLabel:"GK",   sk2:"PTS", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:true  },
+  VOLLEY: { label:"Volleyball",icon:"🏐",unit:"sets",unitFull:"sets", gLabel:"Sets/M", dLabel:"Opp sets",gkLabel:"STAR",sk2:"PTS", rRef:75, otLabel:"5th", hasDraw:false, outdoor:false },
+  WPOLO:  { label:"Water Polo",icon:"🤽",unit:"G",  unitFull:"goals", gLabel:"G/Game", dLabel:"GA/G",   gkLabel:"GK",   sk2:"PTS", rRef:75, otLabel:"OT",  hasDraw:false, outdoor:false },
+  Golf:   { label:"Golf",   icon:"⛳",  unit:"",    unitFull:"",      gLabel:"",       dLabel:"",       gkLabel:"",     sk2:"",    rRef:75, otLabel:"",    hasDraw:false, outdoor:true,  field:true },
+  Racing: { label:"Racing", icon:"🏁",  unit:"",    unitFull:"",      gLabel:"",       dLabel:"",       gkLabel:"",     sk2:"",    rRef:75, otLabel:"",    hasDraw:false, outdoor:true,  field:true },
 };
 const SPORT_KEYS = Object.keys(SPORT_CFG);
 const isIndiv = sport => !!SPORT_CFG[sport]?.indiv;
+const isField = sport => !!SPORT_CFG[sport]?.field;
+// one scoreboard per league per day; soccer, MMA, rugby and golf read every league in one call (src/routes.js)
+const BOARDS = makeBoards(url => getJSON(url));
+const board = (sport, league, day) => BOARDS.board(sport, league, day);
+const leaguesOn = (sport, day) => BOARDS.leaguesOn(sport, day);
+const manyLeagues = sport => (ROUTES[sport]?.leagues.length || 0) > 1;
 
 // ─── LEAGUE BASELINES (engine v3) ────────────────────────────────────────────
 // Everything the engine needs to know about a sport lives in this one table. Provenance of each number:
@@ -51,6 +71,21 @@ const LEAGUE = {
   Tennis: { fam:"indiv", L:1, k:1, rho:0, gpDef:1, season:1 },
   MMA:    { fam:"indiv", L:1, k:1, rho:0, gpDef:1, season:1 },
   CBBW:   { L:67.0, hfa:3.0,  fam:"norm", sdM:13.0, sdT:14.0, otF:0.125, k:14, rho:0.60, gpDef:16,  season:31,  wEff:3.0, useXG:false },
+  // the other leagues ESPN lists (one tab per sport). Each league's own average from its standings replaces L (leagueL),
+  // so the levels below only matter until a league has standings; the spreads are [A] / [J] (see below).
+  BASE:   { L:5.00, hfa:0.30, fam:"nb",   r:3.0,  k:20, rho:0.50, gpDef:30,  season:56,  wEff:0.5, useXG:false },
+  HOOPS:  { L:90.0, hfa:2.5,  fam:"norm", sdM:12.0, sdT:16.0, otF:0.100, k:10, rho:0.50, gpDef:15,  season:34,  wEff:0.5, useXG:false },
+  GRID:   { L:24.0, hfa:2.0,  fam:"norm", sdM:13.5, sdT:14.0, otF:0.150, k:6,  rho:0.40, gpDef:6,   season:18,  wEff:0.5, useXG:false },
+  PUCK:   { L:3.00, hfa:0.25, fam:"pois", k:20, rho:0.50, gpDef:15, season:34,  wEff:0.5, useXG:false },
+  AFL:    { L:85.0, hfa:8.0,  fam:"norm", sdM:36.0, sdT:28.0, otF:0.000, k:8,  rho:0.55, gpDef:10,  season:23,  wEff:0.5, useXG:false },
+  RUGBY:  { L:25.0, hfa:4.0,  fam:"norm", sdM:16.0, sdT:15.0, otF:0.000, k:6,  rho:0.50, gpDef:8,   season:18,  wEff:0.5, useXG:false },
+  RUGBYL: { L:22.0, hfa:3.0,  fam:"norm", sdM:15.0, sdT:13.0, otF:0.030, k:8,  rho:0.50, gpDef:10,  season:24,  wEff:0.5, useXG:false },
+  LAX:    { L:12.0, hfa:0.8,  fam:"norm", sdM:5.0,  sdT:6.0,  otF:0.100, k:6,  rho:0.50, gpDef:6,   season:16,  wEff:0.5, useXG:false },
+  FHOCKEY:{ L:2.20, hfa:0.25, fam:"pois", k:6,  rho:0.50, gpDef:8,  season:18,  wEff:0.5, useXG:false },
+  VOLLEY: { L:1.90, hfa:0.15, fam:"norm", sdM:1.6,  sdT:0.8,  otF:0.000, k:8,  rho:0.50, gpDef:10,  season:30,  wEff:0.5, useXG:false },
+  WPOLO:  { L:11.0, hfa:0.6,  fam:"norm", sdM:4.5,  sdT:5.0,  otF:0.050, k:6,  rho:0.50, gpDef:8,   season:25,  wEff:0.5, useXG:false },
+  Golf:   { fam:"field", L:1, k:1, rho:0, gpDef:1, season:1 },
+  Racing: { fam:"field", L:1, k:1, rho:0, gpDef:1, season:1 },
 };
 // Provenance by sport (the rest is [J]):
 //  MLB   L 4.49 = 2023-25 league runs per team-game (4.62, 4.39, 4.45) [S, Lahman] · hfa 0.25 [A] · r 3.7 from team run variance ≈ 9.6 [A] · lgERA 4.15 [A]
@@ -64,6 +99,10 @@ const LEAGUE = {
 //  CFB   L 29 [A] · hfa 2.8 [A] · margin SD 15.3 [S] · total SD 15.5 [A]
 //  WNBA  L 82 [A] · hfa 1.5 [A] · SDs [A]   CBBW L 67 [A] · hfa 3.0 [A] · SDs [A]  (the live league average from standings replaces L)
 //  CBB   L 73.5 [A] · hfa 2.8 = KenPom recent home-court value 2.78 [S] · margin SD 11 [S] · total SD 14.5 [A]
+//  Added tabs (Baseball+, Hoops+, Football+, Hockey+, AFL, Rugby, Rugby League, Lacrosse, Field Hockey, Volleyball,
+//  Water Polo): L and hfa [A] long-run values, margin / total SDs [J]; each league's standings average replaces L.
+//  Volleyball is scored in sets won (best of five), so its "score" is sets and its spreads / totals are in sets.
+//  Golf and racing are fields, not two-sided games: leaderboards only, nothing is simulated.
 // Normal-family dispersion: home/away score SD s0 and correlation c0 follow from the margin and total SDs.
 for (const P of Object.values(LEAGUE)) {
   if (P.fam === "norm") { P.s0 = Math.sqrt((P.sdM ** 2 + P.sdT ** 2) / 4); P.c0 = (P.sdT ** 2 - P.sdM ** 2) / (P.sdT ** 2 + P.sdM ** 2); }
@@ -128,8 +167,7 @@ function histKey(sport, t) {
 }
 // The label of the season being played now (the year it started).
 function seasonYear(sport, d = new Date()) {
-  const start = { MLB: 2, NFL: 7, CFB: 7, Soccer: 7, NBA: 9, NHL: 9, CBB: 10, CBBW: 10, WNBA: 4 }[sport] ?? 7;
-  return d.getMonth() >= start ? d.getFullYear() : d.getFullYear() - 1;
+  return seasonStartYear(sport, d);
 }
 // Past seasons are also kept on this device (best effort: storage can be unavailable) so they're fetched once.
 const HIST_LS = "boardroom.hist.v2";                     // v2: v1 held college seasons read from the wrong standings stats
@@ -268,7 +306,7 @@ async function officialImpact(sport, officials) {
   return { pct: parts.reduce((a, p) => a + p.pct, 0) / parts.length, parts };
 }
 async function routeBoard(sport, league, k, ctx) {
-  try { return parseScoreboard(await getJSON(scoreboardUrl(sport, league, ymd(new Date(Date.now() + k * 864e5)))), sport, { ...ctx, league }); }
+  try { return parseScoreboard(await board(sport, league, ymd(new Date(Date.now() + k * 864e5))), sport, { ...ctx, league }); }
   catch (_) { return []; }
 }
 async function routeContext(sport, league, hist) {
@@ -321,7 +359,8 @@ async function applySplits(games, sport) {
   for (const g of games) { const s = matchSplit(g, f.games); if (s) g.splits = s; }
 }
 // How much of a game in progress is left (0-1), from the scoreboard's period and clock.
-const REG = { NBA: [4, 720], WNBA: [4, 600], CBBW: [4, 600], CBB: [2, 1200], NFL: [4, 900], CFB: [4, 900], NHL: [3, 1200] };
+const REG = { NBA: [4, 720], WNBA: [4, 600], CBBW: [4, 600], CBB: [2, 1200], NFL: [4, 900], CFB: [4, 900], NHL: [3, 1200],
+  HOOPS: [4, 600], GRID: [4, 900], PUCK: [3, 1200], AFL: [4, 1200], RUGBY: [2, 2400], RUGBYL: [2, 2400], LAX: [4, 900], FHOCKEY: [4, 900], WPOLO: [4, 480] };
 function liveState(sport, g) {
   const lv = g.live || {}, d = String(lv.detail || g.statusText || ""), hs = num(g.home?.score, 0), as = num(g.away?.score, 0);
   let el = null;
@@ -435,19 +474,34 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   const score = teamQueryScore;   // abbreviations, short names (UMass), nicknames, "St" for State, either order
   const hist = await loadHistory(sport);
   let found = null, foundLeague = null;
-  for (const league of R.leagues) {
-    const ctx = await routeContext(sport, league, hist);
+  // the next 8 days of boards, read once up front (tabs with many leagues: only the leagues with games each day)
+  const days = Array.from({ length: 8 }, (_, k) => ymd(new Date(Date.now() + k * 864e5)));
+  const onDay = await Promise.all(days.map(d => leaguesOn(sport, d).catch(() => [])));
+  const pairs = days.flatMap((d, k) => onDay[k].map(l => [l, k]));
+  const boardsBy = {};
+  await pool(pairs, 8, async ([l, k]) => { boardsBy[`${l}|${k}`] = await board(sport, l, days[k]).catch(() => null); });
+  for (const league of R.leagues.filter(l => onDay.some(ls => ls.includes(l)))) {
     // the best match on the board wins (not the first loose one); a clear match on an earlier day stops the search
     let best = null;
     for (let k = 0; k < 8 && !(best && best.s >= 2); k++) {
-      for (const g of await routeBoard(sport, league, k, ctx)) {
+      const j = boardsBy[`${league}|${k}`];
+      if (!j) continue;
+      for (const g of parseScoreboard(j, sport, { league })) {
         if (g.state === "post") continue;
         const s1 = Math.min(score(g.away, awayName), score(g.home, homeName)), s2 = Math.min(score(g.away, homeName), score(g.home, awayName));
         const sc = Math.max(s1, s2), tie = Math.max(score(g.away, awayName) + score(g.home, homeName), score(g.away, homeName) + score(g.home, awayName));
-        if (sc > 0 && (!best || sc > best.s || (sc === best.s && tie > best.t))) best = { g, s: sc, t: tie };
+        if (sc > 0 && (!best || sc > best.s || (sc === best.s && tie > best.t))) best = { g, s: sc, t: tie, k };
       }
     }
-    if (best) { found = best.g; foundLeague = league; }
+    if (best) {                                                // re-read that game with the league's standings and history
+      const ctx = await routeContext(sport, league, hist);
+      found = parseScoreboard(boardsBy[`${league}|${best.k}`], sport, { ...ctx, league }).find(g => g.id === best.g.id) || best.g;
+      foundLeague = league;
+      break;
+    }
+  }
+  for (const league of found ? [] : (R.core || R.leagues)) {
+    const ctx = await routeContext(sport, league, hist);
     if (!found) {                                              // not on the schedule this week: build it from the standings alone
       const teams = Object.values(ctx.standings.cur), pick = q => teams.map(t => [t, score(t, q)]).sort((a, b) => b[1] - a[1])[0];
       const a = pick(awayName), h = pick(homeName);
@@ -503,6 +557,18 @@ const SCHED = {
   WNBA:   { norm:2, shortAt:1,    shortFx:0.985, longAt:null, longFx:1,    trav:0.35 },
   CBBW:   { norm:3, shortAt:1,    shortFx:0.985, longAt:null, longFx:1,    trav:0.5  },
   Soccer: { norm:4, shortAt:2,    shortFx:0.98,  longAt:null, longFx:1,    trav:1.0  },
+  // added tabs [J]: rest matters little here and travel data is thin, so these stay close to neutral
+  BASE:   { norm:1, shortAt:null, shortFx:1,     longAt:null, longFx:1,    trav:0.25 },
+  HOOPS:  { norm:2, shortAt:1,    shortFx:0.985, longAt:null, longFx:1,    trav:0.35 },
+  GRID:   { norm:7, shortAt:5,    shortFx:0.985, longAt:null, longFx:1,    trav:0.6  },
+  PUCK:   { norm:2, shortAt:1,    shortFx:0.98,  longAt:null, longFx:1,    trav:0.35 },
+  AFL:    { norm:7, shortAt:5,    shortFx:0.985, longAt:null, longFx:1,    trav:0.6  },
+  RUGBY:  { norm:7, shortAt:5,    shortFx:0.985, longAt:null, longFx:1,    trav:0.6  },
+  RUGBYL: { norm:7, shortAt:5,    shortFx:0.985, longAt:null, longFx:1,    trav:0.6  },
+  LAX:    { norm:4, shortAt:1,    shortFx:0.985, longAt:null, longFx:1,    trav:0.5  },
+  FHOCKEY:{ norm:3, shortAt:1,    shortFx:0.985, longAt:null, longFx:1,    trav:0.5  },
+  VOLLEY: { norm:2, shortAt:null, shortFx:1,     longAt:null, longFx:1,    trav:0.35 },
+  WPOLO:  { norm:2, shortAt:null, shortFx:1,     longAt:null, longFx:1,    trav:0.35 },
 };
 function restFx(days, sport, b2b) {
   const S = SCHED[sport], d = days ?? S.norm;
@@ -1150,7 +1216,11 @@ const SLATE_SCOPE = {
   NFL:    { cap:16, text:"every NFL game of the current or upcoming week that has not started yet" },
   NBA:    { cap:15, text:"every NBA game scheduled today that has not started yet" },
   NHL:    { cap:16, text:"every NHL game scheduled today that has not started yet" },
-  Soccer: { cap:20, text:"today's matches in the top European leagues, MLS, UEFA competitions and any international tournament or qualifier that have not started yet" },
+  Soccer: { cap:20, text:"today's matches in every soccer league and competition ESPN covers that have not started yet (prefer games with posted betting lines)" },
+  BASE:   { cap:20, text:"today's games in every other baseball and softball league ESPN covers that have not started yet" },
+  HOOPS:  { cap:20, text:"today's games in every other basketball league ESPN covers that have not started yet" },
+  PUCK:   { cap:20, text:"today's games in every other hockey league ESPN covers that have not started yet" },
+  RUGBY:  { cap:20, text:"today's matches in every rugby union competition ESPN covers that have not started yet" },
   CFB:    { cap:20, text:"this week's FBS college football games that have not started yet and have posted betting lines (prefer ranked teams and major conferences)" },
   CBB:    { cap:20, text:"today's NCAA Division I men's basketball games that have not started yet and have posted betting lines (prefer ranked teams and major conferences)" },
   WNBA:   { cap:12, text:"WNBA games" },
@@ -1184,7 +1254,10 @@ async function fetchIndiv(sport) {
   const { R, fit, ok } = await loadRatings(sport);
   // tennis plays every day; UFC cards are about weekly, so MMA looks a week ahead to the next card
   const ahead = sport === "MMA" ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1];
-  const boards = await Promise.all(ROUTES[sport].leagues.flatMap(lg => ahead.map(k => getJSON(scoreboardUrl(sport, lg, ymd(new Date(Date.now() + k * 864e5)))).then(j => sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j)).catch(() => []))));
+  const boards = await Promise.all(ahead.map(async k => {
+    const day = ymd(new Date(Date.now() + k * 864e5)), lgs = await leaguesOn(sport, day);
+    return Promise.all(lgs.map(lg => board(sport, lg, day).then(j => sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j)).catch(() => [])));
+  })).then(r => r.flat());
   const seen = new Set(), list = [];
   for (const m of boards.flat()) if (!seen.has(m.id) && m.state === "pre") { seen.add(m.id); list.push(scoreIndiv(m, sport, R)); }
   list.sort((x, y) => (y.known - x.known) || (y.conf - x.conf));
@@ -1202,7 +1275,7 @@ function tennisLiveFrom(m, row) {
 async function indivMatchup(sport, qa, qb, row = null) {
   const { R, fit, ok } = await loadRatings(sport);
   if (ok && row && sport === "Tennis") {
-    const j = await getJSON(scoreboardUrl(sport, row.slug, ymd(new Date(row.date)))).catch(() => null);
+    const j = await board(sport, row.slug, ymd(new Date(row.date))).catch(() => null);
     const m = j ? parseTennis(j, row.slug).find(x => x.id === String(row.id)) : null;
     if (m) { const out = scoreIndiv(m, sport, R); if (m.bo !== 5) out.bo5 = tennisOutlook(eloP(out.ra.r, out.rb.r), 5); if (row.state !== "pre") out.live = tennisLiveFrom(out, row); return { sport, match: out, fit, row }; }
   }
@@ -1235,14 +1308,23 @@ async function fetchSlate(sport) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
   const hist = await loadHistory(sport);
-  const per = await Promise.all(R.leagues.map(async league => {
-    const ctx = await routeContext(sport, league, hist);
-    for (const k of (sport === "NFL" || sport === "CFB" ? [0, 1, 2, 3, 4, 5, 6] : [0, 1])) {   // today, else the next day with games (football: the coming week)
-      const games = (await routeBoard(sport, league, k, ctx)).filter(g => g.state === "pre");
+  // today, else the next day with games (football: the coming week). Tabs with many leagues read only the leagues with
+  // games that day, and a league's standings are fetched only once it has a game still to start.
+  const ks = sport === "NFL" || sport === "CFB" || sport === "GRID" ? [0, 1, 2, 3, 4, 5, 6] : [0, 1];
+  const days = ks.map(k => ymd(new Date(Date.now() + k * 864e5)));
+  const onDay = await Promise.all(days.map(d => leaguesOn(sport, d).catch(() => [])));
+  const per = await pool(R.leagues.filter(l => onDay.some(ls => ls.includes(l))), 6, async league => {
+    let ctx = null;
+    for (let i = 0; i < ks.length; i++) {
+      if (!onDay[i].includes(league)) continue;
+      const j = await board(sport, league, days[i]).catch(() => null);
+      if (!j || !parseScoreboard(j, sport, { league }).some(g => g.state === "pre")) continue;
+      ctx = ctx || await routeContext(sport, league, hist);
+      const games = parseScoreboard(j, sport, { ...ctx, league }).filter(g => g.state === "pre");
       if (games.length) return games;
     }
     return [];
-  }));
+  });
   const games = per.flat().sort((a, b) => a.date.localeCompare(b.date));
   await applyQBR(games, sport);
   await applyGoalies(games, sport);
@@ -1802,17 +1884,18 @@ async function fetchFinals(sport, games) {
   if (!R) return 0;
   if (isIndiv(sport)) {
     const done = {};
-    for (const d of [...new Set(games.map(g => g.day))]) for (const lg of R.leagues) {
-      try { const j = await getJSON(scoreboardUrl(sport, lg, d.replace(/-/g, ""))); for (const m of (sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j))) if (m.completed && m.winner) done[m.id] = m; } catch (_) { /* later */ }
-    }
+    for (const d of [...new Set(games.map(g => g.day))]) { const day = d.replace(/-/g, ""); for (const lg of await leaguesOn(sport, day)) {
+      try { const j = await board(sport, lg, day); for (const m of (sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j))) if (m.completed && m.winner) done[m.id] = m; } catch (_) { /* later */ }
+    } }
     let k = 0;
     for (const g of games) { const m = done[g.eid]; if (m && trackGrade(g.key, m.winner === "a" ? 1 : 0, m.winner === "a" ? 0 : 1)) k++; }
     return k;
   }
   const days = [...new Set(games.map(g => g.day))];
   const finals = [];
-  for (const d of days) for (const league of R.leagues) {
-    try { finals.push(...finalsFrom(await getJSON(scoreboardUrl(sport, league, d.replace(/-/g, ""))))); } catch (_) { /* try the next */ }
+  for (const d of days) {
+    const day = d.replace(/-/g, "");
+    await pool(await leaguesOn(sport, day), 6, async league => { try { finals.push(...finalsFrom(await board(sport, league, day))); } catch (_) { /* try the next */ } });
   }
   let n = 0;
   for (const g of games) {
@@ -1823,7 +1906,7 @@ async function fetchFinals(sport, games) {
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
 export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup, driverLine, poolSide };   // for the tests
-export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, SPORT_KEYS, TRACK_LS };
+export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, isField, SPORT_KEYS, TRACK_LS };
 // <<< SLATE ENGINE
 
 // ─── JARVIS / MATRIX THEME ───────────────────────────────────────────────────
@@ -1842,7 +1925,7 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 .bb-top{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"brand status clock"}
 .bb-top>span:nth-child(2){text-align:center}
 @media (max-width:520px){.bb-top{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"brand clock" "status status"}.bb-top>span:nth-child(2){text-align:left}}
-.bb-sports{grid-template-columns:repeat(11,minmax(0,1fr))}
+.bb-sports{grid-template-columns:repeat(12,minmax(0,1fr))}
 @media (max-width:720px){.bb-sports{grid-template-columns:repeat(6,minmax(0,1fr))}}
 @media (max-width:440px){.bb-sports{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
@@ -2091,7 +2174,9 @@ function LiveScores({ sport, onPick, onFinal, onBox }) {
     const pull = async () => {
       if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
       const R = ROUTES[sport], day = ymd(new Date()), today = etDay();
-      const res = await Promise.all((R?.leagues || []).map(lg => getJSON(scoreboardUrl(sport, lg, day)).then(j => liveBoard(j, sport).map(x => ({ ...x, slug: lg }))).catch(() => null)));
+      const lgs = R ? await leaguesOn(sport, day).catch(() => R.core || R.leagues) : [];
+      const res = await pool(lgs, 8, lg => board(sport, lg, day).then(j => liveBoard(j, sport).map(x => ({ ...x, slug: lg, league: x.league || leagueName(sport, lg) }))).catch(() => null));
+      if (lgs.length === 0) res.push([]);                   // nothing on today anywhere in the tab: an empty board, not an error
       if (!alive) return;
       const ok = res.filter(Boolean), seen = new Set();
       const rows = ok.flat().filter(r => !seen.has(r.id) && seen.add(r.id) && (!r.date || etISO(r.date) === today || r.state === "in"))
@@ -2133,7 +2218,7 @@ function LiveScores({ sport, onPick, onFinal, onBox }) {
         style={{ border: `1px solid ${r.state === "in" ? NEON.red + "88" : r.state === "post" ? NEON.green + "88" : T.line}`, background: r.state === "post" ? "rgba(43,255,136,.05)" : "rgba(14,4,26,.6)", padding: "8px 10px", display: "grid", gap: 3, cursor: can ? "pointer" : "default" }}>
         <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", gap: 8, fontSize: 10, letterSpacing: 1 }}>
           <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, fontFamily: F.d, whiteSpace: "nowrap" }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
-          <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, textAlign: "right" }}>{[sport === "Soccer" || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
+          <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, textAlign: "right" }}>{[manyLeagues(sport) || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
         </div>
         {side(r.away, r)}
         {side(r.home, r)}
@@ -2174,6 +2259,7 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>TOOLS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>The Book · Kalshi</span></span>
       <span style={{fontFamily:F.d,color:NEON.gold}}>▸</span>
     </button>
+    {isField(sport)?<FieldBoard sport={sport}/>:<>
     <Panel title="TODAY'S SLATE" right={SPORT_CFG[sport].label}>
       <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${SPORT_CFG[sport].label} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
       <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
@@ -2199,7 +2285,59 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
     </Panel>
     <LiveScores sport={sport} onPick={onPick} onFinal={onFinal} onBox={onBox}/>
+    </>}
   </Shell>;
+}
+// ─── GOLF + RACING: a field of players, shown as a leaderboard (no two-sided game to simulate) ──────────────
+// Each league's current event (its scoreboard with no date: the event this week, else the latest one), every
+// league ESPN lists for the sport. Events in progress first, then the ones still to start, then the finished ones.
+function FieldBoard({ sport }) {
+  const [st, setSt] = useState({ sport, evs: null, err: null });
+  const [open, setOpen] = useState({});
+  useEffect(() => {
+    let alive = true, timer = null;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
+      const R = ROUTES[sport];
+      const res = await pool(R.leagues, 5, lg => getJSON(`${SITE_BASE}/${R.sport}/${lg}/scoreboard`).then(j => fieldBoard(j).map(e => ({ ...e, slug: lg, league: e.league || leagueName(sport, lg) }))).catch(() => null));
+      if (!alive) return;
+      const ok = res.filter(Boolean), seen = new Set(), rank = { in: 0, pre: 1, post: 2 };
+      const evs = ok.flat().filter(e => !seen.has(e.id) && seen.add(e.id))
+        .sort((a, b) => (rank[a.state] ?? 3) - (rank[b.state] ?? 3) || (a.state === "post" ? String(b.date).localeCompare(String(a.date)) : String(a.date).localeCompare(String(b.date))));
+      setSt({ sport, evs, err: ok.length ? null : "Couldn't reach the scores routes. Retrying." });
+      timer = setTimeout(pull, evs.some(e => e.state === "in") ? 60000 : 300000);
+    };
+    setSt({ sport, evs: null, err: null }); setOpen({});
+    pull();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [sport]);
+  const cfg = SPORT_CFG[sport], evs = st.sport === sport ? st.evs : null, live = (evs || []).filter(e => e.state === "in").length;
+  const when = e => e.state === "pre" ? `${etDayLabel(e.date)}${e.end && etDayLabel(e.end) !== etDayLabel(e.date) ? ` – ${etDayLabel(e.end)}` : ""}` : (e.detail || (e.state === "post" ? "Final" : "Live"));
+  return <Panel title={live ? `LIVE NOW · ${live}` : "LEADERBOARDS"} right={`${cfg.label}${evs ? ` · ${evs.length} events` : ""}`} color={live ? NEON.red : T.chrome}>
+    <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7, marginBottom: 10 }}>{sport === "Golf" ? "Every tour ESPN covers" : "Every series ESPN covers"}: this week's event (or the latest one) on each, live from the scores routes. A field of {sport === "Golf" ? "golfers" : "drivers"} has no two-sided game, so nothing here is simulated.</div>
+    {!evs && !st.err && <div style={{ fontSize: 12, color: T.dim }}>Loading the {cfg.label} leaderboards…</div>}
+    {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
+    {evs && !evs.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} events on the board.</div>}
+    <div style={{ display: "grid", gap: 8 }}>
+      {(evs || []).map(e => { const all = !!open[e.id], rows = all ? e.rows : e.rows.slice(0, 10), c = e.state === "in" ? NEON.red : e.state === "post" ? NEON.green : T.chrome;
+        return <div key={e.id} style={{ border: `1px solid ${c}66`, background: "rgba(14,4,26,.6)", padding: "10px 12px", minWidth: 0 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
+            <div style={{ fontFamily: F.d, fontSize: 12, letterSpacing: 1, color: "#fff", overflowWrap: "anywhere" }}>{e.name}</div>
+            <div style={{ fontSize: 10, color: c, fontFamily: F.d, letterSpacing: 1, whiteSpace: "nowrap" }}>{e.state === "in" ? "● " : ""}{when(e)}</div>
+          </div>
+          <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{[e.league, e.session].filter(Boolean).join(" · ")}</div>
+          {e.state === "pre" && !e.rows.length && <div style={{ fontSize: 11, color: T.dim, marginTop: 6 }}>Field not posted yet.</div>}
+          {rows.length > 0 && <div style={{ display: "grid", gap: 2, marginTop: 8 }}>
+            {rows.map((r, i) => <div key={i} style={{ display: "grid", gridTemplateColumns: "28px minmax(0,1fr) auto", gap: 8, fontSize: 12, color: r.win || (e.state === "post" && r.pos === 1) ? "#fff" : T.ink }}>
+              <span style={{ fontFamily: F.d, color: T.dim, textAlign: "right" }}>{e.state === "pre" ? "" : r.pos ?? ""}</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</span>
+              <span style={{ fontFamily: F.d, fontWeight: 700, whiteSpace: "nowrap" }}>{r.score}{sport === "Golf" && r.rounds.length ? <span style={{ color: T.faint, fontWeight: 400 }}> · {r.rounds.join("-")}</span> : null}</span>
+            </div>)}
+          </div>}
+          {e.rows.length > 10 && <button onClick={() => setOpen(o => ({ ...o, [e.id]: !all }))} style={{ marginTop: 8, padding: "5px 10px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer" }}>{all ? "TOP 10 ▴" : `ALL ${e.rows.length} ▾`}</button>}
+        </div>; })}
+    </div>
+  </Panel>;
 }
 
 // ─── LOADING SCREEN ──────────────────────────────────────────────────────────
@@ -2787,7 +2925,7 @@ function IndivMatchScreen({ res, onBack }) {
     const pull = async () => {
       if (typeof document !== "undefined" && document.hidden) { t = setTimeout(pull, 15000); return; }
       try {
-        const j = await getJSON(scoreboardUrl(res.sport, res.row.slug, ymd(new Date(res.row.date))));
+        const j = await board(res.sport, res.row.slug, ymd(new Date(res.row.date)));
         const r = liveBoard(j, res.sport).find(x => x.id === res.row.id);
         if (r && on) { const r2 = { ...r, slug: res.row.slug }; setRow(r2); setLive(tennisLiveFrom(res.match, r2)); if (r.state === "post") return; }
       } catch (_) { /* keep the last */ }
@@ -2911,7 +3049,7 @@ function TennisSimScreen({ res, onBack, onReset }) {
     run(null);
     const poll = async () => {
       if (typeof document !== "undefined" && document.hidden) { t = setTimeout(poll, 15000); return; }
-      try { const j = await getJSON(scoreboardUrl("Tennis", res.row.slug, ymd(new Date(res.row.date)))); const r = liveBoard(j, "Tennis").find(x => x.id === res.row.id); if (r && on) { await run({ ...r, slug: res.row.slug }); if (r.state === "post") return; } } catch (_) { /* next time */ }
+      try { const j = await board("Tennis", res.row.slug, ymd(new Date(res.row.date))); const r = liveBoard(j, "Tennis").find(x => x.id === res.row.id); if (r && on) { await run({ ...r, slug: res.row.slug }); if (r.state === "post") return; } } catch (_) { /* next time */ }
       if (on) t = setTimeout(poll, 30000);
     };
     if (res.row && res.row.state === "in") t = setTimeout(poll, 30000);
@@ -3087,10 +3225,11 @@ function loadBetRows() {
   if (_betRows && Date.now() - _betRows.t < 120000) return _betRows.p;
   const days = [ymd(new Date()), ymd(new Date(Date.now() + 864e5))];
   const jobs = [];
-  for (const sp of SPORT_KEYS) for (const lg of ROUTES[sp]?.leagues || []) {
-    const urls = days.map(d => scoreboardUrl(sp, lg, d));
-    if (sp === "NFL" || sp === "CFB") { const r = ROUTES[sp]; urls.push(`${SITE_BASE}/${r.sport}/${lg}/scoreboard${r.q ? "?" + r.q : ""}`); }
-    for (const u of urls) jobs.push(getJSON(u).then(j => liveBoard(j, sp).map(x => ({ ...x, sport: sp, league: lg, title: sp === "Tennis" || sp === "MMA" ? x.league : "" }))).catch(() => null));
+  const rowsOf = (sp, lg, j) => liveBoard(j, sp).map(x => ({ ...x, sport: sp, league: lg, title: sp === "Tennis" || sp === "MMA" ? x.league : "" }));
+  for (const sp of SPORT_KEYS) {
+    if (isField(sp) || !ROUTES[sp]) continue;               // golf / racing: no two-sided game to bet here
+    for (const d of days) jobs.push(leaguesOn(sp, d).then(lgs => pool(lgs, 6, lg => board(sp, lg, d).then(j => rowsOf(sp, lg, j)).catch(() => null))).then(r => r.filter(Boolean).flat()).catch(() => null));
+    if (sp === "NFL" || sp === "CFB" || sp === "GRID") for (const lg of ROUTES[sp].leagues) { const r = ROUTES[sp]; jobs.push(getJSON(`${SITE_BASE}/${r.sport}/${lg}/scoreboard${r.q ? "?" + r.q : ""}`).then(j => rowsOf(sp, lg, j)).catch(() => null)); }
   }
   const p = Promise.all(jobs).then(res => {
     const seen = new Set(), rows = [];
@@ -3653,7 +3792,7 @@ function FinalScreen({ sport, row: row0, onBack, live = false, onSim }) {
       if (live && typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
       let F = null, r = row0, ended = false;
       if (isIndiv(sport)) {                                // tennis / MMA: the board row is the box score; re-read it while live
-        if (live) { try { const j = await getJSON(scoreboardUrl(sport, row0.slug, ymd(new Date(row0.date)))); r = liveBoard(j, sport).find(x => x.id === row0.id) || row0; } catch (_) { /* keep the last */ } }
+        if (live) { try { const j = await board(sport, row0.slug, ymd(new Date(row0.date))); r = liveBoard(j, sport).find(x => x.id === row0.id) || row0; } catch (_) { /* keep the last */ } }
         F = indivFinal(sport, r); ended = r.state === "post";
       } else { const j = await getJSON(summaryUrl(sport, row0.slug, row0.id)).catch(() => null); F = j ? parseFinal(j, sport) : null; ended = !!F?.done; }
       if (!on) return;
@@ -3712,7 +3851,7 @@ function ScorePanel({ F: G, sport, row, live = false }) {
     </div>
     <span style={{ fontFamily: F.d, fontSize: 30, fontWeight: 900, color: t.win || live ? "#fff" : T.dim, textShadow: live ? `0 0 12px ${NEON.red}55` : t.win ? `0 0 12px ${NEON.green}66` : "none" }}>{t.score ?? ""}</span>
   </div>;
-  return <Panel title={live ? `● LIVE · ${String(row.detail || G.detail || "").toUpperCase()}` : `FINAL${G.detail && !/^(final|ft)$/i.test(G.detail) ? ` · ${G.detail.replace(/^final\s*\/?\s*/i, "").toUpperCase()}` : ""}`} right={[ind || sport === "Soccer" ? row.league : cfgLabel(sport), etDayLabel(row.date)].filter(Boolean).join(" · ")} color={live ? NEON.red : NEON.green}>
+  return <Panel title={live ? `● LIVE · ${String(row.detail || G.detail || "").toUpperCase()}` : `FINAL${G.detail && !/^(final|ft)$/i.test(G.detail) ? ` · ${G.detail.replace(/^final\s*\/?\s*/i, "").toUpperCase()}` : ""}`} right={[ind || manyLeagues(sport) ? row.league : cfgLabel(sport), etDayLabel(row.date)].filter(Boolean).join(" · ")} color={live ? NEON.red : NEON.green}>
     {team(A, "a")}{team(H, "h")}
     {n > 0 && <div style={{ marginTop: 10, borderTop: `1px solid ${T.line}`, paddingTop: 10, display: "grid", gridTemplateColumns: cols, rowGap: 6, columnGap: 4, alignItems: "center" }}>
       <span style={{ fontSize: 10, color: T.faint }}>{ind ? (sport === "Tennis" ? "SET" : "RD") : ""}</span>

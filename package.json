@@ -2,7 +2,7 @@
   "name": "bobbys-boardroom",
   "private": true,
   "type": "module",
-  "scripts": { "build": "node scripts/build.mjs", "data": "node scripts/update-data.mjs", "backfill": "node scripts/update-data.mjs --backfill", "test": "node tests/run.mjs" },
+  "scripts": { "build": "node scripts/build.mjs", "data": "node scripts/update-data.mjs", "backfill": "node scripts/update-data.mjs --backfill", "test": "node tests/run.mjs", "leagues": "node scripts/leagues.mjs" },
   "dependencies": { "react": "18.3.1", "react-dom": "18.3.1" },
   "devDependencies": { "esbuild": "0.24.2" }
 }
