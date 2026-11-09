@@ -3812,7 +3812,7 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
     <div style={{ color: T.dim, overflowWrap: "anywhere" }}>{gameTxt(l)} · {kx ? (toK ? <span style={{ color: NEON.teal }}>on Kalshi, live or upcoming{l.date ? ` · closes ${whenTxt(l.date)}` : ""}</span> : "a Kalshi market: turn on Send to Kalshi to bet it") : over ? "this game is over" : live ? (toK ? <span style={{ color: NEON.red }}>● LIVE: bet it now at Kalshi's live price</span> : "live: turn on Send to Kalshi to bet it live") : whenTxt(l.date)}</div>
     {x.l.odds && x.odds == null && <div style={{ color: "#FF8095" }}>{fmt === "pct" ? "Use a percentage from 1 to 99, like 54." : "Odds look like -110 or +150."}</div>}
     {!x.l.odds && !kx && <div style={{ color: T.dim }}>Add the odds on the right.</div>}
-    {others.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+    {!x.l.choice && others.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
       <span style={{ color: T.faint }}>or:</span>
       {others.map(o => <button key={`${o.sport}${o.eventId}${o.side}`} onClick={() => onChoose(o)} style={{ ...oneLine, maxWidth: "100%", padding: "3px 8px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer" }}>{legLabel(o)} · {o.kalshi ? `Kalshi · ${o.title}` : SPORT_CFG[o.sport]?.label}</button>)}
     </div>}
