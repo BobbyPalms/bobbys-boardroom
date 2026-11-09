@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
-import { parseFinal, finalRundown, teamStatRows, colOrder, groupTitle } from "./postgame.js";
+import { parseFinal, finalRundown, algoReview, teamStatRows, colOrder, groupTitle } from "./postgame.js";
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
@@ -1304,7 +1304,7 @@ function trackIndiv(res) {
   }
 }
 
-async function fetchSlate(sport) {
+async function fetchSlate(sport, opts = {}) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
   const hist = await loadHistory(sport);
@@ -1331,7 +1331,7 @@ async function fetchSlate(sport) {
   await applyPower(games, sport);
   await applySplits(games, sport);
   const sc = SLATE_SCOPE[sport];
-  return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard", "Public bets / money %: Action Network + DraftKings Network"], games: (sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
+  return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard", "Public bets / money %: Action Network + DraftKings Network"], games: (!opts.all && sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
 }
 
 // ---- cache: one scan per sport, reused by SLATE and BEST OF SLATE (20 min) ---
@@ -1661,6 +1661,10 @@ function rankSlate(rawGames, sport) {
     if (x.usable) {
       rec.sim = runSimulations(x.md.home, x.md.away, sport, x.md, 10000, { neutral: x.neutral });
       rec.unscaledTotal = priceGame(rec.sim.plan, sport, 1).meanT;   // the engine's expected total, deterministic
+    } else {
+      // Not enough sourced data to price a bet, but the tracker still logs the engine's call on every game (league
+      // averages fill what's missing), so every game is graded and learned from. It stays "no data" on the slate.
+      try { rec.thinSim = runSimulations(x.md.home, x.md.away, sport, x.md, 10000, { neutral: x.neutral }); } catch (_) { rec.thinSim = null; }
     }
     return rec;
   });
@@ -1750,8 +1754,23 @@ const validGame = g => !!(g && typeof g === "object" && g.key && g.sport && SPOR
   && g.p && Number.isFinite(g.p.h) && Number.isFinite(g.p.a) && (g.proj == null || Number.isFinite(g.proj.total)));
 const trackKey = (sport, day, a, h) => `${sport}|${day}|${a}@${h}`;
 const PLAY_FIELDS = b => ({ key: b.key, market: b.market, side: b.side, line: b.line, odds: b.odds, label: b.label, wc: b.wc, fair: b.fair, ev: b.ev, edge: b.edge });
+// What the algo knew and thought before the game, kept with the call so the post-game review can check each part:
+// each side's attack / defense ratings and the scoring they came in with, the expected scores, every situational factor
+// that moved a number, the spread of the simulations, injuries, public splits and the sharp side.
+const r3 = v => (Number.isFinite(v) ? Math.round(v * 1000) / 1000 : null);
+function preSnap(r, sim, sport) {
+  const plan = sim.plan || {}, md = r.md || {}, pb = md.publicBetting || {}, sd = SPREAD_SD[sport] || {};
+  const pt = k => { const x = plan.parts?.[k]; return x ? [r3(x.off?.r), r3(x.def?.r), Math.round(x.off?.n || 0), Math.round(x.def?.n || 0)] : null; };
+  const tm = t => t ? [r3(t.gpg ?? null), r3(t.gaa ?? null), t.gp ?? null, t.record || "", (t.hist || []).length] : null;
+  const fx = (sim.factors?.display || []).filter(f => Math.abs((f.hm ?? 1) - 1) >= 0.005 || Math.abs((f.am ?? 1) - 1) >= 0.005)
+    .map(f => [f.label, r3(f.hm ?? 1), r3(f.am ?? 1), String(f.desc || "").slice(0, 140)]);
+  return { parts: { a: pt("away"), h: pt("home") }, mu: [r3(plan.muA), r3(plan.muH)], L: r3(plan.L || LEAGUE[sport]?.L), sd: [r3(sd.m), r3(sd.t)],
+    tm: { a: tm(md.away), h: tm(md.home) }, fx, dq: r.dq ?? null, miss: (r.missing || []).slice(0, 8), inj: String(md.matchInfo?.injuryNote || "").slice(0, 300),
+    rest: [md.schedule?.awayDaysRest ?? null, md.schedule?.homeDaysRest ?? null], sharp: md.market?.sharpSide || null,
+    spl: { src: pb.source || null, s: [pb.ats?.awayBetsPct ?? null, pb.ats?.awayDollarsPct ?? null], t: [pb.ou?.overBetsPct ?? null, pb.ou?.overDollarsPct ?? null], m: [pb.ml?.awayBetsPct ?? null, pb.ml?.awayDollarsPct ?? null] } };
+}
 function snapRecord(sport, day, r, source) {
-  const plan = r.sim.plan, ln = plan.learn, px = priceGame(plan, sport, 1);
+  const sim0 = r.sim || r.thinSim, plan = sim0.plan, ln = plan.learn, px = priceGame(plan, sport, 1);
   const total = px.meanT, margin = px.meanM;
   return {
     key: trackKey(sport, day, r.md.away.abbr, r.md.home.abbr), sport, day, time: r.time || "", source, at: Date.now(),
@@ -1760,6 +1779,7 @@ function snapRecord(sport, day, r, source) {
     p: { h: px.ml.pH, a: px.ml.pA, d: px.ml.pD || 0 },
     mkt: r.mkt ? { homeML: r.mkt.homeML ?? null, awayML: r.mkt.awayML ?? null, drawML: r.mkt.drawML ?? null, awaySpread: r.mkt.awaySpread ?? null, total: r.mkt.total ?? null } : null,
     plays: (r.bets || []).map(PLAY_FIELDS), pick: r.status === "bet" && r.pick ? r.pick.key : null, grade: r.grade || null, result: null,
+    ...(r.sim ? {} : { thin: true }), pre: preSnap(r, sim0, sport),
   };
 }
 function startedET(g) {
@@ -1782,8 +1802,48 @@ const etISO = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "Amer
 function trackSlate(ranked, sport, slateDate) {
   const fallback = dayISO(slateDate || "");
   let n = 0;
-  for (const r of ranked.rows) if (r.sim) n += trackUpsert(snapRecord(sport, r.date && Number.isFinite(Date.parse(r.date)) ? etISO(r.date) : fallback, r, "slate")) ? 1 : 0;
+  for (const r of ranked.rows) if (r.sim || r.thinSim) n += trackUpsert(snapRecord(sport, r.date && Number.isFinite(Date.parse(r.date)) ? etISO(r.date) : fallback, r, "slate")) ? 1 : 0;
   return n;
+}
+// ---- a finished game the tracker never logged: rebuild the algo's call from what was known before it ----
+// The scoreboard row of the final (closing odds, both teams), the league's standings and history, and the season-level
+// inputs the slate uses. The standings are taken back to before this game when they already count it (the team's games
+// played matches its record on the final), so the call never sees its own result. Marked late: true.
+const _ctxMemo = new Map();
+const routeContextMemo = (sport, league, hist) => {
+  const k = `${sport}|${league}`, hit = _ctxMemo.get(k);
+  if (hit && Date.now() - hit.t < 10 * 60e3) return hit.p;
+  const p = routeContext(sport, league, hist); _ctxMemo.set(k, { t: Date.now(), p }); p.catch(() => _ctxMemo.delete(k));
+  return p;
+};
+const recWL = r => { const m = String(r || "").match(/^\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?/); return m ? [+m[1], +m[2], +(m[3] || 0)] : null; };
+function backOutGame(g) {
+  const sides = [[g.away, g.away.score, g.home.score], [g.home, g.home.score, g.away.score]];
+  for (const [t, mine, theirs] of sides) {
+    const wl = recWL(t.rec), games = wl ? wl[0] + wl[1] + wl[2] : null;
+    if (wl) { const w = mine > theirs ? 1 : 0, l = mine < theirs ? 1 : 0; t.rec = `${Math.max(0, wl[0] - w)}-${Math.max(0, wl[1] - l)}${wl[2] || mine === theirs ? `-${Math.max(0, wl[2] - (mine === theirs ? 1 : 0))}` : ""}`; }
+    if (t.gp > 0 && t.gpg > 0 && t.ga > 0 && Number.isFinite(mine) && Number.isFinite(theirs) && (games == null || t.gp === games)) {
+      const gp = t.gp - 1;
+      if (gp >= 1) { t.gpg = Math.max(0, (t.gpg * t.gp - mine) / gp); t.ga = Math.max(0, (t.ga * t.gp - theirs) / gp); t.gp = gp; }
+      else { t.gpg = null; t.ga = null; t.gp = null; }
+    }
+    t.score = null;
+  }
+}
+async function reconstructCall(sport, league, eventId, day) {
+  if (!ROUTES[sport] || isIndiv(sport) || isField(sport)) return null;
+  const hist = await loadHistory(sport), ctx = await routeContextMemo(sport, league, hist);
+  const j = await board(sport, league, day).catch(() => null);
+  const g = j ? parseScoreboard(j, sport, { ...ctx, league }).find(x => x.id === String(eventId)) : null;
+  if (!g || g.state !== "post" || !Number.isFinite(g.away.score) || !Number.isFinite(g.home.score)) return null;
+  const final = { as: g.away.score, hs: g.home.score };
+  backOutGame(g);
+  Object.assign(g, { state: "pre", completed: false, live: null, statusText: "" });
+  await applyQBR([g], sport).catch(() => {}); await applyPower([g], sport).catch(() => {}); await applySplits([g], sport).catch(() => {});
+  const ranked = rankSlate([g], sport), r = ranked.rows[0];
+  if (!r || !(r.sim || r.thinSim)) return null;
+  const rec = snapRecord(sport, etISO(g.date), r, "post");
+  return { ...rec, late: true, eid: g.id, league, final };
 }
 // One play against a final score: W / L / P and units at the recorded price (1 unit staked; quarter lines split).
 function gradePlay(pl, as, hs) {
@@ -1906,7 +1966,8 @@ async function fetchFinals(sport, games) {
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
 export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup, driverLine, poolSide };   // for the tests
-export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, isField, SPORT_KEYS, TRACK_LS };
+export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, isField, SPORT_KEYS, TRACK_LS,
+  reconstructCall, trackKey, trackUpsert, trackGrade, board, leaguesOn, indivFinal, etISO, LEAGUE };
 // <<< SLATE ENGINE
 
 // ─── JARVIS / MATRIX THEME ───────────────────────────────────────────────────
@@ -3771,7 +3832,14 @@ const initialName = n => { const p = String(n || "").trim().split(/\s+/); return
 async function trackRecordFor(sport, row) {
   const day = etISO(row.date), f = await dataFile(`track/${sport}/${day.slice(0, 7)}.json`), gs = f?.games || {};
   if (isIndiv(sport)) return Object.values(gs).find(g => String(g.eid) === String(row.id)) || null;
-  return gs[`${sport}|${day}|${row.away.abbr}@${row.home.abbr}`] || Object.values(gs).find(g => g.day === day && g.away.abbr === row.away.abbr && g.home.abbr === row.home.abbr) || null;
+  const hit = gs[`${sport}|${day}|${row.away.abbr}@${row.home.abbr}`] || Object.values(gs).find(g => g.day === day && g.away.abbr === row.away.abbr && g.home.abbr === row.home.abbr) || null;
+  if (hit || !row.slug) return hit;
+  // not in the log yet: rebuild the call from pre-game data now (the background tracker logs the same rebuild)
+  const rec = await reconstructCall(sport, row.slug, row.id, ymd(new Date(row.date))).catch(() => null);
+  if (!rec) return null;
+  const { as, hs } = rec.final, out = { ...rec, fresh: true, result: { as, hs, at: Date.now() } };
+  out.plays = out.plays.map(pl => ({ ...pl, ...gradePlay(pl, as, hs) }));
+  return out;
 }
 // tennis / MMA have no summary route: the board row is the report
 function indivFinal(sport, row) {
@@ -3799,7 +3867,7 @@ function FinalScreen({ sport, row: row0, onBack, live = false, onSim }) {
       if (!F) { if (!d) setErr("Couldn't load this game's box score from the scores routes. Retrying."); if (live) timer = setTimeout(pull, 30000); return; }
       setErr(null); setRow(r);
       if (live) setD({ F, live: !ended });
-      else { const rec = await trackRecordFor(sport, r).catch(() => null); if (on) setD({ F, rec, R: finalRundown(F, sport, rec, LEARNED) }); }
+      else { const rec = await trackRecordFor(sport, r).catch(() => null); if (on) setD({ F, rec, R: finalRundown(F, sport, rec, LEARNED), review: algoReview(F, sport, rec, LEARNED) }); }
       setAt(new Date());
       if (live && !ended) timer = setTimeout(pull, 30000);
     };
@@ -3823,9 +3891,10 @@ function FinalScreen({ sport, row: row0, onBack, live = false, onSim }) {
       {!live && <><Panel title="GAME RUNDOWN" right={cfg.label}>
         {d.R.paras.map((p, i) => <p key={i} style={{ margin: i ? "10px 0 0" : 0, fontSize: 13, lineHeight: 1.7, color: T.ink }}>{keepScores(p)}</p>)}
       </Panel>
-      <Panel title="THE ALGO'S CALL" right={d.rec?.result ? "graded" : d.rec ? "grading soon" : "not logged"} color={T.chrome}>
+      <Panel title="THE ALGO'S CALL" right={d.rec?.late ? (d.rec.fresh ? "rebuilt from pre-game data" : "rebuilt · graded") : d.rec?.result ? "graded" : d.rec ? "grading soon" : "no call"} color={T.chrome}>
         {d.rec && <AlgoTiles F={d.F} rec={d.rec} sport={sport}/>}
-        {d.R.algo.map((p, i) => <p key={i} style={{ margin: i || d.rec ? "10px 0 0" : 0, fontSize: 12, lineHeight: 1.7, color: i === d.R.algo.length - 1 && /^What it learns/.test(p) ? T.chrome : T.ink }}>{keepScores(p)}</p>)}
+        {d.review?.length ? <ReviewSections sections={d.review}/>
+          : d.R.algo.map((p, i) => <p key={i} style={{ margin: i || d.rec ? "10px 0 0" : 0, fontSize: 12, lineHeight: 1.7, color: i === d.R.algo.length - 1 && /^What it learns/.test(p) ? T.chrome : T.ink }}>{keepScores(p)}</p>)}
       </Panel></>}
       {teamStatRows(d.F, sport).length > 0 && <TeamStatsPanel F={d.F} sport={sport}/>}
       {d.F.scoring.length > 0 && !["NBA", "WNBA", "CBB", "CBBW"].includes(sport) && <ScoringPanel F={d.F} sport={sport}/>}
@@ -3866,6 +3935,18 @@ function ScorePanel({ F: G, sport, row, live = false }) {
   </Panel>;
 }
 const cfgLabel = sp => SPORT_CFG[sp]?.label || sp;
+// the post-game review, section by section (mirrors the pre-game rundown); the first and last sections open by default
+function ReviewSections({ sections }) {
+  const [open, setOpen] = useState(() => ({ 0: true, [sections.length - 1]: true }));
+  return <div style={{ display: "grid", gap: 6, marginTop: 12 }}>
+    {sections.map((x, i) => <div key={i} style={{ border: `1px solid ${T.line}`, background: "rgba(9,2,17,.45)" }}>
+      <button onClick={() => setOpen(o => ({ ...o, [i]: !o[i] }))} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "center", padding: "9px 10px", border: "none", background: "none", color: open[i] ? "#fff" : T.ink, fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, textAlign: "left", cursor: "pointer" }}>
+        <span>{x.title.toUpperCase()}</span><span style={{ color: T.chrome }}>{open[i] ? "▴" : "▾"}</span>
+      </button>
+      {open[i] && <div style={{ padding: "0 10px 10px" }}>{x.body.split("\n\n").map((p, k) => <p key={k} style={{ margin: k ? "8px 0 0" : 0, fontSize: 12, lineHeight: 1.7, color: T.ink }}>{keepScores(p)}</p>)}</div>}
+    </div>)}
+  </div>;
+}
 function AlgoTiles({ F: G, rec, sport }) {
   const tot = rec.p.a + rec.p.h + (rec.p.d || 0), pH = rec.p.h / tot, pA = rec.p.a / tot, W = G.away.win ? "away" : G.home.win ? "home" : null;
   const likes = pH >= pA ? "home" : "away", right = W && W === likes;

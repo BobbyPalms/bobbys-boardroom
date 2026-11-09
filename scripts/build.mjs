@@ -13,8 +13,10 @@ await build({ entryPoints: ["src/main.jsx"], bundle: true, minify: true, outfile
 const hash = createHash("sha256").update(readFileSync("dist/app.js")).digest("hex").slice(0, 12);
 writeFileSync("dist/index.html", readFileSync("index.html", "utf8").replace('src="app.js"', `src="app.js?v=${hash}"`));
 if (existsSync("data")) {
-  cpSync("data", "dist/data", { recursive: true });
-  const files = [], walk = d => { for (const f of readdirSync(d)) { const p = `${d}/${f}`; if (statSync(p).isDirectory()) walk(p); else if (f.endsWith(".json")) files.push(p.slice(5)); } };
+  // data/games (the every-game archive) stays in the repo only: it grows every day and the site never reads it
+  const skip = p => /^data\/games(\/|$)/.test(p.replace(/\\/g, "/"));
+  cpSync("data", "dist/data", { recursive: true, filter: src => !skip(src) });
+  const files = [], walk = d => { for (const f of readdirSync(d)) { const p = `${d}/${f}`; if (skip(p)) continue; if (statSync(p).isDirectory()) walk(p); else if (f.endsWith(".json")) files.push(p.slice(5)); } };
   walk("data");
   writeFileSync("dist/data/index.json", JSON.stringify({ files, built: new Date().toISOString() }));
 }

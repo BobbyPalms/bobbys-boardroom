@@ -25,6 +25,8 @@ One workflow, `.github/workflows/site.yml`, every 15 minutes:
 4. builds the app and deploys it with the data: Cloudflare Pages behind Cloudflare Access when the Cloudflare secrets are set, otherwise GitHub Pages,
 5. once a day commits the long-term records (history, matches, ratings, officials, results) to the repo.
 
+**Every game is logged and archived.** The tracker logs a call on every game on the board, thin-data games included (graded and learned from, never offered as a bet). A game that finishes without a pre-game call has one rebuilt from pre-game data (the final's closing odds, both teams' numbers with this game taken back out), marked `late`. And every finished game in every league, call or no call, is archived in `data/games/<SPORT>/<YYYY-MM-DD>.json`: the full box score (team stats, every player's line, scoring, leaders, closing lines, win probability), the game rundown, and the post-game review of the algo's call (the pre-game rundown, section by section, checked against what happened). The archive is committed every run and isn't shipped with the site.
+
 Nobody has to open the site for tracking or learning to happen. The site reads the live routes straight from the browser (picks, and the home screen's live scores: games in progress for the chosen sport, otherwise every game today) and `learned.json` from itself.
 
 

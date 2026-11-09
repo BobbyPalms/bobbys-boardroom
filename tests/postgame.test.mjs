@@ -5,7 +5,7 @@ import { join, dirname } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import { build } from "esbuild";
-import { parseFinal, finalRundown, teamStatRows, colOrder } from "../src/postgame.js";
+import { parseFinal, finalRundown, teamStatRows, colOrder, algoReview, archiveGame, boardFinal } from "../src/postgame.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const here = dirname(fileURLToPath(import.meta.url)), fx = sp => JSON.parse(readFileSync(join(here, "fixtures", `summary_${sp}.json`), "utf8"));
@@ -54,7 +54,7 @@ R = finalRundown(F, "WNBA", rec, { WNBA: { s: 0.98, h: 1.2, n: 44, teams: { GS: 
 check("algo: pre-game call and projection", /had Dream 40% and Valkyries 60%, projecting Dream 68.5 – Valkyries 71.5/.test(R.algo[0]) && /right winner/.test(R.algo[0]) && /Total: 131 against 140 projected \(-9\)/.test(R.algo[0]), R.algo[0]);
 check("algo: its pick graded", /Its pick: Valkyries -1\.5 at -110 \(grade A\) — WON \(\+0\.9u\)/.test(R.algo[1]), R.algo[1]);
 check("algo: what it learned, team by team", /across 44 graded WNBA games/.test(R.algo.at(-1)) && /Valkyries attack ×1\.012, defense ×0\.991 \(9 games\)/.test(R.algo.at(-1)), R.algo.at(-1));
-check("algo: a game the tracker never logged says so", /wasn't in the tracker's pre-game log/.test(finalRundown(F, "WNBA", null, {}).algo[0]));
+check("algo: with no call at all (couldn't be rebuilt) the rundown says so, and the game is still archived", /couldn't be rebuilt/.test(finalRundown(F, "WNBA", null, {}).algo[0]) && /still archived/.test(finalRundown(F, "WNBA", null, {}).algo[0]));
 
 // ---- team-by-team learning in the engine ----
 const out = join(mkdtempSync(join(tmpdir(), "bbpg-")), "engine.mjs");
@@ -85,5 +85,29 @@ check("learning: BOS's learned attack raises their expected score", withL.muH / 
 const again = {};
 for (const [k, g] of Object.entries(games)) { const tfH = g.home.abbr === "BOS" ? L.teams.BOS[0] : 1, tfA = g.away.abbr === "BOS" ? L.teams.BOS[0] : 1, ph = 112 * tfH, pa = 110 * tfA; again[k] = { ...g, proj: { ...g.proj, total: ph + pa, margin: ph - pa, rawTotal: ph + pa, rawMargin: ph - pa, tf: { h: tfH, a: tfA } } }; }
 check("learning: no feedback loop", Math.abs(E.learnFrom(again, "NBA").teams.BOS[0] - L.teams.BOS[0]) < 0.002, [E.learnFrom(again, "NBA").teams.BOS, L.teams.BOS]);
+// ---- the post-game review of a logged call, section by section ----
+{
+  const G = parseFinal(fx("WNBA"), "WNBA"), as = G.away.score, hs = G.home.score;
+  const rec = { key: "k", p: { h: 0.62, a: 0.38, d: 0 }, proj: { total: as + hs - 6, margin: 4, rawTotal: as + hs - 6, rawMargin: 3.5 }, at: Date.parse("2026-09-01T22:00Z"),
+    mkt: { homeML: -150, awayML: 130, awaySpread: 3.5, total: as + hs - 4 }, pick: "spr-home", grade: "B", result: { as, hs },
+    plays: [{ key: "spr-home", market: "SPR", side: "home", line: -3.5, odds: -110, label: `${G.home.abbr} -3.5`, wc: 0.56, fair: 0.5, edge: 6, res: hs - as > 3.5 ? "W" : "L", u: hs - as > 3.5 ? 0.909 : -1 },
+            { key: "tot-over", market: "TOT", side: "over", line: as + hs - 4, odds: -110, label: `Over ${as + hs - 4}`, wc: 0.52, fair: 0.5, edge: 2, res: "W", u: 0.909 }],
+    pre: { parts: { a: [1.03, 1.01, 30, 30], h: [1.08, 0.95, 30, 30] }, sd: [12, 15], tm: { a: [80, 82, 30, "15-15", 3], h: [86, 78, 30, "20-10", 3] },
+      fx: [["Rest", 1.01, 0.985, "home 2 days, away back-to-back"]], dq: 6, miss: [], inj: "Star Player (out)", rest: [1, 2], sharp: "home",
+      spl: { src: "Action Network", s: [62, 40], t: [55, 58], m: [45, null] } } };
+  const RV = algoReview(G, "WNBA", rec, { WNBA: { n: 40, s: 1.01, h: 0.4, teams: {} } }), titles = RV.map(x => x.title);
+  check("review: every section of the pre-game rundown is checked", ["The algo's call", "How the ratings held up", "Where the result sat in the simulations", "Situational factors, checked", "Personnel, checked", "Against the market", "Where the public and the money were", "What the algo learns", "Bottom line"].every(t => titles.includes(t)), titles);
+  const mk = RV.find(x => x.title === "Against the market").body;
+  check("review: each priced line graded, the pick marked, and its number against the close", mk.includes("THE PICK") && /won|lost/.test(mk) && /closing/.test(mk), mk);
+  check("review: right or wrong winner said plainly", /Right winner|Wrong winner/.test(RV[0].body), RV[0].body);
+  check("review: the sharp side checked against the cover", /sharp side/.test(RV.find(x => x.title === "Where the public and the money were").body));
+  check("review: no call, no review (the rundown says so instead)", algoReview(G, "WNBA", null, {}).length === 0 && /couldn't be rebuilt/.test(finalRundown(G, "WNBA", null, {}).algo[0]));
+  // the archive record
+  const AR = archiveGame(G, "WNBA", { league: "wnba", leagueName: "WNBA", day: "2026-09-01", date: "2026-09-01T23:00Z", rec, rundown: ["x"], review: RV });
+  check("archive: scores, team stats, every player row, closing lines, the call and its review", AR.home.score === hs && AR.stats.length > 5 && AR.players.home[0].rows[0].length >= 4 && AR.call.pre && AR.call.plays.length === 2 && AR.review.length === RV.length && JSON.stringify(AR).length < 40000, JSON.stringify(AR).length);
+  const ev = { id: "77", competitions: [{ status: { type: { state: "post", completed: true, detail: "Final" } }, competitors: [{ homeAway: "home", score: "3", winner: true, team: { id: "1", abbreviation: "HOM" } }, { homeAway: "away", score: "1", team: { id: "2", abbreviation: "AWY" } }] }] };
+  const BF = boardFinal(ev, "Soccer");
+  check("archive fallback: a final from the scoreboard row alone", BF.home.score === 3 && BF.away.score === 1 && BF.home.win === true && BF.teamStats.length === 0);
+}
 console.log(`postgame: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
