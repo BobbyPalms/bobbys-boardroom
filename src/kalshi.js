@@ -122,6 +122,38 @@ export function bestComboQuote(quotes, { maxPrice = 1, skip = null } = {}) {
   return { quote: q, price, am: priceToAm(price), contracts: dollars(q.yes_contracts_fp ?? q.no_contracts_fp ?? q.contracts_fp) };
 }
 
+// ---------- cashing out: selling a position back at Kalshi's current bids ----------
+// your position on a market from GET portfolio/positions: positive = YES contracts, negative = NO
+export function positionOf(j, ticker) {
+  const p = (j?.market_positions || []).find(x => x.ticker === ticker);
+  const n = p ? dollars(p.position_fp ?? p.position) : 0;
+  return !n ? { side: null, count: 0 } : { side: n > 0 ? "yes" : "no", count: Math.abs(n) };
+}
+// what selling `count` contracts of `side` would bring right now: walk the bids for that side, best first.
+// Kalshi lists only bids: holders of YES sell into YES bids, holders of NO into NO bids.
+export function sellValue(book, side, count) {
+  const lv = ((side === "no" ? book?.no_dollars : book?.yes_dollars) || []).map(([p, q]) => [dollars(p), dollars(q)]).filter(([p, q]) => p > 0 && q > 0).sort((a, b) => b[0] - a[0]);
+  let left = count, gross = 0, worst = null;
+  for (const [p, q] of lv) { if (left <= 1e-9) break; const take = Math.min(left, q); gross += take * p; left -= take; worst = p; }
+  const filled = Math.round((count - Math.max(0, left)) * 100) / 100;
+  if (!(filled > 0)) return { ok: false, filled: 0, why: "No one is bidding on this position on Kalshi right now." };
+  const avg = gross / filled, fee = feeEstimate(filled, avg), net = Math.round((gross - fee) * 100) / 100;
+  return { ok: filled >= count - 1e-9, filled, avg, worst, gross: Math.round(gross * 100) / 100, fee, net, why: filled < count - 1e-9 ? `Kalshi's buyers only take ${filled} of your ${count} contracts right now.` : null };
+}
+// the sell order: all of it at the worst price shown or better, or nothing (fill-or-kill). Prices are always YES prices:
+// selling YES = an ask at the YES bid; selling NO = a bid for YES at 1 - the NO bid.
+export function sellOrder(ticker, side, count, worst) {
+  const yes = side === "yes" ? worst : 1 - worst;
+  return { ticker, side: side === "yes" ? "ask" : "bid", count: count.toFixed(2), price: yes.toFixed(4), time_in_force: "fill_or_kill", self_trade_prevention_type: "taker_at_cross" };
+}
+// a combo sold through market makers: you sell YES into the best maker's YES bid (never below `minPrice`)
+export function bestSellQuote(quotes, { minPrice = 0, skip = null } = {}) {
+  const open = (quotes || []).filter(q => q.status === "open" && dollars(q.yes_bid_dollars) > 0 && dollars(q.yes_bid_dollars) >= minPrice - 1e-9 && !(skip && skip.has(q.id)));
+  if (!open.length) return null;
+  const q = open.sort((a, b) => dollars(b.yes_bid_dollars) - dollars(a.yes_bid_dollars))[0];
+  return { quote: q, price: dollars(q.yes_bid_dollars), contracts: dollars(q.yes_contracts_fp ?? q.contracts_fp) };
+}
+
 // ---------- the key: imported once into this browser, never readable again ----------
 const b64 = buf => { let s = ""; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); };
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));

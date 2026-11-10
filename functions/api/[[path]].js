@@ -4,7 +4,8 @@
 //   POST /api/me {username}      -> pick or change your username
 //   GET  /api/slips              -> your slips and numbers
 //   POST /api/slips {stake, legs}-> place a slip (every game must not have started yet, unless it was bought live on Kalshi)
-//   DELETE /api/slips/:id        -> take back a slip before any of its games starts
+//   DELETE /api/slips/:id        -> take back a slip before any of its games starts (not one bought on Kalshi: cash that out)
+//   POST /api/slips/:id/cashout {proceeds, sale} -> a Kalshi slip sold back on Kalshi: settled at what the sale brought
 //   GET  /api/board              -> both leaderboards
 //   GET  /api/user/:username     -> anyone's numbers and slips (by username; emails are never shown)
 //   GET  /api/tickets/live       -> everyone's tickets still riding (upcoming or live), with who placed them and who's tailing
@@ -183,13 +184,14 @@ async function tickets(env, email, kind, q) {
   let rows, more = false, totals = null;
   if (kind === "live") rows = (await env.DB.prepare("SELECT * FROM slips WHERE status='pending'").all()).results;
   else {
-    const st = ["won", "lost", "push"].includes(q.get("status")) ? [q.get("status")] : ["won", "lost", "push"];
+    const st = ["won", "lost", "push", "cashed"].includes(q.get("status")) ? [q.get("status")] : ["won", "lost", "push", "cashed"];
     const before = /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(q.get("before") || "") ? q.get("before") : "9999";
     rows = (await env.DB.prepare(`SELECT * FROM slips WHERE status IN (${st.map(() => "?").join(",")}) AND settled < ? ORDER BY settled DESC, id DESC LIMIT ?`).bind(...st, before, PAST_PAGE + 1).all()).results;
     more = rows.length > PAST_PAGE; rows = rows.slice(0, PAST_PAGE);
-    const t = (await env.DB.prepare("SELECT status, COUNT(*) AS n, SUM(profit) AS p FROM slips WHERE status IN ('won','lost','push') GROUP BY status").all()).results;
-    const g = k => t.find(x => x.status === k) || { n: 0, p: 0 };
-    totals = { W: g("won").n, L: g("lost").n, P: g("push").n, net: Math.round(((g("won").p || 0) + (g("lost").p || 0)) * 100) / 100 };
+    // a cash-out counts as a win if it made money, a loss if it lost some, a push if it broke even
+    const t = (await env.DB.prepare("SELECT CASE WHEN status='won' OR (status='cashed' AND profit>0) THEN 'W' WHEN status='lost' OR (status='cashed' AND profit<0) THEN 'L' ELSE 'P' END AS k, COUNT(*) AS n, SUM(profit) AS p FROM slips WHERE status IN ('won','lost','push','cashed') GROUP BY k").all()).results;
+    const g = k => t.find(x => x.k === k) || { n: 0, p: 0 };
+    totals = { W: g("W").n, L: g("L").n, P: g("P").n, net: Math.round(((g("W").p || 0) + (g("L").p || 0) + (g("P").p || 0)) * 100) / 100 };
   }
   // who's tailing whom
   const tc = {};
@@ -221,12 +223,30 @@ export function kalshiResult(m, side = "yes") {
   return null;
 }
 
+// ---------- cashing out a Kalshi slip: sold back on Kalshi, settled here at what the sale brought ----------
+async function cashOut(env, email, id, body) {
+  const r = await env.DB.prepare("SELECT * FROM slips WHERE id=? AND email=?").bind(id, email).first();
+  if (!r) return bad("Slip not found.", 404);
+  const s = rowToSlip(r);
+  if (s.status !== "pending") return bad("That slip is already settled.", 409);
+  if (!s.kalshi) return bad("Only slips bought on Kalshi can be cashed out.", 409);
+  const most = s.kalshi.combo ? Number(s.kalshi.combo.contracts) || 0 : (s.kalshi.orders || []).reduce((a, o) => a + (Number(o.filled) || 0), 0);
+  const proceeds = Math.round(Number(body?.proceeds) * 100) / 100;
+  if (!(proceeds >= 0) || proceeds > most + 0.01) return bad("That cash-out amount doesn't fit the slip.");
+  const str = (v, n = 80) => (v == null ? null : String(v).slice(0, n)), num = v => (Number.isFinite(Number(v)) ? Number(v) : null);
+  const sale = body?.sale || {};
+  const kalshi = { ...s.kalshi, cashout: { at: new Date().toISOString(), proceeds, how: sale.how === "rfq" ? "rfq" : "order", order_id: str(sale.order_id), quote_id: str(sale.quote_id), price: num(sale.price), count: num(sale.count) } };
+  const profit = Math.round((proceeds - s.stake) * 100) / 100, settled = new Date().toISOString();
+  await env.DB.prepare("UPDATE slips SET status='cashed', profit=?, settled=?, kalshi=? WHERE id=? AND status='pending'").bind(profit, settled, JSON.stringify(kalshi), s.id).run();
+  return json({ slip: { ...s, status: "cashed", profit, settled, kalshi } });
+}
+
 // ---------- Kalshi relay ----------
 // Kalshi doesn't take calls straight from a browser, so the page sends each request here, already signed on the person's
 // device with their own key. This passes it on unchanged: it never sees a key (only a signature that's good for this one
 // request and expires), keeps nothing, and only reaches the Kalshi paths the slip flow uses.
 const KALSHI = { live: "https://external-api.kalshi.com", demo: "https://external-api.demo.kalshi.co" };
-const KPATH = /^(portfolio\/balance|portfolio\/intra_exchange_instance_transfer|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|events|markets\/[\w.-]+|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
+const KPATH = /^(portfolio\/balance|portfolio\/intra_exchange_instance_transfer|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|portfolio\/positions|events|markets\/[\w.-]+(\/orderbook)?|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
 async function relayKalshi(request, env, path) {
   const host = (env.KALSHI_BASE && JSON.parse(env.KALSHI_BASE)[path[0]]) || KALSHI[path[0]], sub = path.slice(1).join("/");
   if (!host) return bad("Unknown Kalshi environment.", 404);
@@ -263,15 +283,17 @@ export async function onRequest({ request, env, params }) {
   }
   if (!me) return bad("Pick a username first.", 403);
 
-  if (what === "slips" && m === "POST") return placeSlip(env, email, body);
+  if (what === "slips" && m === "POST" && !path[1]) return placeSlip(env, email, body);
   if (what === "slips" && m === "DELETE" && path[1]) {
     const r = await env.DB.prepare("SELECT * FROM slips WHERE id=? AND email=?").bind(path[1], email).first();
     if (!r) return bad("Slip not found.", 404);
     const s = rowToSlip(r);
+    if (s.kalshi) return bad("That slip was bought on Kalshi: cash it out instead.", 409);
     if (s.status !== "pending" || s.legs.some(l => Date.parse(l.date) <= Date.now() || l.res || l.live || l.market === "kalshi")) return bad("A game on that slip has started (or it was bought live on Kalshi), so it stays.", 409);
     await env.DB.prepare("DELETE FROM slips WHERE id=?").bind(s.id).run();
     return json({ ok: true });
   }
+  if (what === "slips" && m === "POST" && path[1] && path[2] === "cashout") return cashOut(env, email, path[1], body);
 
   await gradePending(env).catch(() => {});
   const slipsOf = async em => (await env.DB.prepare("SELECT * FROM slips WHERE email=? ORDER BY created DESC").bind(em).all()).results.map(rowToSlip);

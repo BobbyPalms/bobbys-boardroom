@@ -82,6 +82,9 @@ check("record board: win % first", lb.record.map(p => p.username).join() === "ze
 check("money board: net first", lb.money.map(p => p.username).join() === "amy,bob,zed", lb.money.map(p => p.username));
 check("no graded bets, not ranked yet", !lb.record.some(p => p.username === "new"));
 
+// ---- cash-outs: count by what they made ----
+const co = bettorStats([S("cashed", 10, 4.5, "NBA", 1, "a"), S("cashed", 20, -6, "NFL", 2, "b"), S("cashed", 5, 0, "NBA", 1, "c"), S("lost", 10, -10, "NBA", 1, "d")]);
+check("cash-outs: up = W, down = L (only what was lost), even = push", co.W === 1 && co.L === 2 && co.P === 1 && co.cashed === 3 && co.won === 4.5 && co.lost === 16 && co.net === -11.5 && co.parlays.L === 1 && co.streak === "L2" && co.bySport.NFL.net === -6, co);
 // ---- percentages (Kalshi-style) ----
 check("54% is -117, 40% is +150, 50% is +100", readPct("54") === -117 && readPct("40%") === 150 && readPct("50") === 100, [readPct("54"), readPct("40%"), readPct("50")]);
 check("cents and decimals read too", readPct("56¢") === readPct("56") && readPct("0.56") === readPct("56") && readPct("33.3") === 200);

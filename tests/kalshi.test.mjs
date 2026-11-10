@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateKeyPairSync, verify, constants, webcrypto } from "crypto";
-import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, readPem, importKey, signHeaders } from "../src/kalshi.js";
+import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, readPem, importKey, signHeaders } from "../src/kalshi.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const K = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "kalshi_events.json"), "utf8"));
@@ -60,6 +60,17 @@ const qs3 = [{ id: "a", status: "open", no_bid_dollars: "0.78", yes_contracts_fp
 check("never pays more than the price you confirmed", bestComboQuote(qs3, { maxPrice: 0.20 }).quote.id === "b" && bestComboQuote(qs3, { maxPrice: 0.18 }) === null);
 check("a quote already tried is skipped", bestComboQuote(qs3, { skip: new Set(["b"]) }).quote.id === "a");
 check("quotes are asked for with rfq_user_filter=self (Kalshi refuses rfq_id alone)", quotesPath("ae03d6d6-ec0b") === "communications/quotes?rfq_user_filter=self&rfq_id=ae03d6d6-ec0b");
+// ---- cashing out ----
+check("position: + is YES, - is NO, none is 0", JSON.stringify(positionOf({ market_positions: [{ ticker: "A", position_fp: "16.66" }, { ticker: "B", position_fp: "-20.00" }] }, "A")) === '{"side":"yes","count":16.66}' && positionOf({ market_positions: [{ ticker: "B", position_fp: "-20.00" }] }, "B").side === "no" && positionOf({ market_positions: [] }, "A").count === 0);
+const book = { yes_dollars: [["0.5500", "10.00"], ["0.6200", "5.00"], ["0.6000", "4.00"]], no_dollars: [["0.3500", "100.00"]] };
+const sv = sellValue(book, "yes", 16.66);
+check("sell value walks the YES bids best first (5@62 + 4@60 + 7.66@55)", sv.ok && Math.abs(sv.gross - 9.71) < 0.01 && sv.worst === 0.55 && sv.filled === 16.66 && sv.net === Math.round((sv.gross - sv.fee) * 100) / 100, sv);
+check("not enough bids: says how many they'd take", (x => !x.ok && x.filled === 19 && /19 of your 30/.test(x.why))(sellValue(book, "yes", 30)));
+check("NO holders sell into NO bids", sellValue(book, "no", 20).gross === 7 && sellValue(book, "no", 20).worst === 0.35);
+check("no bids at all", sellValue({ yes_dollars: [], no_dollars: [] }, "yes", 5).ok === false);
+check("sell order: YES = ask at the YES bid; NO = bid for YES at 1 - the NO bid; all or nothing", (a => a.side === "ask" && a.price === "0.5500" && a.count === "16.66" && a.time_in_force === "fill_or_kill")(sellOrder("T", "yes", 16.66, 0.55)) && (b => b.side === "bid" && b.price === "0.6500")(sellOrder("T", "no", 20, 0.35)));
+const sq = [{ id: "x", status: "open", yes_bid_dollars: "0.31", contracts_fp: "73.00" }, { id: "y", status: "open", yes_bid_dollars: "0.33", contracts_fp: "73.00" }];
+check("combo cash out: best maker YES bid, never below the price shown", bestSellQuote(sq).quote.id === "y" && bestSellQuote(sq, { minPrice: 0.34 }) === null && bestSellQuote(sq, { skip: new Set(["y"]) }).price === 0.31);
 
 // ---- signing on the device ----
 const subtle = webcrypto.subtle;

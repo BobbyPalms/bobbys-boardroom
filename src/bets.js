@@ -136,20 +136,24 @@ export function settleSlip(slip) {
 // ---------- a bettor's numbers ----------
 export function bettorStats(slips) {
   const s = { W: 0, L: 0, P: 0, pending: 0, staked: 0, won: 0, lost: 0, net: 0, best: null, streak: "", bySport: {}, parlays: { W: 0, L: 0 }, straights: { W: 0, L: 0 } };
-  const done = slips.filter(x => x.status === "won" || x.status === "lost" || x.status === "push").sort((a, b) => String(a.settled || a.created).localeCompare(String(b.settled || b.created)));
+  // a cash-out (sold back on Kalshi before it was decided) counts by what it made: up = W, down = L, even = push
+  const outcome = x => (x.status === "cashed" ? (x.profit > 0 ? "won" : x.profit < 0 ? "lost" : "push") : x.status);
+  const done = slips.filter(x => ["won", "lost", "push", "cashed"].includes(x.status)).sort((a, b) => String(a.settled || a.created).localeCompare(String(b.settled || b.created)));
   s.pending = slips.filter(x => x.status === "pending").length;
+  s.cashed = slips.filter(x => x.status === "cashed").length;
   for (const x of done) {
-    const kind = (x.legs || []).length > 1 ? s.parlays : s.straights;
-    if (x.status === "push") { s.P++; continue; }
+    const kind = (x.legs || []).length > 1 ? s.parlays : s.straights, o = outcome(x);
+    if (o === "push") { s.P++; continue; }
     s.staked += x.stake;
-    if (x.status === "won") { s.W++; kind.W++; s.won += x.profit; if (!s.best || x.profit > s.best.profit) s.best = { profit: x.profit, odds: x.odds, id: x.id }; }
-    else { s.L++; kind.L++; s.lost += x.stake; }
-    for (const sp of new Set((x.legs || []).map(l => l.sport))) { const b = (s.bySport[sp] = s.bySport[sp] || { W: 0, L: 0, net: 0 }); b[x.status === "won" ? "W" : "L"]++; b.net += x.status === "won" ? x.profit : -x.stake; }
+    const loss = x.status === "cashed" ? -x.profit : x.stake;
+    if (o === "won") { s.W++; kind.W++; s.won += x.profit; if (!s.best || x.profit > s.best.profit) s.best = { profit: x.profit, odds: x.odds, id: x.id }; }
+    else { s.L++; kind.L++; s.lost += loss; }
+    for (const sp of new Set((x.legs || []).map(l => l.sport))) { const b = (s.bySport[sp] = s.bySport[sp] || { W: 0, L: 0, net: 0 }); b[o === "won" ? "W" : "L"]++; b.net += o === "won" ? x.profit : -loss; }
   }
   s.net = Math.round((s.won - s.lost) * 100) / 100; s.won = Math.round(s.won * 100) / 100; s.lost = Math.round(s.lost * 100) / 100;
   s.pct = s.W + s.L ? s.W / (s.W + s.L) : null;
   s.roi = s.staked ? s.net / s.staked : null;
-  const res = done.filter(x => x.status !== "push").map(x => (x.status === "won" ? "W" : "L"));
+  const res = done.map(outcome).filter(o => o !== "push").map(o => (o === "won" ? "W" : "L"));
   if (res.length) { const last = res[res.length - 1]; let k = 0; for (let i = res.length - 1; i >= 0 && res[i] === last; i--) k++; s.streak = `${last}${k}`; }
   return s;
 }

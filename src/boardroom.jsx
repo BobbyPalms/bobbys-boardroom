@@ -4,7 +4,7 @@ import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3302,7 +3302,7 @@ function loadBetRows() {
   return p;
 }
 const SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports";
-const STATUS_C = { pending: T.chrome, won: NEON.green, lost: NEON.red, push: T.dim };
+const STATUS_C = { pending: T.chrome, won: NEON.green, lost: NEON.red, push: T.dim, cashed: NEON.gold };
 const pctTxt = v => (v == null ? "–" : `${(v * 100).toFixed(1)}%`);
 const sCash = v => (v == null ? "–" : `${v > 0 ? "+" : ""}${cash(v)}`);
 const whenTxt = iso => `${etDayLabel(iso)} · ${new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })} ET`;
@@ -3340,7 +3340,7 @@ function BetSlipsScreen({ onBack, onTools }) {
       {tab === "live" && <Tickets key={`live${ver}`} kind="live" onOpen={open} kal={kal} onTools={onTools} onTailed={msg => { setFlash(`${msg ? `${msg} ` : ""}Tail placed. It's in My Bets.`); setVer(v => v + 1); }}/>}
       {tab === "past" && <Tickets key={`past${ver}`} kind="past" onOpen={open}/>}
       {tab === "mine" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
-      {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
+      {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine kal={kal} onCashed={m => setFlash(m)} onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
       {tab === "board" && <Leaderboard key={`lb${ver}`} onOpen={open}/>}
       {tab === "user" && who && <Bettor key={`u${who}${ver}`} path={`user/${encodeURIComponent(who)}`} backLabel={{ board: "LEADERBOARD", live: "LIVE TICKETS", past: "PAST TICKETS" }[from] || "LEADERBOARD"} onBackBoard={() => setTab(from)}/>}
     </>}
@@ -3877,7 +3877,7 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
 }
 
 // ---------- a bettor's page: numbers, then every slip ----------
-function Bettor({ path, mine = false, onChange, onBackBoard, backLabel = "LEADERBOARD", username, onRenamed }) {
+function Bettor({ path, mine = false, onChange, onBackBoard, backLabel = "LEADERBOARD", username, onRenamed, kal = null, onCashed }) {
   const [d, setD] = useState(null), [err, setErr] = useState(null), [rename, setRename] = useState(false);
   const load = () => api("GET", path).then(setD).catch(e => setErr(e.message));
   useEffect(() => { load(); }, [path]);
@@ -3895,7 +3895,7 @@ function Bettor({ path, mine = false, onChange, onBackBoard, backLabel = "LEADER
     </Panel>
     <Panel title={mine ? "MY SLIPS" : "SLIPS"} right={`${d.slips.length} total`}>
       {!d.slips.length && <div style={{ fontSize: 12, color: T.dim }}>{mine ? "No slips yet. Add one on NEW SLIP." : "No slips yet."}</div>}
-      {d.slips.map(sl => <SlipCard key={sl.id} sl={sl} canTakeBack={mine} onTakeBack={async () => { try { await api("DELETE", `slips/${sl.id}`); load(); onChange && onChange(); } catch (e) { setErr(e.message); } }}/>)}
+      {d.slips.map(sl => <SlipCard key={sl.id} sl={sl} canTakeBack={mine} foot={mine && sl.status === "pending" && sl.kalshi ? <CashOut sl={sl} kal={kal} onCashed={m => { onCashed && onCashed(m); load(); onChange && onChange(); }}/> : null} onTakeBack={async () => { try { await api("DELETE", `slips/${sl.id}`); load(); onChange && onChange(); } catch (e) { setErr(e.message); } }}/>)}
     </Panel>
   </>;
 }
@@ -3910,7 +3910,7 @@ function StatGrid({ s }) {
     </div>)}
   </div>;
 }
-function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null }) {
+function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, foot = null }) {
   const c = STATUS_C[sl.status], open = sl.status === "pending" && sl.legs.every(l => !l.res && Date.parse(l.date) > Date.now());
   const mark = r => (r === "W" ? ["✓", NEON.green] : r === "L" ? ["✗", NEON.red] : r === "P" ? ["P", T.dim] : ["•", T.faint]);
   const liveLeg = l => { const r = !l.res && liveRows ? liveRows.get(`${l.sport}|${l.eventId}`) : null; return r && r.state === "in" ? r : null; };
@@ -3918,8 +3918,8 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null }) 
   return <div style={{ marginTop: 10, border: `1px solid ${isLive ? NEON.red : c}66`, background: `${isLive ? NEON.red : c}0d`, padding: "10px 12px" }}>
     {top}
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
-      <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: isLive ? NEON.red : c, whiteSpace: "nowrap" }}>{isLive ? <><span style={{ animation: "blink 1.6s infinite" }}>●</span> LIVE</> : sl.status.toUpperCase()}</span>
-      <span style={{ ...oneLine, fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}</span> : null}</span>
+      <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: isLive ? NEON.red : c, whiteSpace: "nowrap" }}>{isLive ? <><span style={{ animation: "blink 1.6s infinite" }}>●</span> LIVE</> : sl.status === "cashed" ? "CASHED OUT" : sl.status.toUpperCase()}</span>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere", fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}</span> : null}</span>
       <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{oddsAs(sl.odds, oddsPref())}</span>
     </div>
     <div style={{ marginTop: 8 }}>
@@ -3934,9 +3934,115 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null }) 
       </div>; })}
     </div>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}` }}>
-      <span style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Bet <b style={{ color: T.ink }}>{cash(sl.stake)}</b>{sl.status === "pending" ? <> · to win <b style={{ color: NEON.green }}>{cash(sl.stake * (amToDec(sl.odds) - 1))}</b></> : sl.status === "won" ? <> · won <b style={{ color: NEON.green }}>{cash(sl.profit)}</b></> : sl.status === "lost" ? <> · lost <b style={{ color: NEON.red }}>{cash(sl.stake)}</b></> : " · refunded"}</span>
-      {canTakeBack && open ? <button onClick={onTakeBack} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 10, padding: "4px 8px", cursor: "pointer", whiteSpace: "nowrap" }}>take back</button> : <span/>}
+      <span style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Bet <b style={{ color: T.ink }}>{cash(sl.stake)}</b>{sl.status === "pending" ? <> · to win <b style={{ color: NEON.green }}>{cash(sl.stake * (amToDec(sl.odds) - 1))}</b></> : sl.status === "won" ? <> · won <b style={{ color: NEON.green }}>{cash(sl.profit)}</b></> : sl.status === "lost" ? <> · lost <b style={{ color: NEON.red }}>{cash(sl.stake)}</b></> : sl.status === "cashed" ? <> · cashed out <b style={{ color: NEON.gold }}>{cash(sl.stake + sl.profit)}</b> <span style={{ color: sl.profit > 0 ? NEON.green : sl.profit < 0 ? NEON.red : T.dim }}>({sCash(sl.profit)})</span></> : " · refunded"}</span>
+      {canTakeBack && open && !sl.kalshi ? <button onClick={onTakeBack} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 10, padding: "4px 8px", cursor: "pointer", whiteSpace: "nowrap" }}>take back</button> : <span/>}
     </div>
+    {foot}
+  </div>;
+}
+
+// ---------- CASH OUT: a slip bought on Kalshi, sold back at Kalshi's live price ----------
+// Straights (and combos with buyers on the book) sell into the order book: the value is what the current bids pay for
+// your contracts, after Kalshi's fee. A combo with no book is priced by market makers (an RFQ, kept open while you look).
+// One tap sells: all of it at the value shown or better, or nothing.
+function CashOut({ sl, kal, onCashed }) {
+  const K = sl.kalshi, combo = !!K.combo;
+  const ticker = combo ? K.combo.market_ticker : K.orders?.[0]?.ticker;
+  const side = combo ? "yes" : K.orders?.[0]?.side === "no" ? "no" : "yes";
+  const owned = combo ? Number(K.combo.contracts) || 0 : (K.orders || []).filter(o => o.ticker === ticker).reduce((a, o) => a + (Number(o.filled) || 0), 0);
+  const [v, setV] = useState(null), [busy, setBusy] = useState(false), [msg, setMsg] = useState(null);
+  const cur = useRef(null), rfq = useRef(null), busyRef = useRef(false);
+  const ready = !!kal && kal.env === K.env && !!ticker && owned > 0;
+  useEffect(() => {
+    if (!ready) return;
+    let alive = true, made = null;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    (async () => {
+      while (alive) {
+        if (busyRef.current) { await sleep(500); continue; }
+        let wait = 5000;
+        try {
+          const pos = positionOf(await kalshiCall(kal, "GET", `portfolio/positions?ticker=${encodeURIComponent(ticker)}`), ticker);
+          if (pos.side !== side || !(pos.count > 0)) { cur.current = null; alive && setV({ gone: true }); await sleep(15000); continue; }
+          const count = Math.round(Math.min(owned, pos.count) * 100) / 100;
+          const book = (await kalshiCall({ env: kal.env }, "GET", `markets/${encodeURIComponent(ticker)}/orderbook`)).orderbook_fp;
+          const sv = sellValue(book, side, count);
+          if (sv.ok) cur.current = { how: "book", count, sv, value: sv.net };
+          else if (combo) {
+            // no buyers on the combo's book: ask the market makers, and keep the ask open while this card is up
+            if (!rfq.current) {
+              try { rfq.current = made = (await kalshiCall(kal, "POST", "communications/rfqs", { market_ticker: ticker, contracts_fp: count.toFixed(2), rest_remainder: false, replace_existing: false })).id; }
+              catch (e) { const mineR = ((await kalshiCall(kal, "GET", "communications/rfqs?user_filter=self&limit=50").catch(() => ({}))).rfqs || []).find(r => r.market_ticker === ticker && r.status === "open"); if (mineR) rfq.current = mineR.id; else throw e; }
+            }
+            const best = bestSellQuote((await kalshiCall(kal, "GET", quotesPath(rfq.current))).quotes);
+            cur.current = best ? { how: "rfq", count, best, rfq: rfq.current, value: Math.round((count * best.price - feeEstimate(count, best.price)) * 100) / 100 } : { how: "rfq", count, none: true };
+            wait = 2000;
+          } else cur.current = { how: "book", count, none: true, why: sv.why };
+          alive && setV(cur.current);
+        } catch (e) { alive && setV(x => ({ ...(x || {}), err: e.message })); }
+        await sleep(wait);
+      }
+    })();
+    return () => { alive = false; if (made && !busyRef.current) kalshiCall(kal, "DELETE", `communications/rfqs/${made}`).catch(() => {}); };
+  }, [ready, ticker]);
+  const settle = async (proceeds, sale) => {
+    await api("POST", `slips/${sl.id}/cashout`, { proceeds, sale });
+    onCashed(`Cashed out on Kalshi for ${cash(proceeds)} (${sCash(Math.round((proceeds - sl.stake) * 100) / 100)}).`);
+  };
+  const sell = async () => {
+    const want = cur.current;
+    if (!want || want.none || busyRef.current) return;
+    busyRef.current = true; setBusy(true); setMsg(null);
+    try {
+      if (want.how === "book") {
+        // the book right now: never sell for less than the value on the button
+        const book = (await kalshiCall({ env: kal.env }, "GET", `markets/${encodeURIComponent(ticker)}/orderbook`)).orderbook_fp, now = sellValue(book, side, want.count);
+        if (!now.ok || now.net < want.value - 0.005) { if (now.ok) { cur.current = { ...want, sv: now, value: now.net }; setV(cur.current); } setMsg(now.ok ? `The bids just dropped: it's ${cash(now.net)} now. Nothing was sold. Tap again to cash out at the new value.` : `${now.why} Nothing was sold.`); return; }
+        const o = await kalshiCall(kal, "POST", "portfolio/events/orders", { ...sellOrder(ticker, side, want.count, want.sv.worst), client_order_id: crypto.randomUUID() });
+        const filled = parseFloat(o.fill_count || "0");
+        if (!(filled > 0)) { setMsg("The bids moved before it filled, so nothing was sold. The value below is live; tap again."); return; }
+        const avgYes = parseFloat(o.average_fill_price || (side === "yes" ? want.sv.worst : 1 - want.sv.worst)), got = side === "yes" ? avgYes : 1 - avgYes;
+        const fee = parseFloat(o.average_fee_paid || "0") * filled || feeEstimate(filled, got);
+        await settle(Math.round((filled * got - fee) * 100) / 100, { how: "order", order_id: o.order_id, price: got, count: filled });
+        return;
+      }
+      // a maker's quote: sell YES into their YES bid; if they back out, the next one at that price or better
+      const floor = want.best.price, tried = new Set(), t0 = Date.now();
+      let pick = want.best;
+      while (Date.now() - t0 < 20000) {
+        if (!pick) { await new Promise(r => setTimeout(r, 500)); pick = bestSellQuote((await kalshiCall(kal, "GET", quotesPath(want.rfq)).catch(() => ({ quotes: [] }))).quotes, { minPrice: floor, skip: tried }); continue; }
+        tried.add(pick.quote.id);
+        const ok = await kalshiCall(kal, "PUT", `communications/rfqs/${want.rfq}/quotes/${pick.quote.id}/accept`, { accepted_side: "yes" }).then(() => true).catch(() => false);
+        const s0 = Date.now();
+        while (ok && Date.now() - s0 < 6000) {
+          await new Promise(r => setTimeout(r, 600));
+          const q = ((await kalshiCall(kal, "GET", quotesPath(want.rfq)).catch(() => ({ quotes: [] }))).quotes || []).find(x => x.id === pick.quote.id);
+          if (q?.status === "executed") {
+            const n = parseFloat(q.yes_contracts_fp || q.contracts_fp || want.count), p = parseFloat(q.yes_bid_dollars);
+            rfq.current = null;
+            await settle(Math.round((n * p - feeEstimate(n, p)) * 100) / 100, { how: "rfq", quote_id: q.id, price: p, count: n });
+            return;
+          }
+          if (!q || q.status === "cancelled") break;
+        }
+        pick = null;
+      }
+      setMsg(`No maker would take it at ${cents(floor)} or better just now, so nothing was sold. The value below is live.`);
+    } catch (e) { setMsg(`Kalshi: ${e.message} Nothing was sold.`); }
+    finally { busyRef.current = false; setBusy(false); }
+  };
+  const box = { marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}` };
+  if (!ready) return <div style={{ ...box, fontSize: 11, color: T.dim, lineHeight: 1.5 }}>{!kal ? "Connect your Kalshi key in Tools → Kalshi to cash out." : kal.env !== K.env ? `This slip was bought on Kalshi ${K.env === "demo" ? "demo" : "live"}; your key here is for ${kal.env}.` : "Couldn't read this slip's Kalshi position."}</div>;
+  const val = v && !v.none && !v.gone && v.value != null ? v.value : null, pl = val != null ? Math.round((val - sl.stake) * 100) / 100 : null;
+  return <div style={box}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 8 }}>
+      <div style={{ minWidth: 0, fontSize: 12, color: T.dim, lineHeight: 1.5 }}>
+        <div>Cash out now {val != null ? <><b style={{ color: "#fff" }}>{cash(val)}</b> <span style={{ color: pl > 0 ? NEON.green : pl < 0 ? NEON.red : T.dim }}>({sCash(pl)})</span></> : null}</div>
+        <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{!v ? "Reading Kalshi…" : v.gone ? "This position isn't open on Kalshi anymore (sold or settled there)." : v.none ? (v.how === "rfq" ? "Asking Kalshi's market makers for a price…" : v.why || "No bids on Kalshi right now.") : `${v.count} contracts · ${v.how === "rfq" ? "market maker's price" : "Kalshi's live bids"}, after fees`}{v?.err ? ` · couldn't refresh: ${v.err}` : ""}</div>
+      </div>
+      <button onClick={sell} disabled={val == null || busy} aria-label="cash out" style={{ ...btnStyle(val != null && !busy), width: "100%", padding: "11px 12px", borderColor: val != null && !busy ? NEON.gold : T.line, background: val != null && !busy ? "rgba(255,194,38,.14)" : "none", color: val != null && !busy ? NEON.gold : T.faint, whiteSpace: "nowrap" }}>{busy ? "SELLING…" : val != null ? `CASH OUT ${cash(val)}` : "CASH OUT"}</button>
+    </div>
+    {msg && <div style={{ marginTop: 6, fontSize: 11, color: NEON.gold, lineHeight: 1.5 }}>{msg}</div>}
   </div>;
 }
 
@@ -3990,8 +4096,8 @@ function Tickets({ kind, onOpen, kal = null, onTools, onTailed }) {
   }
   const tot = d?.totals;
   return <>
-    <div role="group" aria-label="filter past tickets" style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", marginTop: 14, border: `1px solid ${T.line}` }}>
-      {[["all", "ALL"], ["won", "WON"], ["lost", "LOST"], ["push", "PUSH"]].map(([k, t]) => <button key={k} onClick={() => setSt(k)} aria-pressed={st === k} style={{ padding: "8px 2px", border: "none", background: st === k ? "rgba(143,0,255,0.3)" : "none", color: st === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 1, cursor: "pointer" }}>{t}</button>)}
+    <div role="group" aria-label="filter past tickets" style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", marginTop: 14, border: `1px solid ${T.line}` }}>
+      {[["all", "ALL"], ["won", "WON"], ["lost", "LOST"], ["cashed", "CASHED"], ["push", "PUSH"]].map(([k, t]) => <button key={k} onClick={() => setSt(k)} aria-pressed={st === k} style={{ padding: "8px 2px", border: "none", background: st === k ? "rgba(143,0,255,0.3)" : "none", color: st === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 1, cursor: "pointer" }}>{t}</button>)}
     </div>
     <Panel title="PAST TICKETS" right={tot ? <span>site <b style={{ color: T.ink }}>{tot.W}-{tot.L}{tot.P ? `-${tot.P}` : ""}</b> · <span style={{ color: tot.net > 0 ? NEON.green : tot.net < 0 ? NEON.red : T.dim }}>{sCash(tot.net)}</span></span> : null}>
       {!d && <div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div>}

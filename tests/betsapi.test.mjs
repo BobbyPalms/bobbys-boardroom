@@ -192,6 +192,21 @@ check("past tickets: filter to losses", pw.tickets.length >= 1 && pw.tickets.eve
 for (let i = 0; i < 45; i++) db.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs) VALUES (?, 'zed@x.com', ?, 1, 100, 'won', 1, ?, '[]')").run(`old${i}`, "2026-01-01T00:00:00.000Z", new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString());
 const p1 = (await call("bob@x.com", "GET", "tickets/past")).j, p2 = (await call("bob@x.com", "GET", `tickets/past?before=${encodeURIComponent(p1.tickets.at(-1).settled)}`)).j;
 check("past tickets: pages of 40, then the rest", p1.tickets.length === 40 && p1.more === true && p2.more === false && p1.tickets.length + p2.tickets.length === pa.tickets.length + 45 && !p2.tickets.some(t => p1.tickets.some(u => u.id === t.id)), [p1.tickets.length, p2.tickets.length, pa.tickets.length]);
+// ---- cashing out a Kalshi slip ----
+Object.assign(games["402"], { state: "pre", date: new Date(Date.now() + 5 * 3600e3).toISOString(), as: "", hs: "" });
+const ks1 = (await call("zed@x.com", "POST", "slips", { stake: 10, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-150")], kalshi: { env: "live", orders: [{ ticker: "KXNBAGAME-X-PHI", side: "yes", count: 16.66, price: 0.6, order_id: "o-9", filled: 16.66 }] } })).j.slip;
+check("a Kalshi slip can't be taken back (it's bought): cash it out", (await call("zed@x.com", "DELETE", `slips/${ks1.id}`)).status === 409);
+check("someone else can't cash out your slip", (await call("bob@x.com", "POST", `slips/${ks1.id}/cashout`, { proceeds: 12 })).status === 404);
+check("cash-out can't be more than the contracts pay", (await call("zed@x.com", "POST", `slips/${ks1.id}/cashout`, { proceeds: 17 })).status === 400);
+const trackOnly = (await call("zed@x.com", "POST", "slips", { stake: 5, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-150")] })).j.slip;
+check("a slip not on Kalshi can't be cashed out", (await call("zed@x.com", "POST", `slips/${trackOnly.id}/cashout`, { proceeds: 3 })).status === 409);
+const co1 = await call("zed@x.com", "POST", `slips/${ks1.id}/cashout`, { proceeds: 12.4, sale: { how: "order", order_id: "o-10", price: 0.75, count: 16.66, junk: "x" } });
+check("cashed out: settled at what the sale brought (+$2.40), sale kept", co1.status === 200 && co1.j.slip.status === "cashed" && co1.j.slip.profit === 2.4 && co1.j.slip.kalshi.cashout.order_id === "o-10" && !("junk" in co1.j.slip.kalshi.cashout), co1.j);
+check("can't cash out twice", (await call("zed@x.com", "POST", `slips/${ks1.id}/cashout`, { proceeds: 12.4 })).status === 409);
+const zst = (await call("zed@x.com", "GET", "slips")).j;
+check("a profitable cash-out counts as a win in your numbers", zst.stats.cashed === 1 && zst.stats.W >= 1, zst.stats);
+const pc = (await call("bob@x.com", "GET", "tickets/past?status=cashed")).j;
+check("past tickets: cashed-out filter", pc.tickets.length === 1 && pc.tickets[0].status === "cashed" && pc.tickets[0].profit === 2.4 && !JSON.stringify(pc).includes("o-10"), pc.tickets.map(t => t.status));
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
 function decToAmLocal(list) { const d = list.reduce((a, o) => a * (o > 0 ? 1 + o / 100 : 1 + 100 / -o), 1); return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }
