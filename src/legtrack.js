@@ -84,28 +84,33 @@ export function statFrom(F, cols, player) {
 
 // progress for one leg. row: the game on the scoreboard (state "in" or "post"); F: its parsed box score (props only).
 //   count:  { kind: "count", value, target, unit, done }          purple until it reaches the target, then green
-//   status: { kind: "status", ok, text }                           green while it's winning, purple while it isn't
+//           { ..., under: true, ok }                               an under: green while below the line, red once over
+//   margin: { kind: "margin", m, scale, ok, text }                 a spread: how far past (or short of) the cover number
+//   status: { kind: "status", ok, text }                           a moneyline / draw: winning or not right now
+// win: true = winning right now, false = losing, null = still building (a prop or an over on its way)
 export function legProgress(leg, row, F) {
   if (!row || (row.state !== "in" && row.state !== "post")) return null;
   const p = propOf(leg);
   if (p) {
     if (!F) return null;
     const { value } = statFrom(F, p.cols, p.player);
-    return { kind: "count", value, target: p.target, unit: p.unit, done: value >= p.target };
+    return { kind: "count", value, target: p.target, unit: p.unit, done: value >= p.target, win: value >= p.target ? true : null };
   }
   if (leg.sport === "Tennis" || leg.sport === "MMA" || leg.market === "kalshi") return null;
   const a = num(row.away?.score), h = num(row.home?.score);
   if (leg.market === "total") {
     const t = a + h, line = Number(leg.line);
-    if (leg.side === "over") return { kind: "count", value: t, target: line, unit: "pts", done: t > line, over: true };
-    return { kind: "status", ok: t < line, text: t < line ? `${t} of ${line}: under by ${Math.round((line - t) * 10) / 10}` : `${t}: over ${line}` };
+    if (leg.side === "over") return { kind: "count", value: t, target: line, unit: "pts", done: t > line, over: true, win: t > line ? true : null };
+    const d = Math.round(Math.abs(line - t) * 10) / 10;
+    return { kind: "count", value: t, target: line, unit: "pts", under: true, ok: t < line, done: false, win: t < line, text: t < line ? `under by ${d}` : `over by ${d}` };
   }
   const me = leg.side === "away" ? a : h, them = leg.side === "away" ? h : a, who = (leg.side === "away" ? leg.away : leg.home)?.name || "";
   if (leg.market === "spread") {
     const m = me - them + Number(leg.line), d = Math.round(Math.abs(m) * 10) / 10;
-    return { kind: "status", ok: m > 0, text: m > 0 ? `covering by ${d}` : m === 0 ? "right on the number" : `needs ${d} more to cover` };
+    const scale = ["NHL", "MLB", "Soccer"].includes(leg.sport) ? 3 : 14;
+    return { kind: "margin", m, scale, ok: m > 0, win: m > 0 ? true : m < 0 ? false : null, text: m > 0 ? `covering by ${d}` : m === 0 ? "right on the number" : `needs ${d} more to cover` };
   }
-  if (leg.market === "draw") return { kind: "status", ok: a === h, text: a === h ? `level ${a}-${h}` : `${Math.max(a, h)}-${Math.min(a, h)}, not level` };
+  if (leg.market === "draw") return { kind: "status", ok: a === h, win: a === h, text: a === h ? `level ${a}-${h}` : `${Math.max(a, h)}-${Math.min(a, h)}, not level` };
   const lead = me - them;
-  return { kind: "status", ok: lead > 0, text: lead > 0 ? `${who} up ${lead}` : lead === 0 ? "tied" : `${who} down ${-lead}` };
+  return { kind: "status", ok: lead > 0, win: lead > 0 ? true : lead < 0 ? false : null, text: lead > 0 ? `${who} up ${lead}` : lead === 0 ? "tied" : `${who} down ${-lead}` };
 }

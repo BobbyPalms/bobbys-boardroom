@@ -3924,12 +3924,12 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
       <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{oddsAs(sl.odds, oddsPref())}</span>
     </div>
     <div style={{ marginTop: 8 }}>
-      {sl.legs.map((l, i) => { const [m, mc] = mark(l.res); return <div key={i} style={{ display: "grid", gridTemplateColumns: "14px minmax(0,1fr) auto", gap: 8, alignItems: "baseline", padding: "4px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+      {sl.legs.map((l, i) => { const [m, mc] = mark(l.res), pg = track ? track(l) : null, liveC = pg && l.market === "ml" && pg.win != null ? (pg.win ? NEON.green : NEON.red) : "#FF8095"; return <div key={i} style={{ display: "grid", gridTemplateColumns: "14px minmax(0,1fr) auto", gap: 8, alignItems: "baseline", padding: "4px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
         <span style={{ color: mc, fontWeight: 700 }}>{m}</span>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12, color: T.ink, overflowWrap: "anywhere" }}>{legLabel(l)}</div>
-          {track && <LegBar p={track(l)} res={l.res}/>}
-          {(r => r ? <div style={{ fontSize: 10, color: "#FF8095", overflowWrap: "anywhere", marginTop: 1 }}>LIVE · {r.sport === "Tennis" || r.sport === "MMA" ? `${r.away.name} ${r.away.score || ""} · ${r.home.name} ${r.home.score || ""}` : `${r.away.abbr || r.away.name} ${r.away.score}-${r.home.score} ${r.home.abbr || r.home.name}`}{r.detail ? ` · ${r.detail}` : ""}</div>
+          {pg && <LegBar p={pg} res={l.res}/>}
+          {(r => r ? <div style={{ fontSize: 10, color: liveC, overflowWrap: "anywhere", marginTop: 1 }}>LIVE · {r.sport === "Tennis" || r.sport === "MMA" ? `${r.away.name} ${r.away.score || ""} · ${r.home.name} ${r.home.score || ""}` : `${r.away.abbr || r.away.name} ${r.away.score}-${r.home.score} ${r.home.abbr || r.home.name}`}{r.detail ? ` · ${r.detail}` : ""}</div>
             : <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere", marginTop: 1 }}>{shortGame(l)}{l.final && l.sport !== "Tennis" && l.sport !== "MMA" ? ` · final ${l.final.a}-${l.final.h}` : l.res ? "" : ` · ${whenTxt(l.date)}`}</div>)(liveLeg(l))}
         </div>
         <span style={{ fontFamily: F.d, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{oddsAs(l.odds, oddsPref())}</span>
@@ -3945,17 +3945,27 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
 
 // under a leg on a live ticket: an empty line that fills purple as the stat comes in, and turns green once it clears
 function LegBar({ p, res }) {
-  if (!p) return null;
-  const won = res === "W" || (p.kind === "count" ? p.done : p.ok), lost = res === "L";
-  const c = lost ? NEON.red : won ? NEON.green : NEON.purple;
+  if (!p || p.kind === "status") return null;                 // moneylines: the LIVE score line under it is green / red
+  const c = res === "L" ? NEON.red : res === "W" ? NEON.green : p.win === true ? NEON.green : p.win === false ? NEON.red : NEON.purple;
   const fmt = v => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
-  if (p.kind === "status") return <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{won ? "✓ " : "● "}{p.text}</div>;
+  const track = { height: 6, background: "rgba(241,230,255,.07)", border: `1px solid ${T.line}`, overflow: "hidden", position: "relative" };
+  if (p.kind === "margin") {
+    // the cover number in the middle: green fills right by how much it's covering, red fills left by how much it's short
+    const w = Math.min(50, (Math.abs(p.m) / p.scale) * 50);
+    return <div style={{ marginTop: 5 }}>
+      <div role="progressbar" aria-valuenow={p.m} aria-label={p.text} style={track}>
+        <div style={{ position: "absolute", top: 0, bottom: 0, left: p.m >= 0 ? "50%" : `${50 - w}%`, width: `${w}%`, background: c, boxShadow: `0 0 8px ${c}aa`, transition: "all .6s ease" }}/>
+        <div style={{ position: "absolute", top: -1, bottom: -1, left: "50%", width: 1, background: T.ink }}/>
+      </div>
+      <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{p.m > 0 ? "✓ " : ""}{p.text}</div>
+    </div>;
+  }
   const pct = p.target > 0 ? Math.max(0, Math.min(100, (p.value / p.target) * 100)) : 0;
   return <div style={{ marginTop: 5 }}>
-    <div role="progressbar" aria-valuenow={p.value} aria-valuemax={p.target} aria-label={`${fmt(p.value)} of ${fmt(p.target)} ${p.unit}`} style={{ height: 6, background: "rgba(241,230,255,.07)", border: `1px solid ${T.line}`, overflow: "hidden" }}>
+    <div role="progressbar" aria-valuenow={p.value} aria-valuemax={p.target} aria-label={`${fmt(p.value)} of ${fmt(p.target)} ${p.unit}`} style={track}>
       <div style={{ width: `${pct}%`, height: "100%", background: c, boxShadow: `0 0 8px ${c}aa`, transition: "width .6s ease" }}/>
     </div>
-    <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{fmt(p.value)} / {fmt(p.target)} {p.unit}{won ? " ✓" : ""}</div>
+    <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{fmt(p.value)} / {fmt(p.target)} {p.unit}{p.under ? ` · ${p.text}` : p.done ? " ✓" : ""}</div>
   </div>;
 }
 
