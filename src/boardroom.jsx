@@ -4002,7 +4002,8 @@ function LegBar({ p, res }) {
   }
   const pct = p.target > 0 ? Math.max(0, Math.min(100, (p.value / p.target) * 100)) : 0;
   return <div>
-    {above(tag(fmt(p.value), pct, c, "mid", "v"))}
+    {above(p.done || pct >= 100 ? tag(fmt(p.value), 100, c, "end", "v")
+      : [tag(fmt(p.value), Math.min(pct, 78), c, "mid", "v"), tag(fmt(p.target), 100, T.ink, "end", "t")])}
     <div role="progressbar" aria-valuenow={p.value} aria-valuemax={p.target} aria-label={`${fmt(p.value)} of ${fmt(p.target)} ${p.unit}`} style={{ ...track, marginTop: 2 }}>
       <div style={{ width: `${pct}%`, height: "100%", background: c, boxShadow: `0 0 8px ${c}aa`, transition: "width .6s ease" }}/>
     </div>
