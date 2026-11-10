@@ -4019,8 +4019,10 @@ function CashOut({ sl, kal, onCashed }) {
   const ticker = combo ? K.combo.market_ticker : K.orders?.[0]?.ticker;
   const side = combo ? "yes" : K.orders?.[0]?.side === "no" ? "no" : "yes";
   const owned = combo ? Number(K.combo.contracts) || 0 : (K.orders || []).filter(o => o.ticker === ticker).reduce((a, o) => a + (Number(o.filled) || 0), 0);
-  const [v, setV] = useState(null), [busy, setBusy] = useState(false), [msg, setMsg] = useState(null);
+  const [v, setV] = useState(null), [busy, setBusy] = useState(false), [msg, setMsg] = useState(null), [armed, setArmed] = useState(false);
   const cur = useRef(null), rfq = useRef(null), busyRef = useRef(false);
+  // two taps: CASH OUT asks, CONFIRM sells (the ask lapses after 15 seconds so a stale tap can't sell)
+  useEffect(() => { if (!armed) return; const t = setTimeout(() => setArmed(false), 15000); return () => clearTimeout(t); }, [armed]);
   const ready = !!kal && kal.env === K.env && !!ticker && owned > 0;
   useEffect(() => {
     if (!ready) return;
@@ -4061,7 +4063,7 @@ function CashOut({ sl, kal, onCashed }) {
   const sell = async () => {
     const want = cur.current;
     if (!want || want.none || busyRef.current) return;
-    busyRef.current = true; setBusy(true); setMsg(null);
+    busyRef.current = true; setBusy(true); setMsg(null); setArmed(false);
     try {
       if (want.how === "book") {
         // the book right now: never sell for less than the value on the button
@@ -4109,7 +4111,11 @@ function CashOut({ sl, kal, onCashed }) {
         <div>Cash out now {val != null ? <><b style={{ color: "#fff" }}>{cash(val)}</b> <span style={{ color: pl > 0 ? NEON.green : pl < 0 ? NEON.red : T.dim }}>({sCash(pl)})</span></> : null}</div>
         <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{!v ? "Reading Kalshi…" : v.gone ? "This position isn't open on Kalshi anymore (sold or settled there)." : v.none ? (v.how === "rfq" ? "Asking Kalshi's market makers for a price…" : v.why || "No bids on Kalshi right now.") : `${v.count} contracts · ${v.how === "rfq" ? "market maker's price" : "Kalshi's live bids"}, after fees`}{v?.err ? ` · couldn't refresh: ${v.err}` : ""}</div>
       </div>
-      <button onClick={sell} disabled={val == null || busy} aria-label="cash out" style={{ ...btnStyle(val != null && !busy), width: "100%", padding: "11px 12px", borderColor: val != null && !busy ? NEON.gold : T.line, background: val != null && !busy ? "rgba(255,194,38,.14)" : "none", color: val != null && !busy ? NEON.gold : T.faint, whiteSpace: "nowrap" }}>{busy ? "SELLING…" : val != null ? `CASH OUT ${cash(val)}` : "CASH OUT"}</button>
+      {!armed || busy ? <button onClick={() => { setMsg(null); setArmed(true); }} disabled={val == null || busy} aria-label="cash out" style={{ ...btnStyle(val != null && !busy), width: "100%", padding: "11px 12px", borderColor: val != null && !busy ? NEON.gold : T.line, background: val != null && !busy ? "rgba(255,194,38,.14)" : "none", color: val != null && !busy ? NEON.gold : T.faint, whiteSpace: "nowrap" }}>{busy ? "SELLING ON KALSHI…" : val != null ? `CASH OUT ${cash(val)}` : "CASH OUT"}</button>
+        : <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
+          <button onClick={sell} disabled={val == null} aria-label="confirm cash out" style={{ ...btnStyle(val != null), padding: "11px 8px", borderColor: NEON.gold, background: "rgba(255,194,38,.32)", color: "#fff", fontWeight: 700, overflowWrap: "anywhere" }}>{val != null ? `CONFIRM CASH OUT ${cash(val)}` : "CONFIRM CASH OUT"}</button>
+          <button onClick={() => setArmed(false)} aria-label="cancel cash out" style={{ ...btnStyle(false), padding: "11px 12px", color: T.dim, cursor: "pointer", whiteSpace: "nowrap" }}>CANCEL</button>
+        </div>}
     </div>
     {msg && <div style={{ marginTop: 6, fontSize: 11, color: NEON.gold, lineHeight: 1.5 }}>{msg}</div>}
   </div>;
