@@ -3881,6 +3881,7 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
 function Bettor({ path, mine = false, onChange, onBackBoard, backLabel = "LEADERBOARD", username, onRenamed, kal = null, onCashed }) {
   const [d, setD] = useState(null), [err, setErr] = useState(null), [rename, setRename] = useState(false);
   const load = () => api("GET", path).then(setD).catch(e => setErr(e.message));
+  const { gameOf, isLiveNow, track } = useLegTrack(d?.slips, mine && !!d?.slips?.some(x => x.status === "pending"));
   useEffect(() => { load(); }, [path]);
   if (err) return <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>;
   if (!d) return <Panel><div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div></Panel>;
@@ -3896,7 +3897,7 @@ function Bettor({ path, mine = false, onChange, onBackBoard, backLabel = "LEADER
     </Panel>
     <Panel title={mine ? "MY SLIPS" : "SLIPS"} right={`${d.slips.length} total`}>
       {!d.slips.length && <div style={{ fontSize: 12, color: T.dim }}>{mine ? "No slips yet. Add one on NEW SLIP." : "No slips yet."}</div>}
-      {d.slips.map(sl => <SlipCard key={sl.id} sl={sl} canTakeBack={mine} foot={mine && sl.status === "pending" && sl.kalshi ? <CashOut sl={sl} kal={kal} onCashed={m => { onCashed && onCashed(m); load(); onChange && onChange(); }}/> : null} onTakeBack={async () => { try { await api("DELETE", `slips/${sl.id}`); load(); onChange && onChange(); } catch (e) { setErr(e.message); } }}/>)}
+      {d.slips.map(sl => <SlipCard key={sl.id} sl={sl} canTakeBack={mine} track={mine && isLiveNow(sl) ? track : null} gameOfLeg={mine ? gameOf : null} foot={mine && sl.status === "pending" && sl.kalshi ? <CashOut sl={sl} kal={kal} onCashed={m => { onCashed && onCashed(m); load(); onChange && onChange(); }}/> : null} onTakeBack={async () => { try { await api("DELETE", `slips/${sl.id}`); load(); onChange && onChange(); } catch (e) { setErr(e.message); } }}/>)}
     </Panel>
   </>;
 }
@@ -3981,12 +3982,18 @@ function LegBar({ p, res }) {
   if (!p || p.kind === "status") return null;                 // moneylines: the LIVE score line under it is green / red
   const c = res === "L" ? NEON.red : res === "W" ? NEON.green : p.win === true ? NEON.green : p.win === false ? NEON.red : NEON.purple;
   const fmt = v => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
+  const sgn = v => (v > 0 ? `+${fmt(v)}` : v === 0 ? "PK" : fmt(v));
   const track = { height: 6, background: "rgba(241,230,255,.07)", border: `1px solid ${T.line}`, overflow: "hidden", position: "relative" };
+  // a number riding above the bar: `at` is where along it (0-100), `anchor` which edge of the number sits there
+  const tag = (txt, at, color, anchor = "mid", key) => <span key={key} style={{ position: "absolute", bottom: 0, left: `${at}%`, transform: anchor === "end" ? "translateX(-100%)" : anchor === "start" ? "none" : `translateX(-${at}%)`, fontFamily: F.d, fontSize: 10, fontWeight: 700, color, whiteSpace: "nowrap", lineHeight: 1, transition: "left .6s ease, transform .6s ease" }}>{txt}</span>;
+  const above = kids => <div style={{ position: "relative", height: 13, marginTop: 4 }}>{kids}</div>;
   if (p.kind === "margin") {
-    // the cover number in the middle: green fills right by how much it's covering, red fills left by how much it's short
-    const w = Math.min(50, (Math.abs(p.m) / p.scale) * 50);
-    return <div style={{ marginTop: 5 }}>
-      <div role="progressbar" aria-valuenow={p.m} aria-label={p.text} style={track}>
+    // the line in the middle; the fill runs green to the right by how much it's covering, red to the left by how much
+    // it's short, and the spread the team is playing at right now rides on the end of it
+    const w = Math.min(50, (Math.abs(p.m) / p.scale) * 50), gap = Math.max(w, 10), end = p.m >= 0 ? 50 + gap : 50 - gap;
+    return <div>
+      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), w > 0 && tag(sgn(p.at), end, c, p.m >= 0 ? (end > 88 ? "end" : "start") : (end < 12 ? "start" : "end"), "a")])}
+      <div role="progressbar" aria-valuenow={p.m} aria-label={p.text} style={{ ...track, marginTop: 2 }}>
         <div style={{ position: "absolute", top: 0, bottom: 0, left: p.m >= 0 ? "50%" : `${50 - w}%`, width: `${w}%`, background: c, boxShadow: `0 0 8px ${c}aa`, transition: "all .6s ease" }}/>
         <div style={{ position: "absolute", top: -1, bottom: -1, left: "50%", width: 1, background: T.ink }}/>
       </div>
@@ -3994,8 +4001,9 @@ function LegBar({ p, res }) {
     </div>;
   }
   const pct = p.target > 0 ? Math.max(0, Math.min(100, (p.value / p.target) * 100)) : 0;
-  return <div style={{ marginTop: 5 }}>
-    <div role="progressbar" aria-valuenow={p.value} aria-valuemax={p.target} aria-label={`${fmt(p.value)} of ${fmt(p.target)} ${p.unit}`} style={track}>
+  return <div>
+    {above(tag(fmt(p.value), pct, c, "mid", "v"))}
+    <div role="progressbar" aria-valuenow={p.value} aria-valuemax={p.target} aria-label={`${fmt(p.value)} of ${fmt(p.target)} ${p.unit}`} style={{ ...track, marginTop: 2 }}>
       <div style={{ width: `${pct}%`, height: "100%", background: c, boxShadow: `0 0 8px ${c}aa`, transition: "width .6s ease" }}/>
     </div>
     <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{fmt(p.value)} / {fmt(p.target)} {p.unit}{p.under ? ` · ${p.text}` : p.done ? " ✓" : ""}</div>
@@ -4107,39 +4115,45 @@ function CashOut({ sl, kal, onCashed }) {
   </div>;
 }
 
-// ---------- everyone's tickets: LIVE (riding now or later today, tail any of them) and PAST (every settled ticket) ----------
-const etDayOf = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-function Tickets({ kind, onOpen, kal = null, onTools, onTailed, onCashed }) {
-  const [tailing, setTailing] = useState(null);              // the ticket being tailed: its slip opens right under it
-  const [d, setD] = useState(null), [err, setErr] = useState(null), [st, setSt] = useState("all"), [busy, setBusy] = useState(false), [scores, setScores] = useState(null);
-  const [boxes, setBoxes] = useState(() => new Map()), dRef = useRef(null);
-  dRef.current = d;
-  const q = s => `tickets/${kind}${kind === "past" && s !== "all" ? `?status=${s}` : ""}`;
-  // LIVE TICKETS: the scores and, for games with a player prop riding, the box score: every 30 seconds
+// ---------- live legs: the scores and, for games with a player prop riding, the box score, every 30 seconds ----------
+// (LIVE TICKETS and MY BETS): which game each leg is on, whether a slip is live, and each leg's progress
+function useLegTrack(slips, on) {
+  const [scores, setScores] = useState(null), [boxes, setBoxes] = useState(() => new Map()), ref = useRef(slips);
+  ref.current = slips;
   useEffect(() => {
-    if (kind !== "live") return;
-    let on = true, timer = null;
+    if (!on) return;
+    let alive = true, timer = null;
     const tick = async () => {
       if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(tick, 15000); return; }
       try {
         _betRows = null;
         const b = await loadBetRows();
-        if (!on) return;
+        if (!alive) return;
         setScores(new Map(b.rows.map(r => [`${r.sport}|${r.id}`, r])));
         const games = new Map();
-        for (const t of dRef.current?.tickets || []) for (const l of t.legs) { const p = !l.res && propOf(l), r = p && gameFor(b.rows, p.sport, p.teams); if (r && (r.state === "in" || r.state === "post")) games.set(`${r.sport}|${r.id}`, r); }
+        for (const t of ref.current || []) for (const l of t.legs || []) { const p = !l.res && propOf(l), r = p && gameFor(b.rows, p.sport, p.teams); if (r && (r.state === "in" || r.state === "post")) games.set(`${r.sport}|${r.id}`, r); }
         const got = await Promise.all([...games.values()].map(r => getJSON(summaryUrl(r.sport, r.league, r.id)).then(j => [`${r.sport}|${r.id}`, parseFinal(j, r.sport)]).catch(() => null)));
-        if (on && got.some(Boolean)) setBoxes(m => { const n = new Map(m); for (const x of got) if (x) n.set(x[0], x[1]); return n; });
+        if (alive && got.some(Boolean)) setBoxes(m => { const n = new Map(m); for (const x of got) if (x) n.set(x[0], x[1]); return n; });
       } catch (_) { /* next pass */ }
-      if (on) timer = setTimeout(tick, 30000);
+      if (alive) timer = setTimeout(tick, 30000);
     };
     tick();
-    return () => { on = false; clearTimeout(timer); };
-  }, [kind, !!d]);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [on, !!slips]);
   const rowsArr = useMemo(() => (scores ? [...scores.values()] : []), [scores]);
   const gameOf = l => { const p = propOf(l); return p ? gameFor(rowsArr, p.sport, p.teams) : scores?.get(`${l.sport}|${l.eventId}`) || null; };
-  const isLiveNow = t => t.live || t.legs.some(l => !l.res && (Date.parse(l.date) <= Date.now() || gameOf(l)?.state === "in"));
-  const trackLeg = l => { const r = gameOf(l); return r ? legProgress(l, r, propOf(l) ? boxes.get(`${r.sport}|${r.id}`) : null) : null; };
+  const isLiveNow = t => t.status === "pending" && (t.live || t.legs.some(l => !l.res && (Date.parse(l.date) <= Date.now() || gameOf(l)?.state === "in")));
+  const track = l => { const r = gameOf(l); return r ? legProgress(l, r, propOf(l) ? boxes.get(`${r.sport}|${r.id}`) : null) : null; };
+  return { scores, gameOf, isLiveNow, track };
+}
+
+// ---------- everyone's tickets: LIVE (riding now or later today, tail any of them) and PAST (every settled ticket) ----------
+const etDayOf = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+function Tickets({ kind, onOpen, kal = null, onTools, onTailed, onCashed }) {
+  const [tailing, setTailing] = useState(null);              // the ticket being tailed: its slip opens right under it
+  const [d, setD] = useState(null), [err, setErr] = useState(null), [st, setSt] = useState("all"), [busy, setBusy] = useState(false);
+  const q = s => `tickets/${kind}${kind === "past" && s !== "all" ? `?status=${s}` : ""}`;
+  const { scores, gameOf, isLiveNow, track: trackLeg } = useLegTrack(d?.tickets, kind === "live");
   useEffect(() => {
     let on = true, timer = null;
     const pull = async () => {

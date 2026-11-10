@@ -108,7 +108,8 @@ export function legProgress(leg, row, F) {
   if (leg.market === "spread") {
     const m = me - them + Number(leg.line), d = Math.round(Math.abs(m) * 10) / 10;
     const scale = ["NHL", "MLB", "Soccer"].includes(leg.sport) ? 3 : 14;
-    return { kind: "margin", m, scale, ok: m > 0, win: m > 0 ? true : m < 0 ? false : null, text: m > 0 ? `covering by ${d}` : m === 0 ? "right on the number" : `needs ${d} more to cover` };
+    // line: the spread taken (-6.5); at: where the team stands right now in the same terms (up 3 = -3, down 2 = +2)
+    return { kind: "margin", m, scale, line: Number(leg.line), at: them - me, ok: m > 0, win: m > 0 ? true : m < 0 ? false : null, text: m > 0 ? `covering by ${d}` : m === 0 ? "right on the number" : `needs ${d} more to cover` };
   }
   if (leg.market === "draw") return { kind: "status", ok: a === h, win: a === h, text: a === h ? `level ${a}-${h}` : `${Math.max(a, h)}-${Math.min(a, h)}, not level` };
   const lead = me - them;

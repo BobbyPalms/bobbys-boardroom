@@ -37,6 +37,7 @@ check("over cleared", legProgress(L("total", "over", 20.5), g).done === true);
 check("under: a bar toward the line, winning while below", (x => x.kind === "count" && x.under && x.value === 27 && x.target === 47.5 && x.ok && x.win === true && x.text === "under by 20.5")(legProgress(L("total", "under", 47.5), g)));
 check("under: losing once over", (x => !x.ok && x.win === false && x.text === "over by 6.5")(legProgress(L("total", "under", 20.5), g)));
 check("over / props still building: neither winning nor losing yet", legProgress(L("total", "over", 47.5), g).win === null);
+check("spread: its line and where the team stands now, in spread terms (BUF up 7 = -7, MIN down 7 = +7)", (x => x.line === -2.5 && x.at === -7)(legProgress(L("spread", "away", -2.5), g)) && legProgress(L("spread", "home", 3), g).at === 7);
 check("spread: a bar around the cover number (NFL scale 14)", (x => x.kind === "margin" && x.m === 4.5 && x.scale === 14 && x.win === true)(legProgress(L("spread", "away", -2.5), g)) && legProgress(L("spread", "home", 3), g).win === false);
 check("spread: covering / not", (x => x.ok && x.text === "covering by 4.5")(legProgress(L("spread", "away", -2.5), g)) && (x => !x.ok && x.text === "needs 4 more to cover")(legProgress(L("spread", "home", 3), g)));
 check("moneyline: winning / losing / tied", legProgress(L("ml", "away"), g).win === true && legProgress(L("ml", "home"), g).win === false && legProgress(L("ml", "away"), { state: "in", away: { score: "3" }, home: { score: "3" } }).win === null);
