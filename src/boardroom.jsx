@@ -4002,10 +4002,11 @@ function CashValue({ sl }) {
     if (!K?.mkt || !(K.count > 0)) return;
     let alive = true, timer = null;
     const pull = async () => {
-      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 5000); return; }
+      let next = 4000;                                       // a combo estimate takes a few lookups: every 4 seconds
       try {
         const env = { env: K.env }, book = (await kalshiCall(env, "GET", `markets/${encodeURIComponent(K.mkt)}/orderbook`)).orderbook_fp, sv = sellValue(book, K.side, K.count);
-        if (sv.ok) { alive && setV({ value: sv.net, how: "bids" }); }
+        if (sv.ok) { alive && setV({ value: sv.net, how: "bids" }); next = 2000; }
         else if (K.combo) {
           const legs = (await kalshiCall(env, "GET", `markets/${encodeURIComponent(K.mkt)}`)).market?.mve_selected_legs || [];
           const mk = await Promise.all(legs.map(l => kalshiCall(env, "GET", `markets/${encodeURIComponent(l.market_ticker)}`).then(j => ({ side: l.side, market: j.market })).catch(() => ({ side: l.side, market: null }))));
@@ -4013,7 +4014,7 @@ function CashValue({ sl }) {
           alive && setV(p ? { value: Math.round((K.count * p - feeEstimate(K.count, p)) * 100) / 100, how: "est" } : { none: true });
         } else alive && setV({ none: true });
       } catch (_) { /* keep the last value */ }
-      if (alive) timer = setTimeout(pull, 10000);
+      if (alive) timer = setTimeout(pull, next);
     };
     pull();
     return () => { alive = false; clearTimeout(timer); };
@@ -4079,13 +4080,16 @@ function CashOut({ sl, kal, onCashed }) {
     if (!ready) return;
     let alive = true, made = null;
     const sleep = ms => new Promise(r => setTimeout(r, ms));
+    let pos = null, posAt = 0;
     (async () => {
       while (alive) {
         if (busyRef.current) { await sleep(500); continue; }
-        let wait = 5000;
+        if (typeof document !== "undefined" && document.hidden) { await sleep(2000); continue; }
+        // the price as fast as Kalshi gives it: the bids every second; the position itself every 10 seconds
+        let wait = 1000;
         try {
-          const pos = positionOf(await kalshiCall(kal, "GET", `portfolio/positions?ticker=${encodeURIComponent(ticker)}`), ticker);
-          if (pos.side !== side || !(pos.count > 0)) { cur.current = null; alive && setV({ gone: true }); await sleep(15000); continue; }
+          if (!pos || Date.now() - posAt > 10000) { pos = positionOf(await kalshiCall(kal, "GET", `portfolio/positions?ticker=${encodeURIComponent(ticker)}`), ticker); posAt = Date.now(); }
+          if (pos.side !== side || !(pos.count > 0)) { cur.current = null; alive && setV({ gone: true }); pos = null; await sleep(15000); continue; }
           const count = Math.round(Math.min(owned, pos.count) * 100) / 100;
           const book = (await kalshiCall({ env: kal.env }, "GET", `markets/${encodeURIComponent(ticker)}/orderbook`)).orderbook_fp;
           const sv = sellValue(book, side, count);
@@ -4098,7 +4102,6 @@ function CashOut({ sl, kal, onCashed }) {
             }
             const best = bestSellQuote((await kalshiCall(kal, "GET", quotesPath(rfq.current))).quotes);
             cur.current = best ? { how: "rfq", count, best, rfq: rfq.current, value: Math.round((count * best.price - feeEstimate(count, best.price)) * 100) / 100 } : { how: "rfq", count, none: true };
-            wait = 2000;
           } else cur.current = { how: "book", count, none: true, why: sv.why };
           alive && setV(cur.current);
         } catch (e) { alive && setV(x => ({ ...(x || {}), err: e.message })); }
@@ -4160,7 +4163,7 @@ function CashOut({ sl, kal, onCashed }) {
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 8 }}>
       <div style={{ minWidth: 0, fontSize: 12, color: T.dim, lineHeight: 1.5 }}>
         <div>Cash out now {val != null ? <><b style={{ color: "#fff" }}>{cash(val)}</b> <span style={{ color: pl > 0 ? NEON.green : pl < 0 ? NEON.red : T.dim }}>({sCash(pl)})</span></> : null}</div>
-        <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{!v ? "Reading Kalshi…" : v.gone ? "This position isn't open on Kalshi anymore (sold or settled there)." : v.none ? (v.how === "rfq" ? "Asking Kalshi's market makers for a price…" : v.why || "No bids on Kalshi right now.") : `${v.count} contracts · ${v.how === "rfq" ? "market maker's price" : "Kalshi's live bids"}, after fees`}{v?.err ? ` · couldn't refresh: ${v.err}` : ""}</div>
+        <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{!v ? "Reading Kalshi…" : v.gone ? "This position isn't open on Kalshi anymore (sold or settled there)." : v.none ? (v.how === "rfq" ? "Asking Kalshi's market makers for a price…" : v.why || "No bids on Kalshi right now.") : `${v.count} contracts · ${v.how === "rfq" ? "market maker's price" : "Kalshi's live bids"}, after fees · live`}{v?.err ? ` · couldn't refresh: ${v.err}` : ""}</div>
       </div>
       {!armed || busy ? <button onClick={() => { setMsg(null); setArmed(true); }} disabled={val == null || busy} aria-label="cash out" style={{ ...btnStyle(val != null && !busy), width: "100%", padding: "11px 12px", borderColor: val != null && !busy ? NEON.gold : T.line, background: val != null && !busy ? "rgba(255,194,38,.14)" : "none", color: val != null && !busy ? NEON.gold : T.faint, whiteSpace: "nowrap" }}>{busy ? "SELLING ON KALSHI…" : val != null ? `CASH OUT ${cash(val)}` : "CASH OUT"}</button>
         : <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8 }}>
