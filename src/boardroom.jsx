@@ -4498,8 +4498,14 @@ function BoxTable({ g, sport }) {
 export default function App() {
   useEffect(()=>{try{document.title="Bobby's Boardroom";}catch(_){/* no document */}},[]);
   // anyone with their Kalshi key on this device: their open Kalshi positions are synced as tickets when the site opens
+  // ...and every minute on any page, and the moment the tab comes back to the front
   useEffect(()=>{ if(typeof location==="undefined"||!/^https?:$/.test(location.protocol)&&!window.__api) return;
-    api("GET","me").then(j=>j.username?savedKey(j.username):null).then(k=>k&&syncKalshi(k)).catch(()=>{}); },[]);
+    let key=null, timer=null, alive=true;
+    const run=()=>{ if(key&&!document.hidden) syncKalshi(key).catch(()=>{}); };
+    api("GET","me").then(j=>j.username?savedKey(j.username):null).then(k=>{ if(!alive||!k) return; key=k; run(); timer=setInterval(run,60000); }).catch(()=>{});
+    const vis=()=>{ if(!document.hidden) run(); };
+    document.addEventListener("visibilitychange",vis); window.addEventListener("focus",vis);
+    return ()=>{ alive=false; clearInterval(timer); document.removeEventListener("visibilitychange",vis); window.removeEventListener("focus",vis); }; },[]);
   const [phase,setPhase]=useState("setup");
   const [sport,setSport]=useState("MLB");
   const [awayInput,setAwayInput]=useState("");
