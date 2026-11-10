@@ -3317,12 +3317,11 @@ function BetSlipsScreen({ onBack, onTools }) {
   const [who, setWho] = useState(null), [from, setFrom] = useState("board");   // a username whose page is open, and the tab it was opened from
   const [ver, setVer] = useState(0);                          // bump to re-read after a change
   const [kal, setKal] = useState(null), [flash, setFlash] = useState(null);   // this device's Kalshi key (never readable, only usable)
-  const [seed, setSeed] = useState(null);                     // a ticket being tailed: its open legs go onto NEW SLIP
   useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message, status: e.status })); }, []);
   useEffect(() => { if (me.username) savedKey(me.username).then(k => setKal(k || null)).catch(() => setKal(null)); }, [me.username]);
   const open = u => { setFrom(tab === "user" ? from : tab); setWho(u); setTab("user"); };
   // every pick still undecided comes along, upcoming or live (live ones are bought live on Kalshi); only finished legs stay behind
-  const tail = t => { const legs = t.legs.filter(l => !l.res); setSeed({ id: t.id, from: t.you ? "your own ticket" : t.username, legs, left: t.legs.length - legs.length, kalshi: !!t.kalshi }); setFlash(null); setTab("slip"); };
+
 
   return <Shell status={me.username || "bet slips"}>
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
@@ -3336,8 +3335,9 @@ function BetSlipsScreen({ onBack, onTools }) {
       <nav className="bb-subtabs" style={{ display: "grid", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
         {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"], ["live", "LIVE TICKETS"], ["past", "PAST TICKETS"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); setFlash(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
       </nav>
-      {tab === "slip" && <NewSlip key={seed ? `t${seed.id}` : "blank"} seed={seed} onUnseed={() => setSeed(null)} kal={kal} onTools={onTools} onPlaced={msg => { setFlash(msg || null); setSeed(null); setVer(v => v + 1); setTab("mine"); }}/>}
-      {tab === "live" && <Tickets key={`live${ver}`} kind="live" onOpen={open} onTail={tail}/>}
+      {tab === "slip" && <NewSlip kal={kal} onTools={onTools} onPlaced={msg => { setFlash(msg || null); setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "live" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
+      {tab === "live" && <Tickets key={`live${ver}`} kind="live" onOpen={open} kal={kal} onTools={onTools} onTailed={msg => { setFlash(`${msg ? `${msg} ` : ""}Tail placed. It's in My Bets.`); setVer(v => v + 1); }}/>}
       {tab === "past" && <Tickets key={`past${ver}`} kind="past" onOpen={open}/>}
       {tab === "mine" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
       {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
@@ -3368,6 +3368,16 @@ const oddsPref = () => { try { return localStorage.getItem(ODDS_LS) === "pct" ? 
 const pctTxt1 = a => String(Math.round(amToPct(a) * 10) / 10);
 let _lineId = 1;
 const blankLine = () => ({ id: _lineId++, text: "", odds: "", choice: null });
+// a tail slip: opens right under the ticket in LIVE TICKETS
+function TailBox({ title, onClose, children }) {
+  return <div style={{ marginTop: 8, border: `1px solid ${NEON.gold}88`, background: "rgba(255,194,38,.05)", padding: "12px" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginBottom: 10 }}>
+      <span style={{ minWidth: 0, fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: NEON.gold, overflowWrap: "anywhere" }}>{title}</span>
+      <button aria-label="close tail" onClick={onClose} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 11, padding: "4px 9px", cursor: "pointer", whiteSpace: "nowrap" }}>close</button>
+    </div>
+    {children}
+  </div>;
+}
 function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
   // tailing: their open picks, their odds (yours to change); each line stays tied to their exact game and bet until you edit it
   const [lines, setLines] = useState(() => (seed?.legs.length ? seed.legs.map(l => ({ ...blankLine(), text: legLabel(l), odds: oddsPref() === "pct" ? pctTxt1(l.odds) : fmtAm(l.odds), seed: l })) : [blankLine()]));
@@ -3424,15 +3434,12 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
       setReview(false); setLines([blankLine()]); setStake(""); onPlaced(r.summary);
     } catch (e) { setReview(false); setErr(`${r.summary} It's on Kalshi, but saving it here failed: ${e.message} Add it again with Kalshi switched off to track it.`); }
   };
-  return <Panel title="NEW SLIP" right={board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"}>
-    {seed && <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "start", marginBottom: 12, padding: "10px 12px", border: `1px solid ${NEON.gold}66`, background: "rgba(255,194,38,.07)" }}>
-      <div style={{ minWidth: 0, fontSize: 12, color: T.ink, lineHeight: 1.55 }}>
-        <div style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: NEON.gold, overflowWrap: "anywhere" }}>TAILING {seed.from.toUpperCase()}</div>
+  const Box = seed ? TailBox : Panel;
+  return <Box title={seed ? `TAIL ${seed.from.toUpperCase()}` : "NEW SLIP"} right={seed ? null : board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"} onClose={onUnseed}>
+    {seed && <div style={{ fontSize: 12, color: T.ink, lineHeight: 1.55, marginBottom: 12 }}>
         {seed.legs.length ? <>The picks are loaded{toK ? " at Kalshi's prices." : " at their odds. Change the odds to the price you're getting."}{seed.left ? ` ${seed.left} pick${seed.left > 1 ? "s are" : " is"} already decided, so ${seed.left > 1 ? "they were" : "it was"} left off.` : ""}{liveSeeded && !toK ? (kal ? " Some of these games are live: switch Send to Kalshi on to bet them live." : " Some of these games are live: connect Kalshi in Tools → Kalshi to bet them live.") : ""}</> : "Every pick on that ticket is already decided, so there's nothing left to tail."}
-      </div>
-      <button aria-label="stop tailing" onClick={onUnseed} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 11, padding: "4px 9px", cursor: "pointer", whiteSpace: "nowrap" }}>clear</button>
     </div>}
-    <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay. Games already underway can be bet live when the slip goes to Kalshi.</div>
+    {!seed && <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay. Games already underway can be bet live when the slip goes to Kalshi.</div>}
     {!kal && onTools && <button onClick={onTools} style={{ display: "block", width: "100%", marginBottom: 12, padding: "9px 12px", border: `1px dashed ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, textAlign: "left", cursor: "pointer", lineHeight: 1.5 }}>Want slips sent to your Kalshi account? Connect it in <span style={{ color: T.chrome, textDecoration: "underline" }}>Tools → Kalshi</span>.</button>}
     {kal && <button onClick={() => { setKOn(!kOn); setReview(false); }} aria-pressed={toK} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", marginBottom: 12, padding: "10px 12px", border: `1px solid ${toK ? NEON.teal : T.line}`, background: toK ? "rgba(23,242,208,.08)" : "none", color: T.ink, cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
       <span style={{ width: 34, height: 18, borderRadius: 9, background: toK ? NEON.teal : T.line, position: "relative", display: "inline-block" }}><span style={{ position: "absolute", top: 2, left: toK ? 18 : 2, width: 14, height: 14, borderRadius: 7, background: "#fff", transition: "left .15s" }}/></span>
@@ -3483,7 +3490,7 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
     {review && toK ? <KalshiReview kal={kal} plan={used.map(x => ({ k: x.k }))} stake={amt} onDone={kalshiDone} onCancel={() => setReview(false)}/>
       : <button onClick={place} disabled={!canPlace} style={{ width: "100%", marginTop: 12, padding: 14, border: `1px solid ${canPlace ? (toK ? NEON.teal : T.chrome) : T.line}`, background: canPlace ? (toK ? "rgba(23,242,208,.18)" : "rgba(143,0,255,0.3)") : "none", color: canPlace ? "#fff" : T.faint, fontFamily: F.d, fontSize: 13, letterSpacing: 3, cursor: canPlace ? "pointer" : "not-allowed" }}>{busy ? "PLACING…" : used.some(x => !x.leg) ? "TAP A PICK ON EVERY LINE" : toK ? "REVIEW ON KALSHI" : "PLACE SLIP"}</button>}
     {board && board.reached < board.tried && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{board.tried - board.reached} of {board.tried} scoreboards didn't answer; some games may be missing.</div>}
-  </Panel>;
+  </Box>;
 }
 // ─── KALSHI on the slip: each person's own key, kept on their device; every order confirmed before it's sent ─────
 async function kalshiCall(rec, method, sub, body) {
@@ -3935,7 +3942,8 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null }) 
 
 // ---------- everyone's tickets: LIVE (riding now or later today, tail any of them) and PAST (every settled ticket) ----------
 const etDayOf = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-function Tickets({ kind, onOpen, onTail }) {
+function Tickets({ kind, onOpen, kal = null, onTools, onTailed }) {
+  const [tailing, setTailing] = useState(null);              // the ticket being tailed: its slip opens right under it
   const [d, setD] = useState(null), [err, setErr] = useState(null), [st, setSt] = useState("all"), [busy, setBusy] = useState(false), [scores, setScores] = useState(null);
   const q = s => `tickets/${kind}${kind === "past" && s !== "all" ? `?status=${s}` : ""}`;
   useEffect(() => {
@@ -3961,17 +3969,20 @@ function Tickets({ kind, onOpen, onTail }) {
         <button onClick={() => onOpen(t.username)} style={{ maxWidth: "100%", padding: 0, border: "none", background: "none", color: t.you ? T.chrome : "#fff", fontFamily: F.d, fontSize: 13, fontWeight: 700, letterSpacing: 0.5, cursor: "pointer", textAlign: "left", overflowWrap: "anywhere" }}>{t.username}{t.you ? <span style={{ fontFamily: F.m, fontSize: 11, fontWeight: 400, color: T.dim }}> · you</span> : null}</button>
         {(t.tails > 0 || t.tailOf) && <div style={{ fontSize: 10, color: T.faint, marginTop: 2, lineHeight: 1.5, overflowWrap: "anywhere" }}>{t.tails > 0 ? <span style={{ color: NEON.gold }}>{t.tails} tailing</span> : null}{t.tails > 0 && t.tailOf ? " · " : ""}{t.tailOf ? `tailed ${t.tailOf}` : ""}</div>}
       </div>
-      {open ? <button onClick={() => onTail(t)} aria-label={`tail ${t.you ? "your ticket" : t.username}`} style={{ ...btnStyle(), borderColor: NEON.gold, background: "rgba(255,194,38,.12)", color: NEON.gold, whiteSpace: "nowrap" }}>TAIL ▸</button> : <span/>}
+      {open ? <button onClick={() => setTailing(tailing?.id === t.id ? null : { id: t.id, from: t.you ? "your own ticket" : t.username, legs: t.legs.filter(l => !l.res), left: t.legs.filter(l => l.res).length })} aria-pressed={tailing?.id === t.id} aria-label={`tail ${t.you ? "your ticket" : t.username}`} style={{ ...btnStyle(), borderColor: NEON.gold, background: tailing?.id === t.id ? "rgba(255,194,38,.3)" : "rgba(255,194,38,.12)", color: tailing?.id === t.id ? "#fff" : NEON.gold, whiteSpace: "nowrap" }}>{tailing?.id === t.id ? "TAIL ▾" : "TAIL ▸"}</button> : <span/>}
     </div>;
   };
-  const card = t => <SlipCard key={t.id} sl={t} top={head(t)} liveRows={kind === "live" ? scores : null}/>;
+  const card = t => <Fragment key={t.id}>
+    <SlipCard sl={t} top={head(t)} liveRows={kind === "live" ? scores : null}/>
+    {kind === "live" && tailing?.id === t.id && <NewSlip key={`tail${t.id}`} seed={tailing} onUnseed={() => setTailing(null)} kal={kal} onTools={onTools} onPlaced={msg => { setTailing(null); onTailed && onTailed(msg); }}/>}
+  </Fragment>;
   if (kind === "live") {
     const today = etDayOf(new Date().toISOString()), list = d?.tickets || [];
     const going = l => !l.res && (Date.parse(l.date) <= Date.now() || scores?.get(`${l.sport}|${l.eventId}`)?.state === "in");
     const groups = [["LIVE NOW", list.filter(t => t.live || t.legs.some(going))], ["LATER TODAY", []], ["UPCOMING", []]];
     for (const t of list) if (!groups[0][1].includes(t)) (t.next && etDayOf(t.next) === today ? groups[1][1] : groups[2][1]).push(t);
     return <>
-      <div style={{ marginTop: 14, fontSize: 11, color: T.dim, lineHeight: 1.6 }}>Everyone's tickets that are still riding. Tap <span style={{ color: NEON.gold }}>TAIL ▸</span> to put the same picks on your slip, upcoming or live (live games go through Kalshi). Updates every minute.</div>
+      <div style={{ marginTop: 14, fontSize: 11, color: T.dim, lineHeight: 1.6 }}>Everyone's tickets that are still riding. Tap <span style={{ color: NEON.gold }}>TAIL ▸</span> on any ticket to bet the same picks right here, upcoming or live (live games go through Kalshi). Updates every minute.</div>
       {!d && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading tickets…</div></Panel>}
       {d && !list.length && <Panel><div style={{ fontSize: 12, color: T.dim }}>No tickets riding right now.</div></Panel>}
       {d && groups.filter(([, g]) => g.length).map(([title, g]) => <Panel key={title} title={title} right={`${g.length} ticket${g.length > 1 ? "s" : ""}`} color={title === "LIVE NOW" ? NEON.red : T.chrome}>{g.map(card)}</Panel>)}
