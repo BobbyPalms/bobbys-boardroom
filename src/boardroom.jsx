@@ -5,7 +5,7 @@ import { propOf, gameFor, legProgress } from "./legtrack.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3338,7 +3338,7 @@ function BetSlipsScreen({ onBack, onTools }) {
       </nav>
       {tab === "slip" && <NewSlip kal={kal} onTools={onTools} onPlaced={msg => { setFlash(msg || null); setVer(v => v + 1); setTab("mine"); }}/>}
       {tab === "live" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
-      {tab === "live" && <Tickets key={`live${ver}`} kind="live" onOpen={open} kal={kal} onTools={onTools} onTailed={msg => { setFlash(`${msg ? `${msg} ` : ""}Tail placed. It's in My Bets.`); setVer(v => v + 1); }}/>}
+      {tab === "live" && <Tickets key={`live${ver}`} kind="live" onOpen={open} kal={kal} onTools={onTools} onCashed={m => { setFlash(m); setVer(v => v + 1); }} onTailed={msg => { setFlash(`${msg ? `${msg} ` : ""}Tail placed. It's in My Bets.`); setVer(v => v + 1); }}/>}
       {tab === "past" && <Tickets key={`past${ver}`} kind="past" onOpen={open}/>}
       {tab === "mine" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
       {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine kal={kal} onCashed={m => setFlash(m)} onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
@@ -3943,6 +3943,39 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
   </div>;
 }
 
+// someone else's Kalshi ticket on LIVE NOW: what it would cash out for right now (only its owner can cash it out).
+// Straights and combos with buyers on the book: Kalshi's live bids for those contracts. Other combos: an estimate from each
+// leg's current bid (no one can ask Kalshi's market makers on someone else's behalf).
+function CashValue({ sl }) {
+  const K = sl.kalshi, [v, setV] = useState(null);
+  useEffect(() => {
+    if (!K?.mkt || !(K.count > 0)) return;
+    let alive = true, timer = null;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
+      try {
+        const env = { env: K.env }, book = (await kalshiCall(env, "GET", `markets/${encodeURIComponent(K.mkt)}/orderbook`)).orderbook_fp, sv = sellValue(book, K.side, K.count);
+        if (sv.ok) { alive && setV({ value: sv.net, how: "bids" }); }
+        else if (K.combo) {
+          const legs = (await kalshiCall(env, "GET", `markets/${encodeURIComponent(K.mkt)}`)).market?.mve_selected_legs || [];
+          const mk = await Promise.all(legs.map(l => kalshiCall(env, "GET", `markets/${encodeURIComponent(l.market_ticker)}`).then(j => ({ side: l.side, market: j.market })).catch(() => ({ side: l.side, market: null }))));
+          const p = comboEstimate(mk);
+          alive && setV(p ? { value: Math.round((K.count * p - feeEstimate(K.count, p)) * 100) / 100, how: "est" } : { none: true });
+        } else alive && setV({ none: true });
+      } catch (_) { /* keep the last value */ }
+      if (alive) timer = setTimeout(pull, 10000);
+    };
+    pull();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [K?.mkt]);
+  if (!K?.mkt) return null;
+  const pl = v && v.value != null ? Math.round((v.value - sl.stake) * 100) / 100 : null;
+  return <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}`, fontSize: 12, color: T.dim, lineHeight: 1.5 }}>
+    <div>Cash out now {pl != null ? <><b style={{ color: "#fff" }}>{cash(v.value)}</b> <span style={{ color: pl > 0 ? NEON.green : pl < 0 ? NEON.red : T.dim }}>({sCash(pl)})</span></> : <span style={{ color: T.faint }}>{v?.none ? "no bids on Kalshi right now" : "…"}</span>}</div>
+    <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{v?.how === "est" ? "Estimate from each leg's live Kalshi price" : "Kalshi's live bids, after fees"} · only {sl.username} can cash it out</div>
+  </div>;
+}
+
 // under a leg on a live ticket: an empty line that fills purple as the stat comes in, and turns green once it clears
 function LegBar({ p, res }) {
   if (!p || p.kind === "status") return null;                 // moneylines: the LIVE score line under it is green / red
@@ -4076,7 +4109,7 @@ function CashOut({ sl, kal, onCashed }) {
 
 // ---------- everyone's tickets: LIVE (riding now or later today, tail any of them) and PAST (every settled ticket) ----------
 const etDayOf = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-function Tickets({ kind, onOpen, kal = null, onTools, onTailed }) {
+function Tickets({ kind, onOpen, kal = null, onTools, onTailed, onCashed }) {
   const [tailing, setTailing] = useState(null);              // the ticket being tailed: its slip opens right under it
   const [d, setD] = useState(null), [err, setErr] = useState(null), [st, setSt] = useState("all"), [busy, setBusy] = useState(false), [scores, setScores] = useState(null);
   const [boxes, setBoxes] = useState(() => new Map()), dRef = useRef(null);
@@ -4130,7 +4163,8 @@ function Tickets({ kind, onOpen, kal = null, onTools, onTailed }) {
     </div>;
   };
   const card = t => <Fragment key={t.id}>
-    <SlipCard sl={t} top={head(t)} liveRows={kind === "live" ? scores : null} track={kind === "live" && isLiveNow(t) ? trackLeg : null} gameOfLeg={kind === "live" ? gameOf : null}/>
+    <SlipCard sl={t} top={head(t)} liveRows={kind === "live" ? scores : null} track={kind === "live" && isLiveNow(t) ? trackLeg : null} gameOfLeg={kind === "live" ? gameOf : null}
+      foot={kind === "live" && isLiveNow(t) && t.status === "pending" && t.kalshi ? (t.you ? <CashOut sl={t} kal={kal} onCashed={m => onCashed && onCashed(m)}/> : <CashValue sl={t}/>) : null}/>
     {kind === "live" && tailing?.id === t.id && <NewSlip key={`tail${t.id}`} seed={tailing} onUnseed={() => setTailing(null)} kal={kal} onTools={onTools} onPlaced={msg => { setTailing(null); onTailed && onTailed(msg); }}/>}
   </Fragment>;
   if (kind === "live") {

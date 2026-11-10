@@ -65,7 +65,13 @@ const setting = async (env, k) => (await env.DB.prepare("SELECT v FROM settings 
 const setSetting = (env, k, v) => env.DB.prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(k, v).run();
 const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.odds, status: r.status, profit: r.profit, settled: r.settled, legs: JSON.parse(r.legs), kalshi: r.kalshi ? JSON.parse(r.kalshi) : null, tail: r.tail || null });
 // someone else's slip: that it went through Kalshi, never their order or quote ids
-const publicSlip = (s, mine) => (mine || !s.kalshi ? s : { ...s, kalshi: { env: s.kalshi.env, combo: !!s.kalshi.combo } });
+// (plus the market, side and size, so anyone can see what it would cash out for right now)
+function publicKalshi(k) {
+  const o = (k.orders || [])[0], mkt = k.combo ? k.combo.market_ticker : o?.ticker || null;
+  const count = k.combo ? Number(k.combo.contracts) || 0 : (k.orders || []).filter(x => x.ticker === mkt).reduce((a, x) => a + (Number(x.filled) || 0), 0);
+  return { env: k.env, combo: !!k.combo, mkt, side: k.combo ? "yes" : o?.side === "no" ? "no" : "yes", count: Math.round(count * 100) / 100 };
+}
+const publicSlip = (s, mine) => (mine || !s.kalshi ? s : { ...s, kalshi: publicKalshi(s.kalshi) });
 
 // ---------- ESPN ----------
 const espn = (env, url) => (env.ESPN_BASE ? url.replace("https://site.api.espn.com", env.ESPN_BASE) : url);

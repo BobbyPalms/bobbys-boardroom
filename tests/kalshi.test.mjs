@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateKeyPairSync, verify, constants, webcrypto } from "crypto";
-import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, readPem, importKey, signHeaders } from "../src/kalshi.js";
+import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, comboEstimate, readPem, importKey, signHeaders } from "../src/kalshi.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const K = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "kalshi_events.json"), "utf8"));
@@ -61,6 +61,7 @@ check("never pays more than the price you confirmed", bestComboQuote(qs3, { maxP
 check("a quote already tried is skipped", bestComboQuote(qs3, { skip: new Set(["b"]) }).quote.id === "a");
 check("quotes are asked for with rfq_user_filter=self (Kalshi refuses rfq_id alone)", quotesPath("ae03d6d6-ec0b") === "communications/quotes?rfq_user_filter=self&rfq_id=ae03d6d6-ec0b");
 // ---- cashing out ----
+check("someone's combo: estimate = each leg's bid multiplied", comboEstimate([{ side: "yes", market: { yes_bid_dollars: "0.50" } }, { side: "no", market: { no_bid_dollars: "0.40" } }]) === 0.2 && comboEstimate([{ side: "yes", market: { yes_bid_dollars: "0" } }]) === null && comboEstimate([]) === null);
 check("position: + is YES, - is NO, none is 0", JSON.stringify(positionOf({ market_positions: [{ ticker: "A", position_fp: "16.66" }, { ticker: "B", position_fp: "-20.00" }] }, "A")) === '{"side":"yes","count":16.66}' && positionOf({ market_positions: [{ ticker: "B", position_fp: "-20.00" }] }, "B").side === "no" && positionOf({ market_positions: [] }, "A").count === 0);
 const book = { yes_dollars: [["0.5500", "10.00"], ["0.6200", "5.00"], ["0.6000", "4.00"]], no_dollars: [["0.3500", "100.00"]] };
 const sv = sellValue(book, "yes", 16.66);

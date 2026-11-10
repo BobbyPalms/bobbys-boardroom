@@ -181,7 +181,7 @@ const byId = Object.fromEntries(lv.tickets.map(t => [t.id, t]));
 check("live tickets: everyone's riding slips, nothing settled", lv.tickets.every(t => t.status === "pending") && byId[amyRide.id] && byId[zedTail.id] && byId.liv1, lv.tickets.map(t => `${t.username} ${t.status}`));
 check("live tickets: in-progress first", lv.tickets[0].id === "liv1" && lv.tickets[0].live === true && byId[amyRide.id].live === false, lv.tickets.map(t => t.id));
 check("live tickets: usernames, who's you, tail counts, who they tailed", byId[amyRide.id].username === "AmyBets" && byId[amyRide.id].you === false && byId[amyRide.id].tails === 2 && byId[tr.j.slip.id].you === true && byId[zedTail.id].tailOf === "AmyBets", byId[amyRide.id]);
-check("live tickets: someone's Kalshi ticket shows it's on Kalshi, never their order ids", byId.liv1.kalshi.env === "live" && !JSON.stringify(lv).includes("secret-order") && !JSON.stringify(lv).includes("KXNBAGAME-X"), byId.liv1.kalshi);
+check("live tickets: someone's Kalshi ticket shows its market and size (for the cash-out value), never their order ids", byId.liv1.kalshi.env === "live" && byId.liv1.kalshi.mkt === "KXNBAGAME-X" && byId.liv1.kalshi.side === "yes" && byId.liv1.kalshi.count === 15 && !JSON.stringify(lv).includes("secret-order"), byId.liv1.kalshi);
 check("live tickets: no emails", !JSON.stringify(lv).includes("@x.com"));
 check("someone's page hides their Kalshi ids too", !JSON.stringify((await call("bob@x.com", "GET", "user/amybets")).j).includes("secret-order"));
 check("your own page keeps yours", JSON.stringify((await call("amy@x.com", "GET", "slips")).j).includes("secret-order"));

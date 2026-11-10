@@ -154,6 +154,15 @@ export function bestSellQuote(quotes, { minPrice = 0, skip = null } = {}) {
   return { quote: q, price: dollars(q.yes_bid_dollars), contracts: dollars(q.yes_contracts_fp ?? q.contracts_fp) };
 }
 
+// someone else's combo: no maker can be asked for them, so an estimate from each leg's current bid (Kalshi's combo
+// legs from GET markets/{combo}: mve_selected_legs). legs: [{ side, market }] -> per-contract value, or null
+export function comboEstimate(legs) {
+  if (!legs?.length) return null;
+  let p = 1;
+  for (const { side, market } of legs) { const b = dollars(side === "no" ? market?.no_bid_dollars : market?.yes_bid_dollars); if (!(b > 0)) return null; p *= b; }
+  return Math.round(p * 10000) / 10000;
+}
+
 // ---------- the key: imported once into this browser, never readable again ----------
 const b64 = buf => { let s = ""; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); };
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
