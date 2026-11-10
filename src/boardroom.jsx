@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { parseFinal, finalRundown, algoReview, teamStatRows, colOrder, groupTitle } from "./postgame.js";
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
+import { propOf, gameFor, legProgress } from "./legtrack.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
@@ -3910,10 +3911,10 @@ function StatGrid({ s }) {
     </div>)}
   </div>;
 }
-function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, foot = null }) {
+function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, foot = null, track = null, gameOfLeg = null }) {
   const c = STATUS_C[sl.status], open = sl.status === "pending" && sl.legs.every(l => !l.res && Date.parse(l.date) > Date.now());
   const mark = r => (r === "W" ? ["✓", NEON.green] : r === "L" ? ["✗", NEON.red] : r === "P" ? ["P", T.dim] : ["•", T.faint]);
-  const liveLeg = l => { const r = !l.res && liveRows ? liveRows.get(`${l.sport}|${l.eventId}`) : null; return r && r.state === "in" ? r : null; };
+  const liveLeg = l => { const r = l.res ? null : gameOfLeg ? gameOfLeg(l) : liveRows ? liveRows.get(`${l.sport}|${l.eventId}`) : null; return r && r.state === "in" ? r : null; };
   const isLive = sl.status === "pending" && sl.legs.some(l => liveLeg(l) || l.res || Date.parse(l.date) <= Date.now());
   return <div style={{ marginTop: 10, border: `1px solid ${isLive ? NEON.red : c}66`, background: `${isLive ? NEON.red : c}0d`, padding: "10px 12px" }}>
     {top}
@@ -3927,6 +3928,7 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
         <span style={{ color: mc, fontWeight: 700 }}>{m}</span>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12, color: T.ink, overflowWrap: "anywhere" }}>{legLabel(l)}</div>
+          {track && <LegBar p={track(l)} res={l.res}/>}
           {(r => r ? <div style={{ fontSize: 10, color: "#FF8095", overflowWrap: "anywhere", marginTop: 1 }}>LIVE · {r.sport === "Tennis" || r.sport === "MMA" ? `${r.away.name} ${r.away.score || ""} · ${r.home.name} ${r.home.score || ""}` : `${r.away.abbr || r.away.name} ${r.away.score}-${r.home.score} ${r.home.abbr || r.home.name}`}{r.detail ? ` · ${r.detail}` : ""}</div>
             : <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere", marginTop: 1 }}>{shortGame(l)}{l.final && l.sport !== "Tennis" && l.sport !== "MMA" ? ` · final ${l.final.a}-${l.final.h}` : l.res ? "" : ` · ${whenTxt(l.date)}`}</div>)(liveLeg(l))}
         </div>
@@ -3938,6 +3940,22 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
       {canTakeBack && open && !sl.kalshi ? <button onClick={onTakeBack} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 10, padding: "4px 8px", cursor: "pointer", whiteSpace: "nowrap" }}>take back</button> : <span/>}
     </div>
     {foot}
+  </div>;
+}
+
+// under a leg on a live ticket: an empty line that fills purple as the stat comes in, and turns green once it clears
+function LegBar({ p, res }) {
+  if (!p) return null;
+  const won = res === "W" || (p.kind === "count" ? p.done : p.ok), lost = res === "L";
+  const c = lost ? NEON.red : won ? NEON.green : NEON.purple;
+  const fmt = v => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
+  if (p.kind === "status") return <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{won ? "✓ " : "● "}{p.text}</div>;
+  const pct = p.target > 0 ? Math.max(0, Math.min(100, (p.value / p.target) * 100)) : 0;
+  return <div style={{ marginTop: 5 }}>
+    <div role="progressbar" aria-valuenow={p.value} aria-valuemax={p.target} aria-label={`${fmt(p.value)} of ${fmt(p.target)} ${p.unit}`} style={{ height: 6, background: "rgba(241,230,255,.07)", border: `1px solid ${T.line}`, overflow: "hidden" }}>
+      <div style={{ width: `${pct}%`, height: "100%", background: c, boxShadow: `0 0 8px ${c}aa`, transition: "width .6s ease" }}/>
+    </div>
+    <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{fmt(p.value)} / {fmt(p.target)} {p.unit}{won ? " ✓" : ""}</div>
   </div>;
 }
 
@@ -4051,17 +4069,40 @@ const etDayOf = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "Am
 function Tickets({ kind, onOpen, kal = null, onTools, onTailed }) {
   const [tailing, setTailing] = useState(null);              // the ticket being tailed: its slip opens right under it
   const [d, setD] = useState(null), [err, setErr] = useState(null), [st, setSt] = useState("all"), [busy, setBusy] = useState(false), [scores, setScores] = useState(null);
+  const [boxes, setBoxes] = useState(() => new Map()), dRef = useRef(null);
+  dRef.current = d;
   const q = s => `tickets/${kind}${kind === "past" && s !== "all" ? `?status=${s}` : ""}`;
+  // LIVE TICKETS: the scores and, for games with a player prop riding, the box score: every 30 seconds
+  useEffect(() => {
+    if (kind !== "live") return;
+    let on = true, timer = null;
+    const tick = async () => {
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(tick, 15000); return; }
+      try {
+        _betRows = null;
+        const b = await loadBetRows();
+        if (!on) return;
+        setScores(new Map(b.rows.map(r => [`${r.sport}|${r.id}`, r])));
+        const games = new Map();
+        for (const t of dRef.current?.tickets || []) for (const l of t.legs) { const p = !l.res && propOf(l), r = p && gameFor(b.rows, p.sport, p.teams); if (r && (r.state === "in" || r.state === "post")) games.set(`${r.sport}|${r.id}`, r); }
+        const got = await Promise.all([...games.values()].map(r => getJSON(summaryUrl(r.sport, r.league, r.id)).then(j => [`${r.sport}|${r.id}`, parseFinal(j, r.sport)]).catch(() => null)));
+        if (on && got.some(Boolean)) setBoxes(m => { const n = new Map(m); for (const x of got) if (x) n.set(x[0], x[1]); return n; });
+      } catch (_) { /* next pass */ }
+      if (on) timer = setTimeout(tick, 30000);
+    };
+    tick();
+    return () => { on = false; clearTimeout(timer); };
+  }, [kind, !!d]);
+  const rowsArr = useMemo(() => (scores ? [...scores.values()] : []), [scores]);
+  const gameOf = l => { const p = propOf(l); return p ? gameFor(rowsArr, p.sport, p.teams) : scores?.get(`${l.sport}|${l.eventId}`) || null; };
+  const isLiveNow = t => t.live || t.legs.some(l => !l.res && (Date.parse(l.date) <= Date.now() || gameOf(l)?.state === "in"));
+  const trackLeg = l => { const r = gameOf(l); return r ? legProgress(l, r, propOf(l) ? boxes.get(`${r.sport}|${r.id}`) : null) : null; };
   useEffect(() => {
     let on = true, timer = null;
     const pull = async () => {
       if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 20000); return; }
       try { const j = await api("GET", q(st)); if (on) { setD(j); setErr(null); } } catch (e) { if (on) setErr(e.message); }
-      if (kind === "live") {
-        _betRows = null;                                    // fresh scores each pass
-        loadBetRows().then(b => on && setScores(new Map(b.rows.map(r => [`${r.sport}|${r.id}`, r])))).catch(() => {});
-        timer = setTimeout(pull, 60000);
-      }
+      if (kind === "live") timer = setTimeout(pull, 60000);
     };
     setD(null); pull();
     return () => { on = false; clearTimeout(timer); };
@@ -4079,13 +4120,12 @@ function Tickets({ kind, onOpen, kal = null, onTools, onTailed }) {
     </div>;
   };
   const card = t => <Fragment key={t.id}>
-    <SlipCard sl={t} top={head(t)} liveRows={kind === "live" ? scores : null}/>
+    <SlipCard sl={t} top={head(t)} liveRows={kind === "live" ? scores : null} track={kind === "live" && isLiveNow(t) ? trackLeg : null} gameOfLeg={kind === "live" ? gameOf : null}/>
     {kind === "live" && tailing?.id === t.id && <NewSlip key={`tail${t.id}`} seed={tailing} onUnseed={() => setTailing(null)} kal={kal} onTools={onTools} onPlaced={msg => { setTailing(null); onTailed && onTailed(msg); }}/>}
   </Fragment>;
   if (kind === "live") {
     const today = etDayOf(new Date().toISOString()), list = d?.tickets || [];
-    const going = l => !l.res && (Date.parse(l.date) <= Date.now() || scores?.get(`${l.sport}|${l.eventId}`)?.state === "in");
-    const groups = [["LIVE NOW", list.filter(t => t.live || t.legs.some(going))], ["LATER TODAY", []], ["UPCOMING", []]];
+    const groups = [["LIVE NOW", list.filter(isLiveNow)], ["LATER TODAY", []], ["UPCOMING", []]];
     for (const t of list) if (!groups[0][1].includes(t)) (t.next && etDayOf(t.next) === today ? groups[1][1] : groups[2][1]).push(t);
     return <>
       <div style={{ marginTop: 14, fontSize: 11, color: T.dim, lineHeight: 1.6 }}>Everyone's tickets that are still riding. Tap <span style={{ color: NEON.gold }}>TAIL ▸</span> on any ticket to bet the same picks right here, upcoming or live (live games go through Kalshi). Updates every minute.</div>
