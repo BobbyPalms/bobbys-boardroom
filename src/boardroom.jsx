@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { parseFinal, finalRundown, algoReview, teamStatRows, colOrder, groupTitle } from "./postgame.js";
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
-import { propOf, gameFor, legProgress } from "./legtrack.js";
+import { propOf, gameFor, legProgress, kalshiGameLeg } from "./legtrack.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, syncPayload, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3320,6 +3320,17 @@ function BetSlipsScreen({ onBack, onTools }) {
   const [kal, setKal] = useState(null), [flash, setFlash] = useState(null);   // this device's Kalshi key (never readable, only usable)
   useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message, status: e.status })); }, []);
   useEffect(() => { if (me.username) savedKey(me.username).then(k => setKal(k || null)).catch(() => setKal(null)); }, [me.username]);
+  // this device's Kalshi: every open position shows up here, even ones bought in the Kalshi app
+  useEffect(() => {
+    if (!kal) return;
+    let on = true, timer = null;
+    const run = async () => {
+      if (typeof document === "undefined" || !document.hidden) { const r = await syncKalshi(kal).catch(() => null); if (on && r && r.added + r.updated + r.cashed > 0) setVer(v => v + 1); }
+      if (on) timer = setTimeout(run, 90000);
+    };
+    run();
+    return () => { on = false; clearTimeout(timer); };
+  }, [kal]);
   const open = u => { setFrom(tab === "user" ? from : tab); setWho(u); setTab("user"); };
   // every pick still undecided comes along, upcoming or live (live ones are bought live on Kalshi); only finished legs stay behind
 
@@ -3506,6 +3517,44 @@ async function kalshiCall(rec, method, sub, body) {
   }
   return j;
 }
+// ---- SYNC: every open position on this person's Kalshi (bought here or in the Kalshi app) becomes a ticket ----
+// Runs on this device with their own key: reads the positions, looks up each market (and a combo's legs) on Kalshi's
+// public data, and hands the site what it needs. A synced ticket that's no longer open was either settled (it grades
+// itself from Kalshi's result) or sold in the app (settled here as cashed out at what Kalshi says it made).
+let _syncing = null;
+async function syncKalshi(kal) {
+  if (!kal) return null;
+  if (_syncing) return _syncing;
+  _syncing = (async () => {
+    const positions = [];
+    let cursor = "";
+    for (let i = 0; i < 5; i++) {
+      const j = await kalshiCall(kal, "GET", `portfolio/positions?count_filter=position&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      positions.push(...(j.market_positions || []));
+      cursor = j.cursor || "";
+      if (!cursor) break;
+    }
+    const open = positions.filter(p => parseFloat(p.position_fp ?? p.position) !== 0);
+    const mkts = {}, pub = { env: kal.env };
+    const getM = t => (t in mkts ? null : kalshiCall(pub, "GET", `markets/${encodeURIComponent(t)}`).then(j => { mkts[t] = j.market || {}; }).catch(() => { mkts[t] = {}; }));
+    for (let i = 0; i < open.length; i += 6) await Promise.all(open.slice(i, i + 6).map(p => getM(p.ticker)));
+    const legT = [...new Set(open.flatMap(p => (mkts[p.ticker]?.mve_selected_legs || []).map(l => l.market_ticker)))];
+    for (let i = 0; i < legT.length; i += 6) await Promise.all(legT.slice(i, i + 6).map(getM));
+    const r = await api("POST", "slips/sync", { env: kal.env, positions: syncPayload(open, mkts) });
+    let cashed = 0;
+    for (const g of r.gone || []) {
+      const m = await kalshiCall(pub, "GET", `markets/${encodeURIComponent(g.ticker)}`).then(j => j.market).catch(() => null);
+      if (!m || m.result || /settled|finalized|determined|closed/.test(String(m.status || ""))) continue;      // settled: grading takes it
+      const p = (await kalshiCall(kal, "GET", `portfolio/positions?ticker=${encodeURIComponent(g.ticker)}`).catch(() => ({}))).market_positions?.find(x => x.ticker === g.ticker);
+      if (!p || parseFloat(p.position_fp ?? p.position) !== 0) continue;
+      const made = (parseFloat(p.realized_pnl_dollars) || 0) - (parseFloat(p.fees_paid_dollars) || 0);
+      await api("POST", `slips/${g.id}/cashout`, { proceeds: Math.max(0, Math.round((g.stake + made) * 100) / 100), sale: { how: "order" } }).then(() => { cashed++; }).catch(() => {});
+    }
+    return { added: r.added || 0, updated: r.updated || 0, cashed };
+  })().finally(() => { setTimeout(() => { _syncing = null; }, 0); });
+  return _syncing;
+}
+
 // the cash a buy needs, on the shard its market trades on (see planFunding in src/kalshi.js)
 async function kalshiFundingPlan(kal, ticker, need) {
   const [mj, bal] = await Promise.all([kalshiCall({ env: kal.env }, "GET", `markets/${encodeURIComponent(ticker)}`).catch(() => null), kalshiCall(kal, "GET", "portfolio/balance")]);
@@ -3921,11 +3970,11 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
     {top}
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
       <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: isLive ? NEON.red : c, whiteSpace: "nowrap" }}>{isLive ? <><span style={{ animation: "blink 1.6s infinite" }}>●</span> LIVE</> : sl.status === "cashed" ? "CASHED OUT" : sl.status.toUpperCase()}</span>
-      <span style={{ minWidth: 0, overflowWrap: "anywhere", fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}</span> : null}</span>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere", fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}{sl.kalshi.imported ? " APP" : ""}</span> : null}</span>
       <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{oddsAs(sl.odds, oddsPref())}</span>
     </div>
     <div style={{ marginTop: 8 }}>
-      {sl.legs.map((l, i) => { const [m, mc] = mark(l.res), pg = track ? track(l) : null, liveC = pg && l.market === "ml" && pg.win != null ? (pg.win ? NEON.green : NEON.red) : "#FF8095"; return <div key={i} style={{ display: "grid", gridTemplateColumns: "14px minmax(0,1fr) auto", gap: 8, alignItems: "baseline", padding: "4px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+      {sl.legs.map((l, i) => { const [m, mc] = mark(l.res), pg = track ? track(l) : null, liveC = pg && pg.kind === "status" && pg.win != null ? (pg.win ? NEON.green : NEON.red) : "#FF8095"; return <div key={i} style={{ display: "grid", gridTemplateColumns: "14px minmax(0,1fr) auto", gap: 8, alignItems: "baseline", padding: "4px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
         <span style={{ color: mc, fontWeight: 700 }}>{m}</span>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12, color: T.ink, overflowWrap: "anywhere" }}>{legLabel(l)}</div>
@@ -3990,11 +4039,12 @@ function LegBar({ p, res }) {
   if (p.kind === "margin") {
     // the line in the middle; the fill runs green to the right by how much it's covering, red to the left by how much
     // it's short, and that many points (from covering) ride on the end of it
-    const w = Math.min(50, (Math.abs(p.m) / p.scale) * 50), gap = Math.max(w, 10), end = p.m >= 0 ? 50 + gap : 50 - gap;
+    // covering: the whole line goes green to the end (like a prop that's cleared), with the points it's covering by there
+    const cover = p.m > 0, w = cover ? 50 : Math.min(50, (Math.abs(p.m) / p.scale) * 50), gap = Math.max(w, 10), end = cover ? 100 : p.m === 0 ? 60 : 50 - gap;
     return <div>
-      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), tag(fmt(Math.abs(p.m)), w > 0 ? end : 50 + 10, c, p.m >= 0 ? (end > 88 ? "end" : "start") : (end < 12 ? "start" : "end"), "a")])}
+      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), tag(fmt(Math.abs(p.m)), end, c, cover ? "end" : p.m === 0 ? "start" : (end < 12 ? "start" : "end"), "a")])}
       <div role="progressbar" aria-valuenow={p.m} aria-label={p.text} style={{ ...track, marginTop: 2 }}>
-        <div style={{ position: "absolute", top: 0, bottom: 0, left: p.m >= 0 ? "50%" : `${50 - w}%`, width: `${w}%`, background: c, boxShadow: `0 0 8px ${c}aa`, transition: "all .6s ease" }}/>
+        <div style={{ position: "absolute", top: 0, bottom: 0, left: cover ? "0%" : `${50 - w}%`, width: cover ? "100%" : `${w}%`, background: c, boxShadow: `0 0 8px ${c}aa`, transition: "all .6s ease" }}/>
         <div style={{ position: "absolute", top: -1, bottom: -1, left: "50%", width: 1, background: T.ink }}/>
       </div>
       <div style={{ marginTop: 3, fontSize: 10, color: c, overflowWrap: "anywhere" }}>{p.m > 0 ? "✓ " : ""}{p.text}</div>
@@ -4148,7 +4198,7 @@ function useLegTrack(slips, on) {
     return () => { alive = false; clearTimeout(timer); };
   }, [on, !!slips]);
   const rowsArr = useMemo(() => (scores ? [...scores.values()] : []), [scores]);
-  const gameOf = l => { const p = propOf(l); return p ? gameFor(rowsArr, p.sport, p.teams) : scores?.get(`${l.sport}|${l.eventId}`) || null; };
+  const gameOf = l => { const p = propOf(l) || kalshiGameLeg(l); return p ? gameFor(rowsArr, p.sport, p.teams) : scores?.get(`${l.sport}|${l.eventId}`) || null; };
   const isLiveNow = t => t.status === "pending" && (t.live || t.legs.some(l => !l.res && (Date.parse(l.date) <= Date.now() || gameOf(l)?.state === "in")));
   const track = l => { const r = gameOf(l); return r ? legProgress(l, r, propOf(l) ? boxes.get(`${r.sport}|${r.id}`) : null) : null; };
   return { scores, gameOf, isLiveNow, track };
@@ -4444,6 +4494,9 @@ function BoxTable({ g, sport }) {
 
 export default function App() {
   useEffect(()=>{try{document.title="Bobby's Boardroom";}catch(_){/* no document */}},[]);
+  // anyone with their Kalshi key on this device: their open Kalshi positions are synced as tickets when the site opens
+  useEffect(()=>{ if(typeof location==="undefined"||!/^https?:$/.test(location.protocol)&&!window.__api) return;
+    api("GET","me").then(j=>j.username?savedKey(j.username):null).then(k=>k&&syncKalshi(k)).catch(()=>{}); },[]);
   const [phase,setPhase]=useState("setup");
   const [sport,setSport]=useState("MLB");
   const [awayInput,setAwayInput]=useState("");

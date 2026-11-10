@@ -207,6 +207,28 @@ const zst = (await call("zed@x.com", "GET", "slips")).j;
 check("a profitable cash-out counts as a win in your numbers", zst.stats.cashed === 1 && zst.stats.W >= 1, zst.stats);
 const pc = (await call("bob@x.com", "GET", "tickets/past?status=cashed")).j;
 check("past tickets: cashed-out filter", pc.tickets.length === 1 && pc.tickets[0].status === "cashed" && pc.tickets[0].profit === 2.4 && !JSON.stringify(pc).includes("o-10"), pc.tickets.map(t => t.status));
+// ---- syncing positions bought in the Kalshi app ----
+await call("zed@x.com", "POST", "slips", { stake: 10, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-150")], kalshi: { env: "live", orders: [{ ticker: "KXNBAGAME-Y-PHI", side: "yes", count: 16.66, price: 0.6, order_id: "o-11", filled: 16.66 }] } });
+const pos = [
+  { ticker: "KXNFLGAME-26NOV09BUFMIN-BUF", side: "yes", count: 20, cost: 12.4, name: "Buffalo", title: "Buffalo at Minnesota", close: "2026-11-10T04:00:00Z" },
+  { ticker: "KXMVECROSSCATEGORY-S2026-ABC", side: "yes", count: 50, cost: 9.5, combo: true, legs: [{ ticker: "KXNFLRECYDS-26NOV09BUFMIN-BUFDKINCAID86-20", side: "yes", name: "Dalton Kincaid: 20+", price: 0.7, close: "2026-11-11T01:15:00Z" }, { ticker: "KXNFLSPREAD-26NOV09BUFMIN-BUF7", side: "no", name: "Buffalo wins by over 6.5 points", price: 0.55, close: "2026-11-11T01:15:00Z" }] },
+  { ticker: "KXNBAGAME-Y-PHI", side: "yes", count: 16.66, cost: 10 },          // already on a slip placed here: left alone
+  { ticker: "bad ticker!", side: "yes", count: 1, cost: 0.5 },
+];
+let sy = await call("zed@x.com", "POST", "slips/sync", { env: "live", positions: pos });
+check("sync: two new tickets from the Kalshi app, the one placed here left alone, junk ignored", sy.status === 200 && sy.j.added === 2 && sy.j.updated === 0 && sy.j.gone.length === 0, sy.j);
+let zs2 = (await call("zed@x.com", "GET", "slips")).j.slips.filter(x => x.kalshi?.imported);
+const sStraight = zs2.find(x => x.legs.length === 1), sCombo = zs2.find(x => x.legs.length === 2);
+check("synced straight: Kalshi market leg at what it cost (62¢ = -163)", sStraight && sStraight.stake === 12.4 && sStraight.odds === -163 && sStraight.legs[0].market === "kalshi" && sStraight.legs[0].ticker === "KXNFLGAME-26NOV09BUFMIN-BUF" && sStraight.legs[0].sport === "NFL" && sStraight.kalshi.orders[0].filled === 20, sStraight);
+check("synced combo: its legs (sides kept), priced as one contract (19¢)", sCombo && sCombo.odds === 426 && sCombo.legs[1].side === "no" && sCombo.legs[0].name === "Dalton Kincaid: 20+" && sCombo.kalshi.combo.contracts === 50, sCombo);
+sy = await call("zed@x.com", "POST", "slips/sync", { env: "live", positions: pos });
+check("sync again: nothing new", sy.j.added === 0 && sy.j.updated === 0);
+sy = await call("zed@x.com", "POST", "slips/sync", { env: "live", positions: [{ ...pos[0], count: 30, cost: 18.9 }] });
+check("bought more in the app: the ticket follows; the combo that's gone is reported back", sy.j.updated === 1 && sy.j.gone.length === 1 && sy.j.gone[0].ticker === "KXMVECROSSCATEGORY-S2026-ABC", sy.j);
+check("synced ticket updated", (await call("zed@x.com", "GET", "slips")).j.slips.find(x => x.id === sStraight.id).stake === 18.9);
+const lvs = (await call("bob@x.com", "GET", "tickets/live")).j.tickets.find(x => x.id === sStraight.id);
+check("synced tickets show on Live Tickets for everyone, marked synced", lvs && lvs.username === "zed" && lvs.kalshi.imported === true && lvs.kalshi.mkt === "KXNFLGAME-26NOV09BUFMIN-BUF", lvs);
+check("someone else can't sync into your account (it's per login)", (await call("bob@x.com", "POST", "slips/sync", { env: "live", positions: [] })).j.gone.length === 0);
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
 function decToAmLocal(list) { const d = list.reduce((a, o) => a * (o > 0 ? 1 + o / 100 : 1 + 100 / -o), 1); return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }

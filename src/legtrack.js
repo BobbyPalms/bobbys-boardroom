@@ -51,6 +51,22 @@ export function propOf(leg) {
   return sport ? { sport, player: m[1].trim(), target: Number(m[2]), unit: spec.unit, cols: spec.cols, teams: g[4] } : null;
 }
 
+// a Kalshi game-line leg (bought in the Kalshi app, or synced): KXNFLGAME-26NOV09BUFMIN-BUF (Buffalo to win),
+// KXNFLSPREAD-...-BUF7 ("Buffalo wins by over 6.5 points"), KXNFLTOTAL-...-47 ("Over 46.5 points"). NO takes the other side.
+const GAMEKIND = /^(NFL|NCAAF|NBA|WNBA|NCAAMB|NCAAWB|NHL|MLB)(GAME|SPREAD|TOTAL)$/;
+export function kalshiGameLeg(leg) {
+  if (!leg || leg.market !== "kalshi" || !leg.ticker) return null;
+  const [series, code, sfx] = String(leg.ticker).split("-"), key = String(series || "").replace(/^KX/, ""), k = key.match(GAMEKIND);
+  const g = String(code || "").match(/^(\d\d)([A-Z]{3})(\d\d)([A-Z]+)$/);
+  if (!k || !g || !sfx) return null;
+  const sport = (SPORT_OF.find(([re]) => re.test(key)) || [])[1], no = leg.side === "no";
+  const strike = (() => { const m = String(leg.name || "").match(/(\d+(?:\.\d+)?)/); return m ? Number(m[1]) : null; })();
+  if (k[2] === "GAME") return /^[A-Z]+$/.test(sfx) && sfx !== "TIE" ? { sport, teams: g[4], kind: "ml", team: sfx, no } : null;
+  if (k[2] === "SPREAD") { const m = sfx.match(/^([A-Z]+)(\d+)$/); if (!m) return null; return { sport, teams: g[4], kind: "spread", team: m[1], line: strike != null ? strike : Number(m[2]) - 0.5, no }; }
+  const t = strike != null ? strike : Number(String(sfx).replace(/[^\d.]/g, "")) - 0.5;
+  return Number.isFinite(t) ? { sport, teams: g[4], kind: "total", line: t, no } : null;
+}
+
 // Kalshi's team codes vs ESPN's
 const ALIAS = { WAS: "WSH", JAC: "JAX", LA: "LAR", GB: "GB", NO: "NO", NE: "NE", KC: "KC", SF: "SF", TB: "TB", LV: "LV", NY: "NYK", GS: "GSW", SA: "SAS", PHO: "PHX", UTAH: "UTA", NJ: "NJD" };
 const same = (a, b) => { a = String(a || "").toUpperCase(); b = String(b || "").toUpperCase(); return !!a && (a === b || ALIAS[a] === b || ALIAS[b] === a); };
@@ -96,7 +112,19 @@ export function legProgress(leg, row, F) {
     const { value } = statFrom(F, p.cols, p.player);
     return { kind: "count", value, target: p.target, unit: p.unit, done: value >= p.target, win: value >= p.target ? true : null };
   }
-  if (leg.sport === "Tennis" || leg.sport === "MMA" || leg.market === "kalshi") return null;
+  if (leg.market === "kalshi") {
+    // a Kalshi game line: read as the same bet on our scoreboard's game
+    const k = kalshiGameLeg(leg);
+    if (!k) return null;
+    const names = { away: { name: row.away?.name }, home: { name: row.home?.name } };
+    if (k.kind === "total") return legProgress({ sport: k.sport, market: "total", side: k.no ? "under" : "over", line: k.line, ...names }, row);
+    const at = same(k.team, row.away?.abbr) ? "away" : same(k.team, row.home?.abbr) ? "home" : null;
+    if (!at) return null;
+    const other = at === "away" ? "home" : "away";
+    if (k.kind === "ml") return legProgress({ sport: k.sport, market: "ml", side: k.no ? other : at, ...names }, row);
+    return legProgress({ sport: k.sport, market: "spread", side: k.no ? other : at, line: k.no ? k.line : -k.line, ...names }, row);
+  }
+  if (leg.sport === "Tennis" || leg.sport === "MMA") return null;
   const a = num(row.away?.score), h = num(row.home?.score);
   if (leg.market === "total") {
     const t = a + h, line = Number(leg.line);

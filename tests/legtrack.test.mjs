@@ -1,6 +1,6 @@
 // Live leg progress: props from the box score, totals / spreads / moneylines from the score.
 import { readFileSync } from "fs";
-import { propOf, gameFor, statFrom, legProgress } from "../src/legtrack.js";
+import { propOf, gameFor, statFrom, legProgress, kalshiGameLeg } from "../src/legtrack.js";
 import { parseFinal } from "../src/postgame.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 400)); } };
@@ -42,5 +42,12 @@ check("spread: a bar around the cover number (NFL scale 14)", (x => x.kind === "
 check("spread: covering / not", (x => x.ok && x.text === "covering by 4.5")(legProgress(L("spread", "away", -2.5), g)) && (x => !x.ok && x.text === "needs 4 more to cover")(legProgress(L("spread", "home", 3), g)));
 check("moneyline: winning / losing / tied", legProgress(L("ml", "away"), g).win === true && legProgress(L("ml", "home"), g).win === false && legProgress(L("ml", "away"), { state: "in", away: { score: "3" }, home: { score: "3" } }).win === null);
 check("moneyline: up / down", legProgress(L("ml", "away"), g).text === "Bills up 7" && legProgress(L("ml", "home"), g).text === "Vikings down 7" && !legProgress(L("ml", "home"), g).ok);
+// Kalshi game lines (bought in the Kalshi app): read as the same bet on the scoreboard game (BUF 17, MIN 10)
+const KL = (ticker, name, side = "yes") => ({ market: "kalshi", ticker, name, side });
+check("Kalshi ML: Buffalo YES = Bills ML (up 7)", (x => x.kind === "status" && x.win === true && x.text === "Bills up 7")(legProgress(KL("KXNFLGAME-26NOV09BUFMIN-BUF", "Buffalo"), g)));
+check("Kalshi ML NO on Buffalo = the other side", legProgress(KL("KXNFLGAME-26NOV09BUFMIN-BUF", "Buffalo", "no"), g).win === false);
+check("Kalshi spread: 'wins by over 6.5' YES = BUF -6.5 (covering by 0.5); NO = MIN +6.5", (x => x.kind === "margin" && x.line === -6.5 && x.m === 0.5)(legProgress(KL("KXNFLSPREAD-26NOV09BUFMIN-BUF7", "Buffalo wins by over 6.5 points"), g)) && (x => x.line === 6.5 && x.m === -0.5)(legProgress(KL("KXNFLSPREAD-26NOV09BUFMIN-BUF7", "Buffalo wins by over 6.5 points", "no"), g)));
+check("Kalshi total: YES = over 46.5 (27 so far), NO = under", (x => x.kind === "count" && x.target === 46.5 && x.value === 27 && !x.under)(legProgress(KL("KXNFLTOTAL-26NOV09BUFMIN-47", "Over 46.5 points"), g)) && legProgress(KL("KXNFLTOTAL-26NOV09BUFMIN-47", "Over 46.5 points", "no"), g).under === true);
+check("not a game line: props / other markets", kalshiGameLeg(KL("KXNFLRECYDS-26NOV09BUFMIN-BUFDKINCAID86-20", "Dalton Kincaid: 20+")) === null && kalshiGameLeg(KL("KXNFLGAME-26NOV09BUFMIN-TIE", "Tie")) === null);
 console.log(`legtrack: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -6,6 +6,8 @@
 //   POST /api/slips {stake, legs}-> place a slip (every game must not have started yet, unless it was bought live on Kalshi)
 //   DELETE /api/slips/:id        -> take back a slip before any of its games starts (not one bought on Kalshi: cash that out)
 //   POST /api/slips/:id/cashout {proceeds, sale} -> a Kalshi slip sold back on Kalshi: settled at what the sale brought
+//   POST /api/slips/sync {env, positions} -> your open Kalshi positions (read on your device with your key, including ones
+//                                bought in the Kalshi app), kept as tickets here; returns the synced tickets no longer open
 //   GET  /api/board              -> both leaderboards
 //   GET  /api/user/:username     -> anyone's numbers and slips (by username; emails are never shown)
 //   GET  /api/tickets/live       -> everyone's tickets still riding (upcoming or live), with who placed them and who's tailing
@@ -13,6 +15,7 @@
 // Grading: every call first settles any leg whose game is over, from ESPN's final score.
 import { ROUTES, scoreboardUrl, liveBoard, ymd } from "../../src/routes.js";
 import { gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, amToDec, decToAm, USERNAME_RE } from "../../src/bets.js";
+import { sportOfSeries, priceToAm } from "../../src/kalshi.js";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const bad = (msg, status = 400) => json({ error: msg }, status);
@@ -69,7 +72,7 @@ const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.
 function publicKalshi(k) {
   const o = (k.orders || [])[0], mkt = k.combo ? k.combo.market_ticker : o?.ticker || null;
   const count = k.combo ? Number(k.combo.contracts) || 0 : (k.orders || []).filter(x => x.ticker === mkt).reduce((a, x) => a + (Number(x.filled) || 0), 0);
-  return { env: k.env, combo: !!k.combo, mkt, side: k.combo ? "yes" : o?.side === "no" ? "no" : "yes", count: Math.round(count * 100) / 100 };
+  return { env: k.env, combo: !!k.combo, imported: !!k.imported, mkt, side: k.combo ? "yes" : o?.side === "no" ? "no" : "yes", count: Math.round(count * 100) / 100 };
 }
 const publicSlip = (s, mine) => (mine || !s.kalshi ? s : { ...s, kalshi: publicKalshi(s.kalshi) });
 
@@ -229,6 +232,54 @@ export function kalshiResult(m, side = "yes") {
   return null;
 }
 
+// ---------- syncing: every open Kalshi position becomes a ticket here, wherever it was bought ----------
+// The page reads the positions with the person's own key (never sent here) and posts them. A position already tracked
+// by a slip placed on this site is left alone; one bought elsewhere (the Kalshi app) becomes a "synced" ticket and is
+// kept up to date (bought more, sold some). Synced tickets grade on Kalshi's own result like any Kalshi leg.
+async function syncKalshi(env, email, body) {
+  const kenv = body?.env === "demo" ? "demo" : "live";
+  const str = (v, n = 140) => String(v ?? "").slice(0, n), TICK = /^[A-Z0-9][\w.-]{2,119}$/;
+  const rows = (await env.DB.prepare("SELECT * FROM slips WHERE email=? AND status='pending' AND kalshi IS NOT NULL").bind(email).all()).results.map(rowToSlip);
+  const covered = new Set(), synced = new Map();
+  for (const s of rows) {
+    if (s.kalshi.imported) { synced.set(`${s.kalshi.mkt}|${s.kalshi.side}`, s); continue; }
+    if (s.kalshi.combo?.market_ticker) covered.add(s.kalshi.combo.market_ticker);
+    for (const o of s.kalshi.orders || []) covered.add(o.ticker);
+  }
+  const seen = new Set(), writes = [];
+  let added = 0, updated = 0;
+  for (const p of (Array.isArray(body?.positions) ? body.positions : []).slice(0, 100)) {
+    const ticker = str(p.ticker, 120), side = p.side === "no" ? "no" : "yes", count = Math.round(Number(p.count) * 100) / 100, cost = Math.round(Number(p.cost) * 100) / 100;
+    if (!TICK.test(ticker) || !(count > 0 && count <= 1e6) || !(cost > 0 && cost <= count)) continue;
+    const key = `${ticker}|${side}`;
+    seen.add(key);
+    if (covered.has(ticker)) continue;
+    const price = Math.min(0.99, Math.max(0.01, cost / count)), dec = 1 / price;
+    const legsIn = p.combo && Array.isArray(p.legs) && p.legs.length ? p.legs.slice(0, 20) : [{ ticker, side, name: p.name, title: p.title, close: p.close, price }];
+    const legs = legsIn.filter(l => TICK.test(str(l.ticker, 120))).map(l => {
+      const t = str(l.ticker, 120), title = str(l.title), vs = title.split(/\s+vs\.?\s+|\s+at\s+/i), lp = Number(l.price);
+      return { pick: str(l.name || t, 80), sport: sportOfSeries(t.split("-")[0]), league: "kalshi", eventId: t, ticker: t, kenv, date: Date.parse(l.close) ? new Date(l.close).toISOString() : new Date(Date.now() + 864e5).toISOString(),
+        market: "kalshi", side: l.side === "no" ? "no" : "yes", line: null, odds: priceToAm(lp > 0 && lp < 1 ? lp : price) || decToAm(dec), name: str(l.name || t, 80), title,
+        away: { name: vs.length === 2 ? vs[0] : title, abbr: "" }, home: { name: vs.length === 2 ? vs[1] : "", abbr: "" }, res: null, live: true };
+    });
+    if (!legs.length) continue;
+    const odds = decToAm(dec), kalshi = { env: kenv, imported: true, mkt: ticker, side, count, dec: legs.length > 1 ? dec : null,
+      ...(legs.length > 1 ? { combo: { market_ticker: ticker, contracts: count, price } } : { orders: [{ ticker, side, count, price, order_id: null, filled: count }] }) };
+    const old = synced.get(key);
+    if (old) {
+      if (Math.abs((old.kalshi.count || 0) - count) < 0.005 && Math.abs(old.stake - cost) < 0.005) continue;
+      writes.push(env.DB.prepare("UPDATE slips SET stake=?, odds=?, kalshi=? WHERE id=? AND status='pending'").bind(cost, odds, JSON.stringify(kalshi), old.id)); updated++;
+    } else {
+      const created = Date.parse(p.since) ? new Date(p.since).toISOString() : new Date().toISOString();
+      writes.push(env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi, tail) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL)").bind(crypto.randomUUID(), email, created, cost, odds, JSON.stringify(legs), JSON.stringify(kalshi))); added++;
+    }
+  }
+  if (writes.length) await env.DB.batch(writes);
+  // synced tickets that aren't open on Kalshi any more: settled (graded here from Kalshi's result) or sold in the app
+  const gone = [...synced.entries()].filter(([k, s]) => !seen.has(k) && s.kalshi.env === kenv).map(([, s]) => ({ id: s.id, ticker: s.kalshi.mkt, side: s.kalshi.side, stake: s.stake, created: s.created }));
+  return json({ added, updated, gone });
+}
+
 // ---------- cashing out a Kalshi slip: sold back on Kalshi, settled here at what the sale brought ----------
 async function cashOut(env, email, id, body) {
   const r = await env.DB.prepare("SELECT * FROM slips WHERE id=? AND email=?").bind(id, email).first();
@@ -237,6 +288,7 @@ async function cashOut(env, email, id, body) {
   if (s.status !== "pending") return bad("That slip is already settled.", 409);
   if (!s.kalshi) return bad("Only slips bought on Kalshi can be cashed out.", 409);
   const most = s.kalshi.combo ? Number(s.kalshi.combo.contracts) || 0 : (s.kalshi.orders || []).reduce((a, o) => a + (Number(o.filled) || 0), 0);
+  if (!(most > 0)) return bad("That slip has no Kalshi contracts on it.");
   const proceeds = Math.round(Number(body?.proceeds) * 100) / 100;
   if (!(proceeds >= 0) || proceeds > most + 0.01) return bad("That cash-out amount doesn't fit the slip.");
   const str = (v, n = 80) => (v == null ? null : String(v).slice(0, n)), num = v => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -290,6 +342,7 @@ export async function onRequest({ request, env, params }) {
   if (!me) return bad("Pick a username first.", 403);
 
   if (what === "slips" && m === "POST" && !path[1]) return placeSlip(env, email, body);
+  if (what === "slips" && m === "POST" && path[1] === "sync") return syncKalshi(env, email, body);
   if (what === "slips" && m === "DELETE" && path[1]) {
     const r = await env.DB.prepare("SELECT * FROM slips WHERE id=? AND email=?").bind(path[1], email).first();
     if (!r) return bad("Slip not found.", 404);

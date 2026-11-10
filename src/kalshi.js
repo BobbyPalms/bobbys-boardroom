@@ -163,6 +163,24 @@ export function comboEstimate(legs) {
   return Math.round(p * 10000) / 10000;
 }
 
+// ---------- syncing: open positions (wherever they were bought) -> tickets on the site ----------
+// positions: GET portfolio/positions market_positions; mkts: ticker -> market (GET markets/{ticker}), including each
+// combo's legs. Returns what POST /api/slips/sync takes.
+export function syncPayload(positions, mkts) {
+  const out = [];
+  for (const p of positions || []) {
+    const n = dollars(p.position_fp ?? p.position);
+    if (!n) continue;
+    const m = mkts[p.ticker] || {}, count = Math.abs(n), side = n > 0 ? "yes" : "no";
+    const cost = dollars(p.market_exposure_dollars) || dollars(p.total_traded_dollars) || 0;
+    if (!(cost > 0)) continue;
+    const legs = (m.mve_selected_legs || []).map(l => { const lm = mkts[l.market_ticker] || {}; const b = dollars(l.side === "no" ? lm.no_bid_dollars : lm.yes_bid_dollars) || dollars(lm.last_price_dollars);
+      return { ticker: l.market_ticker, side: l.side === "no" ? "no" : "yes", name: lm.yes_sub_title || l.market_ticker, title: lm.title || "", close: lm.close_time || lm.expected_expiration_time || null, price: b > 0 && b < 1 ? b : null }; });
+    out.push({ ticker: p.ticker, side, count: Math.round(count * 100) / 100, cost: Math.round(Math.min(cost, count) * 100) / 100, combo: legs.length > 0, legs, name: m.yes_sub_title || p.ticker, title: m.title || "", close: m.close_time || m.expected_expiration_time || null, since: p.last_updated_ts || null });
+  }
+  return out;
+}
+
 // ---------- the key: imported once into this browser, never readable again ----------
 const b64 = buf => { let s = ""; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); };
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));

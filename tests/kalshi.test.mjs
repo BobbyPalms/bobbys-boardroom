@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateKeyPairSync, verify, constants, webcrypto } from "crypto";
-import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, comboEstimate, readPem, importKey, signHeaders } from "../src/kalshi.js";
+import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, comboEstimate, syncPayload, readPem, importKey, signHeaders } from "../src/kalshi.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const K = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "kalshi_events.json"), "utf8"));
@@ -60,6 +60,11 @@ const qs3 = [{ id: "a", status: "open", no_bid_dollars: "0.78", yes_contracts_fp
 check("never pays more than the price you confirmed", bestComboQuote(qs3, { maxPrice: 0.20 }).quote.id === "b" && bestComboQuote(qs3, { maxPrice: 0.18 }) === null);
 check("a quote already tried is skipped", bestComboQuote(qs3, { skip: new Set(["b"]) }).quote.id === "a");
 check("quotes are asked for with rfq_user_filter=self (Kalshi refuses rfq_id alone)", quotesPath("ae03d6d6-ec0b") === "communications/quotes?rfq_user_filter=self&rfq_id=ae03d6d6-ec0b");
+// ---- syncing positions from the Kalshi app ----
+const spl = syncPayload([{ ticker: "A", position_fp: "-20.00", market_exposure_dollars: "8.400000", last_updated_ts: "2026-11-09T23:00:00Z" }, { ticker: "C", position_fp: "50.00", market_exposure_dollars: "9.5" }, { ticker: "Z", position_fp: "0.00", market_exposure_dollars: "1" }],
+  { A: { yes_sub_title: "Buffalo", title: "Buffalo at Minnesota", close_time: "2026-11-10T04:00:00Z" }, C: { title: "combo", mve_selected_legs: [{ market_ticker: "L1", side: "yes" }, { market_ticker: "L2", side: "no" }] }, L1: { yes_sub_title: "Dalton Kincaid: 20+", yes_bid_dollars: "0.70" }, L2: { yes_sub_title: "Buffalo wins by over 6.5", no_bid_dollars: "0.55" } });
+check("sync payload: NO = negative position, cost from exposure, flat positions skipped", spl.length === 2 && spl[0].side === "no" && spl[0].count === 20 && spl[0].cost === 8.4 && spl[0].name === "Buffalo" && spl[0].since === "2026-11-09T23:00:00Z" && !spl[0].combo, spl[0]);
+check("sync payload: a combo carries its legs with their sides and prices", spl[1].combo && spl[1].legs.length === 2 && spl[1].legs[0].name === "Dalton Kincaid: 20+" && spl[1].legs[0].price === 0.7 && spl[1].legs[1].side === "no" && spl[1].legs[1].price === 0.55, spl[1]);
 // ---- cashing out ----
 check("someone's combo: estimate = each leg's bid multiplied", comboEstimate([{ side: "yes", market: { yes_bid_dollars: "0.50" } }, { side: "no", market: { no_bid_dollars: "0.40" } }]) === 0.2 && comboEstimate([{ side: "yes", market: { yes_bid_dollars: "0" } }]) === null && comboEstimate([]) === null);
 check("position: + is YES, - is NO, none is 0", JSON.stringify(positionOf({ market_positions: [{ ticker: "A", position_fp: "16.66" }, { ticker: "B", position_fp: "-20.00" }] }, "A")) === '{"side":"yes","count":16.66}' && positionOf({ market_positions: [{ ticker: "B", position_fp: "-20.00" }] }, "B").side === "no" && positionOf({ market_positions: [] }, "A").count === 0);
