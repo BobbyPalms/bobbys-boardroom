@@ -3394,7 +3394,7 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
     const ks = l.seed?.market === "kalshi" ? { market: "kalshi", kalshi: true, side: "yes", line: null, ticker: l.seed.ticker, sport: l.seed.sport, league: l.seed.league, eventId: l.seed.ticker, date: l.seed.date, state: "pre", name: l.seed.name, title: l.seed.title, away: l.seed.away, home: l.seed.home } : null;   // a Kalshi market: buy-only
     const base = l.choice || ks || (sr ? legFromRow(sr, l.seed) : null), leg = base && l.kline != null ? { ...base, line: l.kline } : base;
     const odds = readOddsAs(l.odds, fmt);
-    return { l, res, leg, odds, ready: !!leg && !leg.kalshi && leg.state === "pre" && odds != null };
+    return { l: base && !l.choice ? { ...l, choice: base } : l, res, leg, odds, ready: !!leg && !leg.kalshi && leg.state === "pre" && odds != null };
   }), [lines, board, kidx, fmt]);
   const kmap = useKalshiMap(kal, toK, read.map(x => (x.empty ? null : x.leg)));
   // sending to Kalshi: each line's price is Kalshi's, and every line has to be on Kalshi
