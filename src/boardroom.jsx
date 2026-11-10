@@ -3,7 +3,7 @@ import { parseFinal, finalRundown, algoReview, teamStatRows, colOrder, groupTitl
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
-import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs } from "./bets.js";
+import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
 import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
@@ -1991,7 +1991,8 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 @media (max-width:440px){.bb-sports{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
 @media (max-width:640px){.bb-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.bb-subtabs{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bb-subtabs{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media (max-width:760px){.bb-subtabs{grid-template-columns:repeat(6,minmax(0,1fr))}.bb-subtabs>button{grid-column:span 2}.bb-subtabs>button:nth-child(n+4){grid-column:span 3;border-top:1px solid rgba(143,0,255,.25)!important}}
 .bb-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
 @media (max-width:560px){.bb-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}`;
@@ -3313,12 +3314,15 @@ const gameTxt = l => l.market === "kalshi" ? (l.title || "Kalshi market") : (l.s
 function BetSlipsScreen({ onBack, onTools }) {
   const [me, setMe] = useState({ loading: true });
   const [tab, setTab] = useState("slip");
-  const [who, setWho] = useState(null);                       // a username whose page is open
+  const [who, setWho] = useState(null), [from, setFrom] = useState("board");   // a username whose page is open, and the tab it was opened from
   const [ver, setVer] = useState(0);                          // bump to re-read after a change
   const [kal, setKal] = useState(null), [flash, setFlash] = useState(null);   // this device's Kalshi key (never readable, only usable)
+  const [seed, setSeed] = useState(null);                     // a ticket being tailed: its open legs go onto NEW SLIP
   useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message, status: e.status })); }, []);
   useEffect(() => { if (me.username) savedKey(me.username).then(k => setKal(k || null)).catch(() => setKal(null)); }, [me.username]);
-  const open = u => { setWho(u); setTab("user"); };
+  const open = u => { setFrom(tab === "user" ? from : tab); setWho(u); setTab("user"); };
+  const tail = t => { const now = Date.now(), legs = t.legs.filter(l => !l.res && Date.parse(l.date) > now); setSeed({ id: t.id, from: t.username, legs, left: t.legs.length - legs.length, kalshi: !!t.kalshi }); setFlash(null); setTab("slip"); };
+
   return <Shell status={me.username || "bet slips"}>
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", alignItems: "center", gap: 12, marginTop: 16 }}>
       <button onClick={onBack} style={btnStyle()}>◂ BACK</button>
@@ -3329,13 +3333,15 @@ function BetSlipsScreen({ onBack, onTools }) {
     {!me.loading && !me.err && !me.username && <UsernamePanel onDone={u => setMe({ username: u })}/>}
     {me.username && <>
       <nav className="bb-subtabs" style={{ display: "grid", marginTop: 14, border: `1px solid ${T.line}`, background: T.panel }}>
-        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); setFlash(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
+        {[["slip", "NEW SLIP"], ["mine", "MY BETS"], ["board", "LEADERBOARD"], ["live", "LIVE TICKETS"], ["past", "PAST TICKETS"]].map(([k, t]) => <button key={k} onClick={() => { setTab(k); setWho(null); setFlash(null); }} style={{ ...oneLine, padding: "12px 2px", border: "none", borderBottom: `2px solid ${tab === k ? T.chrome : "transparent"}`, background: tab === k ? "rgba(143,0,255,0.18)" : "none", color: tab === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: "clamp(9px,2.8vw,11px)", letterSpacing: "clamp(0px,0.2vw,1px)", cursor: "pointer" }}>{t}</button>)}
       </nav>
-      {tab === "slip" && <NewSlip kal={kal} onTools={onTools} onPlaced={msg => { setFlash(msg || null); setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "slip" && <NewSlip key={seed ? `t${seed.id}` : "blank"} seed={seed} onUnseed={() => setSeed(null)} kal={kal} onTools={onTools} onPlaced={msg => { setFlash(msg || null); setSeed(null); setVer(v => v + 1); setTab("mine"); }}/>}
+      {tab === "live" && <Tickets key={`live${ver}`} kind="live" onOpen={open} onTail={tail}/>}
+      {tab === "past" && <Tickets key={`past${ver}`} kind="past" onOpen={open}/>}
       {tab === "mine" && flash && <div style={{ marginTop: 14, padding: "10px 12px", border: `1px solid ${NEON.green}66`, background: "rgba(43,255,136,.07)", fontSize: 12, color: T.ink, lineHeight: 1.5 }}>✓ {flash}</div>}
       {tab === "mine" && <Bettor key={`me${ver}`} path="slips" mine onChange={() => setVer(v => v + 1)} onRenamed={u => { setMe({ username: u }); setVer(v => v + 1); }} username={me.username}/>}
       {tab === "board" && <Leaderboard key={`lb${ver}`} onOpen={open}/>}
-      {tab === "user" && who && <Bettor key={`u${who}${ver}`} path={`user/${encodeURIComponent(who)}`} onBackBoard={() => setTab("board")}/>}
+      {tab === "user" && who && <Bettor key={`u${who}${ver}`} path={`user/${encodeURIComponent(who)}`} backLabel={{ board: "LEADERBOARD", live: "LIVE TICKETS", past: "PAST TICKETS" }[from] || "LEADERBOARD"} onBackBoard={() => setTab(from)}/>}
     </>}
   </Shell>;
 }
@@ -3361,8 +3367,9 @@ const oddsPref = () => { try { return localStorage.getItem(ODDS_LS) === "pct" ? 
 const pctTxt1 = a => String(Math.round(amToPct(a) * 10) / 10);
 let _lineId = 1;
 const blankLine = () => ({ id: _lineId++, text: "", odds: "", choice: null });
-function NewSlip({ onPlaced, kal, onTools }) {
-  const [lines, setLines] = useState(() => [blankLine()]);
+function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
+  // tailing: their open picks, their odds (yours to change); each line stays tied to their exact game and bet until you edit it
+  const [lines, setLines] = useState(() => (seed?.legs.length ? seed.legs.map(l => ({ ...blankLine(), text: legLabel(l), odds: oddsPref() === "pct" ? pctTxt1(l.odds) : fmtAm(l.odds), seed: l })) : [blankLine()]));
   const [stake, setStake] = useState("");
   const [board, setBoard] = useState(null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState(null);
@@ -3382,7 +3389,10 @@ function NewSlip({ onPlaced, kal, onTools }) {
     // the scoreboards first; when they have nothing, Kalshi's own markets; Kalshi's matches also go in the "or:" list
     const res = res0.leg ? { ...res0, others: [...(res0.others || []), ...kh.slice(0, 3)] } : kh.length ? { status: "ok", leg: kh[0], others: kh.slice(1, 5) } : res0;
     // nothing is on the line until a match is clicked: typing only finds the matches
-    const base = l.choice || null, leg = base && l.kline != null ? { ...base, line: l.kline } : base;
+    // a tailed line comes already chosen: the same game and bet as the ticket it was copied from
+    const sr = l.seed && board ? rows.find(r => r.sport === l.seed.sport && String(r.id) === String(l.seed.eventId)) : null;
+    const ks = l.seed?.market === "kalshi" ? { market: "kalshi", kalshi: true, side: "yes", line: null, ticker: l.seed.ticker, sport: l.seed.sport, league: l.seed.league, eventId: l.seed.ticker, date: l.seed.date, state: "pre", name: l.seed.name, title: l.seed.title, away: l.seed.away, home: l.seed.home } : null;   // a Kalshi market: buy-only
+    const base = l.choice || ks || (sr ? legFromRow(sr, l.seed) : null), leg = base && l.kline != null ? { ...base, line: l.kline } : base;
     const odds = readOddsAs(l.odds, fmt);
     return { l, res, leg, odds, ready: !!leg && !leg.kalshi && leg.state === "pre" && odds != null };
   }), [lines, board, kidx, fmt]);
@@ -3401,18 +3411,25 @@ function NewSlip({ onPlaced, kal, onTools }) {
     if (toK) { setErr(null); setNote(null); setReview(true); return; }
     setBusy(true); setErr(null);
     try {
-      await api("POST", "slips", { stake: amt, legs: legsOut() });
+      await api("POST", "slips", { stake: amt, legs: legsOut(), ...(seed ? { tail: seed.id } : {}) });
       setLines([blankLine()]); setStake(""); onPlaced();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   // bought on Kalshi: now it's tracked here at what it actually cost
   const kalshiDone = async r => {
     try {
-      await api("POST", "slips", { stake: r.cost, legs: legsOut(r.legOdds), kalshi: r.kalshi });
+      await api("POST", "slips", { stake: r.cost, legs: legsOut(r.legOdds), kalshi: r.kalshi, ...(seed ? { tail: seed.id } : {}) });
       setReview(false); setLines([blankLine()]); setStake(""); onPlaced(r.summary);
     } catch (e) { setReview(false); setErr(`${r.summary} It's on Kalshi, but saving it here failed: ${e.message} Add it again with Kalshi switched off to track it.`); }
   };
   return <Panel title="NEW SLIP" right={board ? `${rows.filter(r => r.state === "pre").length} games open` : "loading games…"}>
+    {seed && <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "start", marginBottom: 12, padding: "10px 12px", border: `1px solid ${NEON.gold}66`, background: "rgba(255,194,38,.07)" }}>
+      <div style={{ minWidth: 0, fontSize: 12, color: T.ink, lineHeight: 1.55 }}>
+        <div style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: NEON.gold, overflowWrap: "anywhere" }}>TAILING {seed.from.toUpperCase()}</div>
+        {seed.legs.length ? <>Their picks are loaded{toK ? " at Kalshi's prices." : " at their odds. Change the odds to the price you're getting."}{seed.left ? ` ${seed.left} pick${seed.left > 1 ? "s" : ""} already started, so ${seed.left > 1 ? "they were" : "it was"} left off.` : ""}</> : "Every game on that ticket has started, so there's nothing left to tail."}
+      </div>
+      <button aria-label="stop tailing" onClick={onUnseed} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 11, padding: "4px 9px", cursor: "pointer", whiteSpace: "nowrap" }}>clear</button>
+    </div>}
     <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginBottom: 12 }}>One pick per line: <span style={{ color: T.ink }}>Real Madrid ML</span>, <span style={{ color: T.ink }}>Lakers -3.5</span>, <span style={{ color: T.ink }}>Chiefs/Bills over 47.5</span>, <span style={{ color: T.ink }}>Arsenal draw</span>. Odds on the right. Two or more lines make a parlay. Games already underway can be bet live when the slip goes to Kalshi.</div>
     {!kal && onTools && <button onClick={onTools} style={{ display: "block", width: "100%", marginBottom: 12, padding: "9px 12px", border: `1px dashed ${T.line}`, background: "none", color: T.dim, fontFamily: F.m, fontSize: 11, textAlign: "left", cursor: "pointer", lineHeight: 1.5 }}>Want slips sent to your Kalshi account? Connect it in <span style={{ color: T.chrome, textDecoration: "underline" }}>Tools → Kalshi</span>.</button>}
     {kal && <button onClick={() => { setKOn(!kOn); setReview(false); }} aria-pressed={toK} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", marginBottom: 12, padding: "10px 12px", border: `1px solid ${toK ? NEON.teal : T.line}`, background: toK ? "rgba(23,242,208,.08)" : "none", color: T.ink, cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
@@ -3431,7 +3448,7 @@ function NewSlip({ onPlaced, kal, onTools }) {
       const last = i === read.length - 1;
       return <div key={x.l.id} style={{ marginBottom: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 72px 40px", gap: 8 }}>
-          <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={x.l.choice ? { ...fieldStyle(NEON.green), color: NEON.green, fontWeight: 700 } : fieldStyle()}/>
+          <input aria-label={`pick ${i + 1}`} value={x.l.text} onChange={e => set(x.l.id, { text: e.target.value, choice: null, seed: null })} placeholder={i ? "Another pick" : "Real Madrid ML"} style={x.leg ? { ...fieldStyle(NEON.green), color: NEON.green, fontWeight: 700 } : fieldStyle()}/>
           {toK ? <input aria-label={`odds ${i + 1}`} readOnly value={rd[i].k?.ok ? (fmt === "pct" ? `${Math.round(rd[i].k.price * 100)}%` : fmtAm(rd[i].k.am)) : ""} placeholder="Kalshi" title="Kalshi's current price" style={{ ...fieldStyle(NEON.teal), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: "#fff" }}/>
             : <input aria-label={`odds ${i + 1}`} value={x.l.odds} onChange={e => set(x.l.id, { odds: (fmt === "pct" ? e.target.value.replace(/[^\d.%]/g, "") : e.target.value.replace(/[^\d+-]/g, "")).slice(0, 7) })} placeholder={fmt === "pct" ? "52.4" : "-110"} inputMode={fmt === "pct" ? "decimal" : "numeric"} style={{ ...fieldStyle(), textAlign: "right", fontFamily: F.d, padding: "11px 8px", color: x.l.odds && x.odds == null ? "#FF8095" : T.ink }}/>}
           {last
@@ -3820,7 +3837,7 @@ function PickMatch({ x, onChoose, fmt = "am", toK = false }) {
 }
 
 // ---------- a bettor's page: numbers, then every slip ----------
-function Bettor({ path, mine = false, onChange, onBackBoard, username, onRenamed }) {
+function Bettor({ path, mine = false, onChange, onBackBoard, backLabel = "LEADERBOARD", username, onRenamed }) {
   const [d, setD] = useState(null), [err, setErr] = useState(null), [rename, setRename] = useState(false);
   const load = () => api("GET", path).then(setD).catch(e => setErr(e.message));
   useEffect(() => { load(); }, [path]);
@@ -3828,7 +3845,7 @@ function Bettor({ path, mine = false, onChange, onBackBoard, username, onRenamed
   if (!d) return <Panel><div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div></Panel>;
   const s = d.stats;
   return <>
-    {onBackBoard && <button onClick={onBackBoard} style={{ ...btnStyle(), marginTop: 14 }}>◂ LEADERBOARD</button>}
+    {onBackBoard && <button onClick={onBackBoard} style={{ ...btnStyle(), marginTop: 14 }}>◂ {backLabel}</button>}
     {rename && <UsernamePanel current={username} onDone={u => { setRename(false); onRenamed && onRenamed(u); }}/>}
     <Panel title={mine ? "MY NUMBERS" : d.username.toUpperCase()} right={mine ? <button onClick={() => setRename(!rename)} style={{ background: "none", border: "none", color: T.dim, fontFamily: F.m, fontSize: 11, cursor: "pointer", padding: 0, textDecoration: "underline" }}>{d.username} · change</button> : `${s.pending} pending`}>
       <StatGrid s={s}/>
@@ -3853,12 +3870,15 @@ function StatGrid({ s }) {
     </div>)}
   </div>;
 }
-function SlipCard({ sl, canTakeBack, onTakeBack }) {
+function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null }) {
   const c = STATUS_C[sl.status], open = sl.status === "pending" && sl.legs.every(l => !l.res && Date.parse(l.date) > Date.now());
   const mark = r => (r === "W" ? ["✓", NEON.green] : r === "L" ? ["✗", NEON.red] : r === "P" ? ["P", T.dim] : ["•", T.faint]);
-  return <div style={{ marginTop: 10, border: `1px solid ${c}66`, background: `${c}0d`, padding: "10px 12px" }}>
+  const liveLeg = l => { const r = !l.res && liveRows ? liveRows.get(`${l.sport}|${l.eventId}`) : null; return r && r.state === "in" ? r : null; };
+  const isLive = sl.status === "pending" && sl.legs.some(l => liveLeg(l) || l.res || Date.parse(l.date) <= Date.now());
+  return <div style={{ marginTop: 10, border: `1px solid ${isLive ? NEON.red : c}66`, background: `${isLive ? NEON.red : c}0d`, padding: "10px 12px" }}>
+    {top}
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "baseline" }}>
-      <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: c }}>{sl.status.toUpperCase()}</span>
+      <span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 1.5, color: isLive ? NEON.red : c, whiteSpace: "nowrap" }}>{isLive ? <><span style={{ animation: "blink 1.6s infinite" }}>●</span> LIVE</> : sl.status.toUpperCase()}</span>
       <span style={{ ...oneLine, fontSize: 11, color: T.dim }}>{sl.legs.length > 1 ? `${sl.legs.length}-leg parlay` : "straight"} · {new Date(sl.created).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{sl.kalshi ? <span style={{ color: NEON.teal }}> · KALSHI{sl.kalshi.env === "demo" ? " DEMO" : ""}</span> : null}</span>
       <span style={{ fontFamily: F.d, fontSize: 13, color: "#fff", whiteSpace: "nowrap" }}>{oddsAs(sl.odds, oddsPref())}</span>
     </div>
@@ -3867,7 +3887,8 @@ function SlipCard({ sl, canTakeBack, onTakeBack }) {
         <span style={{ color: mc, fontWeight: 700 }}>{m}</span>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12, color: T.ink, overflowWrap: "anywhere" }}>{legLabel(l)}</div>
-          <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere", marginTop: 1 }}>{shortGame(l)}{l.final && l.sport !== "Tennis" && l.sport !== "MMA" ? ` · final ${l.final.a}-${l.final.h}` : l.res ? "" : ` · ${whenTxt(l.date)}`}</div>
+          {(r => r ? <div style={{ fontSize: 10, color: "#FF8095", overflowWrap: "anywhere", marginTop: 1 }}>LIVE · {r.sport === "Tennis" || r.sport === "MMA" ? `${r.away.name} ${r.away.score || ""} · ${r.home.name} ${r.home.score || ""}` : `${r.away.abbr || r.away.name} ${r.away.score}-${r.home.score} ${r.home.abbr || r.home.name}`}{r.detail ? ` · ${r.detail}` : ""}</div>
+            : <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere", marginTop: 1 }}>{shortGame(l)}{l.final && l.sport !== "Tennis" && l.sport !== "MMA" ? ` · final ${l.final.a}-${l.final.h}` : l.res ? "" : ` · ${whenTxt(l.date)}`}</div>)(liveLeg(l))}
         </div>
         <span style={{ fontFamily: F.d, fontSize: 11, color: T.dim, whiteSpace: "nowrap" }}>{oddsAs(l.odds, oddsPref())}</span>
       </div>; })}
@@ -3877,6 +3898,65 @@ function SlipCard({ sl, canTakeBack, onTakeBack }) {
       {canTakeBack && open ? <button onClick={onTakeBack} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 10, padding: "4px 8px", cursor: "pointer", whiteSpace: "nowrap" }}>take back</button> : <span/>}
     </div>
   </div>;
+}
+
+// ---------- everyone's tickets: LIVE (riding now or later today, tail any of them) and PAST (every settled ticket) ----------
+const etDayOf = iso => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+function Tickets({ kind, onOpen, onTail }) {
+  const [d, setD] = useState(null), [err, setErr] = useState(null), [st, setSt] = useState("all"), [busy, setBusy] = useState(false), [scores, setScores] = useState(null);
+  const q = s => `tickets/${kind}${kind === "past" && s !== "all" ? `?status=${s}` : ""}`;
+  useEffect(() => {
+    let on = true, timer = null;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 20000); return; }
+      try { const j = await api("GET", q(st)); if (on) { setD(j); setErr(null); } } catch (e) { if (on) setErr(e.message); }
+      if (kind === "live") {
+        _betRows = null;                                    // fresh scores each pass
+        loadBetRows().then(b => on && setScores(new Map(b.rows.map(r => [`${r.sport}|${r.id}`, r])))).catch(() => {});
+        timer = setTimeout(pull, 60000);
+      }
+    };
+    setD(null); pull();
+    return () => { on = false; clearTimeout(timer); };
+  }, [kind, st]);
+  const more = async () => { setBusy(true); try { const j = await api("GET", `${q(st)}${st === "all" ? "?" : "&"}before=${encodeURIComponent(d.tickets.at(-1).settled)}`); setD({ ...d, tickets: [...d.tickets, ...j.tickets], more: j.more }); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  if (err && !d) return <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>;
+  const head = t => {
+    const open = kind === "live" && !t.you && t.legs.some(l => !l.res && Date.parse(l.date) > Date.now());
+    return <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", paddingBottom: 8, marginBottom: 8, borderBottom: `1px solid ${T.line}` }}>
+      <div style={{ minWidth: 0 }}>
+        <button onClick={() => onOpen(t.username)} style={{ maxWidth: "100%", padding: 0, border: "none", background: "none", color: t.you ? T.chrome : "#fff", fontFamily: F.d, fontSize: 13, fontWeight: 700, letterSpacing: 0.5, cursor: "pointer", textAlign: "left", overflowWrap: "anywhere" }}>{t.username}{t.you ? <span style={{ fontFamily: F.m, fontSize: 11, fontWeight: 400, color: T.dim }}> · you</span> : null}</button>
+        {(t.tails > 0 || t.tailOf) && <div style={{ fontSize: 10, color: T.faint, marginTop: 2, lineHeight: 1.5, overflowWrap: "anywhere" }}>{t.tails > 0 ? <span style={{ color: NEON.gold }}>{t.tails} tailing</span> : null}{t.tails > 0 && t.tailOf ? " · " : ""}{t.tailOf ? `tailed ${t.tailOf}` : ""}</div>}
+      </div>
+      {open ? <button onClick={() => onTail(t)} aria-label={`tail ${t.username}`} style={{ ...btnStyle(), borderColor: NEON.gold, background: "rgba(255,194,38,.12)", color: NEON.gold, whiteSpace: "nowrap" }}>TAIL ▸</button> : <span/>}
+    </div>;
+  };
+  const card = t => <SlipCard key={t.id} sl={t} top={head(t)} liveRows={kind === "live" ? scores : null}/>;
+  if (kind === "live") {
+    const today = etDayOf(new Date().toISOString()), list = d?.tickets || [];
+    const going = l => !l.res && (Date.parse(l.date) <= Date.now() || scores?.get(`${l.sport}|${l.eventId}`)?.state === "in");
+    const groups = [["LIVE NOW", list.filter(t => t.live || t.legs.some(going))], ["LATER TODAY", []], ["UPCOMING", []]];
+    for (const t of list) if (!groups[0][1].includes(t)) (t.next && etDayOf(t.next) === today ? groups[1][1] : groups[2][1]).push(t);
+    return <>
+      <div style={{ marginTop: 14, fontSize: 11, color: T.dim, lineHeight: 1.6 }}>Everyone's tickets that are still riding. Tap <span style={{ color: NEON.gold }}>TAIL ▸</span> to put the same picks on your slip. Updates every minute.</div>
+      {!d && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading tickets…</div></Panel>}
+      {d && !list.length && <Panel><div style={{ fontSize: 12, color: T.dim }}>No tickets riding right now.</div></Panel>}
+      {d && groups.filter(([, g]) => g.length).map(([title, g]) => <Panel key={title} title={title} right={`${g.length} ticket${g.length > 1 ? "s" : ""}`} color={title === "LIVE NOW" ? NEON.red : T.chrome}>{g.map(card)}</Panel>)}
+    </>;
+  }
+  const tot = d?.totals;
+  return <>
+    <div role="group" aria-label="filter past tickets" style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", marginTop: 14, border: `1px solid ${T.line}` }}>
+      {[["all", "ALL"], ["won", "WON"], ["lost", "LOST"], ["push", "PUSH"]].map(([k, t]) => <button key={k} onClick={() => setSt(k)} aria-pressed={st === k} style={{ padding: "8px 2px", border: "none", background: st === k ? "rgba(143,0,255,0.3)" : "none", color: st === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 1, cursor: "pointer" }}>{t}</button>)}
+    </div>
+    <Panel title="PAST TICKETS" right={tot ? <span>site <b style={{ color: T.ink }}>{tot.W}-{tot.L}{tot.P ? `-${tot.P}` : ""}</b> · <span style={{ color: tot.net > 0 ? NEON.green : tot.net < 0 ? NEON.red : T.dim }}>{sCash(tot.net)}</span></span> : null}>
+      {!d && <div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div>}
+      {d && !d.tickets.length && <div style={{ fontSize: 12, color: T.dim }}>No {st === "all" ? "settled" : st} tickets yet.</div>}
+      {d && d.tickets.map(card)}
+      {d?.more && <button onClick={more} disabled={busy} style={{ ...btnStyle(!busy), width: "100%", marginTop: 12 }}>{busy ? "LOADING…" : "LOAD MORE"}</button>}
+      {err && d && <div style={{ fontSize: 12, color: "#FF8095", marginTop: 8 }}>{err}</div>}
+    </Panel>
+  </>;
 }
 
 // ---------- leaderboards: by record ("5 for 7") and by money ----------

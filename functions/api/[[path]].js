@@ -7,6 +7,8 @@
 //   DELETE /api/slips/:id        -> take back a slip before any of its games starts
 //   GET  /api/board              -> both leaderboards
 //   GET  /api/user/:username     -> anyone's numbers and slips (by username; emails are never shown)
+//   GET  /api/tickets/live       -> everyone's tickets still riding (upcoming or live), with who placed them and who's tailing
+//   GET  /api/tickets/past       -> everyone's settled tickets, newest first (?status=won|lost|push, ?before=<settled> for more)
 // Grading: every call first settles any leg whose game is over, from ESPN's final score.
 import { ROUTES, scoreboardUrl, liveBoard, ymd } from "../../src/routes.js";
 import { gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, amToDec, decToAm, USERNAME_RE } from "../../src/bets.js";
@@ -55,11 +57,14 @@ async function init(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)"),
   ]);
   try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN kalshi TEXT").run(); } catch (_) { /* already there */ }
+  try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN tail TEXT").run(); } catch (_) { /* already there */ }
   ready = true;
 }
 const setting = async (env, k) => (await env.DB.prepare("SELECT v FROM settings WHERE k=?").bind(k).first())?.v ?? null;
 const setSetting = (env, k, v) => env.DB.prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(k, v).run();
-const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.odds, status: r.status, profit: r.profit, settled: r.settled, legs: JSON.parse(r.legs), kalshi: r.kalshi ? JSON.parse(r.kalshi) : null });
+const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.odds, status: r.status, profit: r.profit, settled: r.settled, legs: JSON.parse(r.legs), kalshi: r.kalshi ? JSON.parse(r.kalshi) : null, tail: r.tail || null });
+// someone else's slip: that it went through Kalshi, never their order or quote ids
+const publicSlip = (s, mine) => (mine || !s.kalshi ? s : { ...s, kalshi: { env: s.kalshi.env, combo: !!s.kalshi.combo } });
 
 // ---------- ESPN ----------
 const espn = (env, url) => (env.ESPN_BASE ? url.replace("https://site.api.espn.com", env.ESPN_BASE) : url);
@@ -160,9 +165,45 @@ async function placeSlip(env, email, body) {
   }
   // a Kalshi combo is priced as one contract: its price is the slip's odds, not the legs multiplied
   const dec = kalshi?.dec > 1 ? kalshi.dec : legs.reduce((a, l) => a * amToDec(l.odds), 1), odds = decToAm(dec);
+  // tailing someone: kept only if it's a real ticket that isn't yours (a tail of a tail credits the original)
+  let tail = null;
+  if (typeof body?.tail === "string" && body.tail.length <= 64) {
+    const t = await env.DB.prepare("SELECT id, email, tail FROM slips WHERE id=?").bind(body.tail).first();
+    if (t && t.email !== email) tail = t.tail || t.id;
+  }
   const id = crypto.randomUUID(), created = new Date().toISOString();
-  await env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)").bind(id, email, created, stake, odds, JSON.stringify(legs), kalshi ? JSON.stringify(kalshi) : null).run();
-  return json({ slip: { id, created, stake, odds, status: "pending", profit: null, settled: null, legs, kalshi } });
+  await env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi, tail) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, ?)").bind(id, email, created, stake, odds, JSON.stringify(legs), kalshi ? JSON.stringify(kalshi) : null, tail).run();
+  return json({ slip: { id, created, stake, odds, status: "pending", profit: null, settled: null, legs, kalshi, tail } });
+}
+
+// ---------- everyone's tickets: riding now, and settled ----------
+const PAST_PAGE = 40;
+async function tickets(env, email, kind, q) {
+  const names = Object.fromEntries((await env.DB.prepare("SELECT email, username FROM users").all()).results.map(u => [u.email, u.username]));
+  let rows, more = false, totals = null;
+  if (kind === "live") rows = (await env.DB.prepare("SELECT * FROM slips WHERE status='pending'").all()).results;
+  else {
+    const st = ["won", "lost", "push"].includes(q.get("status")) ? [q.get("status")] : ["won", "lost", "push"];
+    const before = /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(q.get("before") || "") ? q.get("before") : "9999";
+    rows = (await env.DB.prepare(`SELECT * FROM slips WHERE status IN (${st.map(() => "?").join(",")}) AND settled < ? ORDER BY settled DESC, id DESC LIMIT ?`).bind(...st, before, PAST_PAGE + 1).all()).results;
+    more = rows.length > PAST_PAGE; rows = rows.slice(0, PAST_PAGE);
+    const t = (await env.DB.prepare("SELECT status, COUNT(*) AS n, SUM(profit) AS p FROM slips WHERE status IN ('won','lost','push') GROUP BY status").all()).results;
+    const g = k => t.find(x => x.status === k) || { n: 0, p: 0 };
+    totals = { W: g("won").n, L: g("lost").n, P: g("push").n, net: Math.round(((g("won").p || 0) + (g("lost").p || 0)) * 100) / 100 };
+  }
+  // who's tailing whom
+  const tc = {};
+  for (const r of (await env.DB.prepare("SELECT tail, COUNT(*) AS n FROM slips WHERE tail IS NOT NULL GROUP BY tail").all()).results) tc[r.tail] = r.n;
+  const tailIds = [...new Set(rows.map(r => r.tail).filter(Boolean))], owner = {};
+  for (const tid of tailIds) { const o = await env.DB.prepare("SELECT email FROM slips WHERE id=?").bind(tid).first(); if (o) owner[tid] = names[o.email] || null; }
+  const now = Date.now();
+  const list = rows.map(r => {
+    const s = rowToSlip(r);
+    return { ...publicSlip(s, r.email === email), username: names[r.email] || "unknown", you: r.email === email, tails: tc[s.id] || 0, tailOf: s.tail ? owner[s.tail] || null : null,
+      next: Math.min(...s.legs.filter(l => !l.res).map(l => Date.parse(l.date)).concat(Infinity)), live: s.status === "pending" && s.legs.some(l => l.res || Date.parse(l.date) <= now) };
+  });
+  if (kind === "live") list.sort((a, b) => (b.live - a.live) || a.next - b.next || String(b.created).localeCompare(String(a.created)));
+  return json({ tickets: list.map(({ next, ...t }) => ({ ...t, next: Number.isFinite(next) ? new Date(next).toISOString() : null })), more, totals });
 }
 
 // one Kalshi market (public market data: no key needed), used to check a Kalshi-market leg and to grade it
@@ -239,8 +280,9 @@ export async function onRequest({ request, env, params }) {
     const u = await env.DB.prepare("SELECT email, username FROM users WHERE uname=?").bind(String(path[1]).toLowerCase()).first();
     if (!u) return bad("No one goes by that username.", 404);
     const slips = await slipsOf(u.email);
-    return json({ username: u.username, you: u.email === email, slips, stats: bettorStats(slips) });
+    return json({ username: u.username, you: u.email === email, slips: slips.map(s => publicSlip(s, u.email === email)), stats: bettorStats(slips) });
   }
+  if (what === "tickets" && m === "GET") return tickets(env, email, path[1] === "past" ? "past" : "live", new URL(request.url).searchParams);
   if (what === "board" && m === "GET") {
     const users = (await env.DB.prepare("SELECT email, username FROM users").all()).results;
     const all = (await env.DB.prepare("SELECT * FROM slips").all()).results;

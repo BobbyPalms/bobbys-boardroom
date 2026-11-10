@@ -53,7 +53,7 @@ globalThis.fetch = async (url, opts = {}) => {
 const env = { DB, DEV_LOGIN: "1" };
 const call = async (who, method, path, body) => {
   const req = new Request(`https://bobbys-boardroom.pages.dev/api/${path}`, { method, headers: { "x-dev-email": who || "", "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-  const res = await onRequest({ request: req, env, params: { path: path.split("/") } });
+  const res = await onRequest({ request: req, env, params: { path: path.split("?")[0].split("/") } });
   return { status: res.status, j: await res.json() };
 };
 const legNBA = (pick, eventId, market, side, line, odds) => ({ pick, sport: "NBA", league: "nba", eventId, date: games[eventId].date, market, side, line, odds });
@@ -162,6 +162,36 @@ db.prepare("UPDATE slips SET legs=? WHERE id=?").run(JSON.stringify(legsNow), ki
 db.prepare("DELETE FROM settings WHERE k='graded_at'").run();
 const zs = (await call("zed@x.com", "GET", "slips")).j.slips.find(x => x.id === kid);
 check("Kalshi combo slip graded: won at the combo price ($9.50 at 19¢ wins $40.50)", zs.status === "won" && Math.abs(zs.profit - 40.5) < 0.01, zs);
+// ---- everyone's tickets: live (riding) and past (settled), tailing ----
+Object.assign(games["402"], { state: "pre", date: new Date(Date.now() + 5 * 3600e3).toISOString(), as: "", hs: "" });
+Object.assign(games["403"], { state: "in" });
+const amyRide = (await call("amy@x.com", "POST", "slips", { stake: 25, legs: [legNBA("Pistons ML", "402", "ml", "home", null, "+120")] })).j.slip;
+let tr = await call("bob@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Pistons ML", "402", "ml", "home", null, "+115")], tail: amyRide.id });
+check("tail recorded against the original ticket", tr.status === 200 && tr.j.slip.tail === amyRide.id, tr.j);
+const zedTail = (await call("zed@x.com", "POST", "slips", { stake: 5, legs: [legNBA("Pistons ML", "402", "ml", "home", null, "+120")], tail: tr.j.slip.id })).j.slip;
+check("a tail of a tail credits the original", zedTail.tail === amyRide.id, zedTail);
+check("tailing yourself isn't counted", (await call("amy@x.com", "POST", "slips", { stake: 1, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-140")], tail: amyRide.id })).j.slip.tail === null);
+check("made-up tail ignored", (await call("bob@x.com", "POST", "slips", { stake: 1, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-140")], tail: "nope" })).j.slip.tail === null);
+// a live one: Amy's Bucks ticket is on a game in progress
+db.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi, tail) VALUES ('liv1', 'amy@x.com', ?, 10, -150, 'pending', NULL, NULL, ?, ?, NULL)").run(new Date().toISOString(),
+  JSON.stringify([{ pick: "Bucks ML", sport: "NBA", league: "nba", eventId: "403", date: games["403"].date, market: "ml", side: "away", line: null, odds: -150, away: { name: "Bucks", abbr: "MIL" }, home: { name: "Knicks", abbr: "NYK" }, title: "", res: null }]),
+  JSON.stringify({ env: "live", dec: 1.6667, orders: [{ ticker: "KXNBAGAME-X", side: "yes", count: 15, price: 0.6, order_id: "secret-order", filled: 15 }], combo: null }));
+const lv = (await call("bob@x.com", "GET", "tickets/live")).j;
+const byId = Object.fromEntries(lv.tickets.map(t => [t.id, t]));
+check("live tickets: everyone's riding slips, nothing settled", lv.tickets.every(t => t.status === "pending") && byId[amyRide.id] && byId[zedTail.id] && byId.liv1, lv.tickets.map(t => `${t.username} ${t.status}`));
+check("live tickets: in-progress first", lv.tickets[0].id === "liv1" && lv.tickets[0].live === true && byId[amyRide.id].live === false, lv.tickets.map(t => t.id));
+check("live tickets: usernames, who's you, tail counts, who they tailed", byId[amyRide.id].username === "AmyBets" && byId[amyRide.id].you === false && byId[amyRide.id].tails === 2 && byId[tr.j.slip.id].you === true && byId[zedTail.id].tailOf === "AmyBets", byId[amyRide.id]);
+check("live tickets: someone's Kalshi ticket shows it's on Kalshi, never their order ids", byId.liv1.kalshi.env === "live" && !JSON.stringify(lv).includes("secret-order") && !JSON.stringify(lv).includes("KXNBAGAME-X"), byId.liv1.kalshi);
+check("live tickets: no emails", !JSON.stringify(lv).includes("@x.com"));
+check("someone's page hides their Kalshi ids too", !JSON.stringify((await call("bob@x.com", "GET", "user/amybets")).j).includes("secret-order"));
+check("your own page keeps yours", JSON.stringify((await call("amy@x.com", "GET", "slips")).j).includes("secret-order"));
+const pa = (await call("bob@x.com", "GET", "tickets/past")).j;
+check("past tickets: only settled, newest first, site totals", pa.tickets.length >= 5 && pa.tickets.every(t => ["won", "lost", "push"].includes(t.status)) && pa.tickets.every((t, i, a) => !i || a[i - 1].settled >= t.settled) && pa.totals.W + pa.totals.L === pa.tickets.filter(t => t.status !== "push").length, pa);
+const pw = (await call("bob@x.com", "GET", "tickets/past?status=lost")).j;
+check("past tickets: filter to losses", pw.tickets.length >= 1 && pw.tickets.every(t => t.status === "lost"));
+for (let i = 0; i < 45; i++) db.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs) VALUES (?, 'zed@x.com', ?, 1, 100, 'won', 1, ?, '[]')").run(`old${i}`, "2026-01-01T00:00:00.000Z", new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString());
+const p1 = (await call("bob@x.com", "GET", "tickets/past")).j, p2 = (await call("bob@x.com", "GET", `tickets/past?before=${encodeURIComponent(p1.tickets.at(-1).settled)}`)).j;
+check("past tickets: pages of 40, then the rest", p1.tickets.length === 40 && p1.more === true && p2.more === false && p1.tickets.length + p2.tickets.length === pa.tickets.length + 45 && !p2.tickets.some(t => p1.tickets.some(u => u.id === t.id)), [p1.tickets.length, p2.tickets.length, pa.tickets.length]);
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
 function decToAmLocal(list) { const d = list.reduce((a, o) => a * (o > 0 ? 1 + o / 100 : 1 + 100 / -o), 1); return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }

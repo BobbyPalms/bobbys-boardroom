@@ -96,6 +96,12 @@ export function resolvePick(p, rows, { sport = null } = {}) {
   return { status: pick.r.state === "pre" ? "ok" : "started", leg, others };
 }
 
+// a pick taken straight off someone else's ticket (tailing): the same bet, on the game as it stands on today's board
+export const legFromRow = (r, { market, side: sd, line = null }) => ({
+  sport: r.sport, league: r.league, eventId: r.id, date: r.date, state: r.state, market, side: sd, line: market === "spread" || market === "total" ? line : null,
+  away: side(r.away), home: side(r.home), title: r.title || "",
+});
+
 // ---------- grading ----------
 // row: the game's live-board row once it's over (state "post"): away/home with score and winner flags
 export function gradeLeg(leg, row) {
