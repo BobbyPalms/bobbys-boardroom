@@ -3598,7 +3598,7 @@ function KalshiPanel({ username, kal, setKal }) {
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   const file = async f => { if (f) setPem(await f.text()); };
-  if (kal) return <Panel title="KALSHI" right={kal.env === "demo" ? "DEMO (practice money)" : "LIVE"} color={NEON.green}>
+  if (kal) return <><Panel title="KALSHI" right={kal.env === "demo" ? "DEMO (practice money)" : "LIVE"} color={NEON.green}>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
       {[["STATUS", "Connected", NEON.green], ["API KEY", `••••${kal.tail || ""}`, T.ink], ["BALANCE", bal == null ? "…" : bal.ok ? kalshiMoney(bal.v) : "—", T.ink]].map(([k, v, c]) => <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, background: "rgba(9,2,17,.5)", padding: "9px 10px" }}>
         <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div><div style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: c, marginTop: 3, overflowWrap: "anywhere" }}>{v}</div></div>)}
@@ -3606,7 +3606,7 @@ function KalshiPanel({ username, kal, setKal }) {
     {bal && !bal.ok && <div style={{ marginTop: 10, fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{bal.msg}</div>}
     <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7, marginTop: 12 }}>Your key is saved on this device only, in a form even this site can't read back. Each order is signed here and passed to Kalshi; the site's server never sees your key. On another phone or computer, add it there too.</div>
     <button onClick={async () => { await forgetKey(username); setKal(null); }} style={{ ...btnStyle(), marginTop: 12 }}>REMOVE KEY FROM THIS DEVICE</button>
-  </Panel>;
+  </Panel><SyncPanel kal={kal}/></>;
   const ok = keyId.trim().length > 8 && /BEGIN/.test(pem) && !busy;
   return <Panel title="CONNECT KALSHI" right="your own API key">
     <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7 }}>On kalshi.com: Account &amp; security → API Keys → Create key. Copy the Key ID and download the private key file, then add both here. The key stays on this device: it's stored so even this site can't read it back, every order is signed here, and nothing is sent to Kalshi until you confirm it.</div>
@@ -3621,6 +3621,34 @@ function KalshiPanel({ username, kal, setKal }) {
     <label style={{ display: "inline-block", marginTop: 8, fontSize: 11, color: T.chrome, cursor: "pointer", textDecoration: "underline" }}>or choose the key file<input type="file" accept=".key,.pem,.txt" onChange={e => file(e.target.files?.[0])} style={{ display: "none" }}/></label>
     {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
     <button onClick={save} disabled={!ok} style={{ width: "100%", marginTop: 12, padding: 13, border: `1px solid ${ok ? T.chrome : T.line}`, background: ok ? "rgba(143,0,255,0.3)" : "none", color: ok ? "#fff" : T.faint, fontFamily: F.d, fontSize: 12, letterSpacing: 2, cursor: ok ? "pointer" : "not-allowed" }}>{busy ? "CHECKING WITH KALSHI…" : "SAVE ON THIS DEVICE"}</button>
+  </Panel>;
+}
+
+// Keep my Kalshi synced (opt-in): this device asks Kalshi for a READ-ONLY key (it can see positions, never trade or move
+// money) and hands it to the site, so bets made in the Kalshi app show up even when this person isn't on the site.
+function SyncPanel({ kal }) {
+  const [st, setSt] = useState(null), [busy, setBusy] = useState(false), [err, setErr] = useState(null);
+  const load = () => api("GET", "kalshi-sync").then(setSt).catch(e => setErr(e.message));
+  useEffect(() => { load(); }, []);
+  const on = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const g = await kalshiCall(kal, "POST", "api_keys/generate", { name: "Bobby's Boardroom sync (read-only)", scopes: ["read"] });
+      if (!g.api_key_id || !g.private_key) throw new Error("Kalshi didn't hand back a read-only key. Try again.");
+      await api("POST", "kalshi-sync", { env: kal.env, keyId: g.api_key_id, pem: g.private_key });
+      await load();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const off = async () => {
+    setBusy(true); setErr(null);
+    try { const r = await api("DELETE", "kalshi-sync"); if (r.keyId && r.env === kal.env) await kalshiCall(kal, "DELETE", `api_keys/${encodeURIComponent(r.keyId)}`).catch(() => {}); await load(); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return <Panel title="KEEP MY KALSHI SYNCED" right={st?.on ? "ON" : "OFF"} color={st?.on ? NEON.green : T.chrome}>
+    <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.7 }}>Bets you make in the Kalshi app show up on Live Tickets even when you're not on this site. Turning it on makes a separate <b style={{ color: T.ink }}>read-only</b> Kalshi key for the site: it can see your positions but can't place trades or move money. Your trading key stays on this device. Turn it off any time and that read-only key is deleted.</div>
+    {st?.on && <div style={{ marginTop: 10, fontSize: 12, color: T.ink, lineHeight: 1.6 }}>On · read-only key ••••{st.tail}{st.synced ? ` · last synced ${new Date(st.synced).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""}{st.error ? <span style={{ color: "#FF8095" }}> · {st.error}</span> : null}</div>}
+    {err && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{err}</div>}
+    {st && <button onClick={st.on ? off : on} disabled={busy} aria-label={st.on ? "turn off sync" : "turn on sync"} style={{ ...btnStyle(!busy), width: "100%", marginTop: 12, padding: 12 }}>{busy ? "…" : st.on ? "TURN OFF (DELETES THE READ-ONLY KEY)" : "TURN ON"}</button>}
   </Panel>;
 }
 

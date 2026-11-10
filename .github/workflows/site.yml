@@ -66,6 +66,16 @@ jobs:
         if: env.CF_TOKEN != ''
         continue-on-error: true
         run: node scripts/setup-db.mjs
+      - name: Encryption secret for the opt-in Kalshi sync keys (made once, kept in Cloudflare only)
+        if: env.CF_TOKEN != ''
+        continue-on-error: true
+        env: { CLOUDFLARE_API_TOKEN: "${{ env.CF_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ env.CF_ACCOUNT }}" }
+        run: |
+          # only when Cloudflare answers and has none yet: an existing secret is never replaced
+          out=$(npx --yes wrangler@3 pages secret list --project-name="$CF_PROJECT" 2>&1) || exit 0
+          echo "$out" | grep -q SYNC_SECRET && exit 0
+          echo "$out" | grep -qi "secret" || exit 0
+          openssl rand -base64 32 | tr -d '\n' | npx --yes wrangler@3 pages secret put SYNC_SECRET --project-name="$CF_PROJECT"
       - name: Deploy to Cloudflare Pages
         if: env.CF_TOKEN != ''
         env: { CLOUDFLARE_API_TOKEN: "${{ env.CF_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ env.CF_ACCOUNT }}" }

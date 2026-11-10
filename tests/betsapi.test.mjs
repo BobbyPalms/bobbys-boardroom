@@ -44,6 +44,7 @@ globalThis.fetch = async (url, opts = {}) => {
   const mk = u.pathname.match(/\/markets\/([\w.-]+)$/);
   if (/kalshi/.test(u.host) && mk && kalshiMarkets[mk[1]]) return new Response(JSON.stringify({ market: kalshiMarkets[mk[1]] }), { status: 200 });
   if (/kalshi/.test(u.host) && mk) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  if (/kalshi/.test(u.host) && globalThis.__kx && await globalThis.__kx(u, opts)) return globalThis.__kxRes;
   if (/kalshi/.test(u.host)) { kalshiSeen.push({ url: String(url), method: opts.method, headers: opts.headers, body: opts.body }); if (kalshi204) return new Response(null, { status: 204 }); return new Response(JSON.stringify({ balance: 12345, order_id: "ord-1", fill_count: "17.85" }), { status: 200, headers: { "content-type": "application/json" } }); }
   espnCalls++;
   const m = u.pathname.match(/sports\/(.+)\/scoreboard/);
@@ -229,6 +230,42 @@ check("synced ticket updated", (await call("zed@x.com", "GET", "slips")).j.slips
 const lvs = (await call("bob@x.com", "GET", "tickets/live")).j.tickets.find(x => x.id === sStraight.id);
 check("synced tickets show on Live Tickets for everyone, marked synced", lvs && lvs.username === "zed" && lvs.kalshi.imported === true && lvs.kalshi.mkt === "KXNFLGAME-26NOV09BUFMIN-BUF", lvs);
 check("someone else can't sync into your account (it's per login)", (await call("bob@x.com", "POST", "slips/sync", { env: "live", positions: [] })).j.gone.length === 0);
+// ---- opt-in server sync with a read-only key: bets bought in the Kalshi app show up with nobody on the site ----
+{
+  const kp = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  const pk8 = Buffer.from(await crypto.subtle.exportKey("pkcs8", kp.privateKey)).toString("base64").match(/.{1,64}/g).join("\n");
+  const PEM = `-----BEGIN PRIVATE KEY-----\n${pk8}\n-----END PRIVATE KEY-----`;
+  let signedOk = 0, positionsNow = [{ ticker: "KXNBAGAME-26NOV09LALATL-LAL", position_fp: "40.00", market_exposure_dollars: "22.000000", last_updated_ts: new Date().toISOString() }];
+  globalThis.__kx = async (u, opts) => {
+    const p = u.pathname.replace("/trade-api/v2/", "");
+    if (p === "portfolio/positions") {
+      const h = opts.headers || {}, ok = h["KALSHI-ACCESS-KEY"] === "ro-key-123456" && await crypto.subtle.verify({ name: "RSA-PSS", saltLength: 32 }, kp.publicKey, Buffer.from(h["KALSHI-ACCESS-SIGNATURE"], "base64"), new TextEncoder().encode(`${h["KALSHI-ACCESS-TIMESTAMP"]}GET/trade-api/v2/portfolio/positions`));
+      if (ok) signedOk++;
+      globalThis.__kxRes = new Response(JSON.stringify(ok ? { market_positions: u.searchParams.get("ticker") ? [] : positionsNow } : { error: { message: "bad sig" } }), { status: ok ? 200 : 401 });
+      return true;
+    }
+    if (p.startsWith("markets/KXNBAGAME-26NOV09LALATL-LAL")) { globalThis.__kxRes = new Response(JSON.stringify({ market: { ticker: "KXNBAGAME-26NOV09LALATL-LAL", yes_sub_title: "Los Angeles L", title: "Los Angeles L at Atlanta", status: "active", close_time: new Date(Date.now() + 864e5).toISOString() } }), { status: 200 }); return true; }
+    return false;
+  };
+  env.SYNC_SECRET = "test-secret"; env.SYNC_INLINE = "1";
+  await call("kim@x.com", "POST", "me", { username: "KimBuddy" });
+  check("sync off until you turn it on", (await call("kim@x.com", "GET", "kalshi-sync")).j.on === false);
+  check("a key that isn't a key is refused", (await call("kim@x.com", "POST", "kalshi-sync", { env: "live", keyId: "ro-key-123456", pem: "nope" })).status === 400);
+  const on = await call("kim@x.com", "POST", "kalshi-sync", { env: "live", keyId: "ro-key-123456", pem: PEM });
+  check("turned on: synced right away, signed with the read-only key", on.status === 200 && on.j.on === true && on.j.tail === "3456" && on.j.first?.added === 1 && signedOk >= 1, on.j);
+  const stored = db.prepare("SELECT secret FROM sync_keys WHERE email='kim@x.com'").get().secret;
+  check("the read-only key is encrypted at rest", stored.startsWith("aes:") && !stored.includes("PRIVATE KEY"));
+  check("status: on, key tail only, never the key", (x => x.on && x.tail === "3456" && !JSON.stringify(x).includes("PRIVATE"))((await call("kim@x.com", "GET", "kalshi-sync")).j));
+  // a new bet in the Kalshi app; Kim isn't on the site; Bob opens Live Tickets
+  positionsNow = [...positionsNow, { ticker: "KXNBAGAME-26NOV09LALATL-LAL", position_fp: "40.00", market_exposure_dollars: "22.000000" }].slice(0, 1).concat([{ ticker: "KXNBAGAME-26NOV09LALATL-LAL2", position_fp: "10.00", market_exposure_dollars: "4.000000" }]);
+  db.prepare("DELETE FROM settings WHERE k='sync_all_at'").run();
+  const lvk = (await call("bob@x.com", "GET", "tickets/live")).j.tickets.filter(t => t.username === "KimBuddy");
+  check("her new app bet shows on Live Tickets though she's not on the site", lvk.length === 2 && lvk.every(t => t.kalshi.imported), lvk.map(t => t.kalshi?.mkt));
+  { const before = signedOk; await call("bob@x.com", "GET", "tickets/live"); check("synced at most once a minute", signedOk === before, [before, signedOk]); }
+  const off = await call("kim@x.com", "DELETE", "kalshi-sync");
+  check("turned off: gone from the server, its key id handed back to delete on Kalshi", off.j.on === false && off.j.keyId === "ro-key-123456" && !db.prepare("SELECT * FROM sync_keys WHERE email='kim@x.com'").get());
+  delete env.SYNC_SECRET; delete env.SYNC_INLINE; globalThis.__kx = null;
+}
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
 function decToAmLocal(list) { const d = list.reduce((a, o) => a * (o > 0 ? 1 + o / 100 : 1 + 100 / -o), 1); return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }

@@ -6,6 +6,9 @@
 //   POST /api/slips {stake, legs}-> place a slip (every game must not have started yet, unless it was bought live on Kalshi)
 //   DELETE /api/slips/:id        -> take back a slip before any of its games starts (not one bought on Kalshi: cash that out)
 //   POST /api/slips/:id/cashout {proceeds, sale} -> a Kalshi slip sold back on Kalshi: settled at what the sale brought
+//   GET/POST/DELETE /api/kalshi-sync -> opt-in "keep my Kalshi synced": a READ-ONLY Kalshi key (made on the person's
+//                                device with their own key; it can see positions but can't trade or move money) kept here,
+//                                so their Kalshi bets sync even when they don't have the site open
 //   POST /api/slips/sync {env, positions} -> your open Kalshi positions (read on your device with your key, including ones
 //                                bought in the Kalshi app), kept as tickets here; returns the synced tickets no longer open
 //   GET  /api/board              -> both leaderboards
@@ -15,7 +18,7 @@
 // Grading: every call first settles any leg whose game is over, from ESPN's final score.
 import { ROUTES, scoreboardUrl, liveBoard, ymd } from "../../src/routes.js";
 import { gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, amToDec, decToAm, USERNAME_RE } from "../../src/bets.js";
-import { sportOfSeries, priceToAm } from "../../src/kalshi.js";
+import { sportOfSeries, priceToAm, importKey, signHeaders, syncPayload, API_ROOT } from "../../src/kalshi.js";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const bad = (msg, status = 400) => json({ error: msg }, status);
@@ -62,6 +65,7 @@ async function init(env) {
   ]);
   try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN kalshi TEXT").run(); } catch (_) { /* already there */ }
   try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN tail TEXT").run(); } catch (_) { /* already there */ }
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS sync_keys (email TEXT PRIMARY KEY, env TEXT NOT NULL, key_id TEXT NOT NULL, secret TEXT NOT NULL, created TEXT NOT NULL, synced TEXT, fails INTEGER NOT NULL DEFAULT 0, last_error TEXT)").run();
   ready = true;
 }
 const setting = async (env, k) => (await env.DB.prepare("SELECT v FROM settings WHERE k=?").bind(k).first())?.v ?? null;
@@ -236,7 +240,8 @@ export function kalshiResult(m, side = "yes") {
 // The page reads the positions with the person's own key (never sent here) and posts them. A position already tracked
 // by a slip placed on this site is left alone; one bought elsewhere (the Kalshi app) becomes a "synced" ticket and is
 // kept up to date (bought more, sold some). Synced tickets grade on Kalshi's own result like any Kalshi leg.
-async function syncKalshi(env, email, body) {
+async function syncKalshi(env, email, body) { return json(await syncCore(env, email, body)); }
+async function syncCore(env, email, body) {
   const kenv = body?.env === "demo" ? "demo" : "live";
   const str = (v, n = 140) => String(v ?? "").slice(0, n), TICK = /^[A-Z0-9][\w.-]{2,119}$/;
   const rows = (await env.DB.prepare("SELECT * FROM slips WHERE email=? AND status='pending' AND kalshi IS NOT NULL").bind(email).all()).results.map(rowToSlip);
@@ -277,7 +282,72 @@ async function syncKalshi(env, email, body) {
   if (writes.length) await env.DB.batch(writes);
   // synced tickets that aren't open on Kalshi any more: settled (graded here from Kalshi's result) or sold in the app
   const gone = [...synced.entries()].filter(([k, s]) => !seen.has(k) && s.kalshi.env === kenv).map(([, s]) => ({ id: s.id, ticker: s.kalshi.mkt, side: s.kalshi.side, stake: s.stake, created: s.created }));
-  return json({ added, updated, gone });
+  return { added, updated, gone };
+}
+
+// ---------- opt-in server sync: read-only keys, encrypted at rest when SYNC_SECRET is set ----------
+const b64e = buf => { let s = ""; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); };
+const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function aesKey(env) { if (!env.SYNC_SECRET) return null; const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.SYNC_SECRET)); return crypto.subtle.importKey("raw", h, "AES-GCM", false, ["encrypt", "decrypt"]); }
+async function seal(env, text) {
+  const k = await aesKey(env); if (!k) return `plain:${text}`;
+  const iv = crypto.getRandomValues(new Uint8Array(12)), ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, k, new TextEncoder().encode(text));
+  return `aes:${b64e(iv)}:${b64e(ct)}`;
+}
+async function unseal(env, stored) {
+  if (stored.startsWith("plain:")) return stored.slice(6);
+  const [, iv, ct] = stored.split(":"), k = await aesKey(env);
+  if (!k) throw new Error("sync secret missing");
+  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(iv) }, k, b64d(ct)));
+}
+const kHost = (env, which) => (env.KALSHI_BASE && JSON.parse(env.KALSHI_BASE)[which === "demo" ? "demo" : "live"]) || KALSHI[which === "demo" ? "demo" : "live"];
+async function kalshiAsUser(env, rec, sub) {
+  const h = await signHeaders(rec, "GET", `${API_ROOT}/${sub}`);
+  const r = await fetch(`${kHost(env, rec.env)}${API_ROOT}/${sub}`, { headers: { ...h, accept: "application/json", "user-agent": "bobbys-boardroom/1.0" } });
+  if (!r.ok) { const e = new Error(`Kalshi ${r.status}`); e.status = r.status; throw e; }
+  return r.json();
+}
+// one person: positions with their read-only key -> tickets (same rules as the on-device sync), and sold-in-the-app
+async function serverSyncOne(env, row) {
+  const pem = await unseal(env, row.secret), { key, kind } = await importKey(pem), rec = { key, kind, keyId: row.key_id, env: row.env };
+  const positions = [];
+  let cursor = "";
+  for (let i = 0; i < 5; i++) {
+    const j = await kalshiAsUser(env, rec, `portfolio/positions?count_filter=position&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    positions.push(...(j.market_positions || [])); cursor = j.cursor || ""; if (!cursor) break;
+  }
+  const open = positions.filter(p => parseFloat(p.position_fp ?? p.position) !== 0).slice(0, 60), mkts = {};
+  const getM = async t => { if (t in mkts) return; mkts[t] = (await kalshiMarket(env, row.env, t)) || {}; };
+  for (let i = 0; i < open.length; i += 6) await Promise.all(open.slice(i, i + 6).map(p => getM(p.ticker)));
+  const legT = [...new Set(open.flatMap(p => (mkts[p.ticker]?.mve_selected_legs || []).map(l => l.market_ticker)))].slice(0, 60);
+  for (let i = 0; i < legT.length; i += 6) await Promise.all(legT.slice(i, i + 6).map(getM));
+  const r = await syncCore(env, row.email, { env: row.env, positions: syncPayload(open, mkts) });
+  for (const g of r.gone || []) {
+    const m = await kalshiMarket(env, row.env, g.ticker);
+    if (!m || m.result || /settled|finalized|determined|closed/.test(String(m.status || ""))) continue;
+    const p = (await kalshiAsUser(env, rec, `portfolio/positions?ticker=${encodeURIComponent(g.ticker)}`).catch(() => ({}))).market_positions?.find(x => x.ticker === g.ticker);
+    if (!p || parseFloat(p.position_fp ?? p.position) !== 0) continue;
+    const made = (parseFloat(p.realized_pnl_dollars) || 0) - (parseFloat(p.fees_paid_dollars) || 0);
+    await cashOut(env, row.email, g.id, { proceeds: Math.max(0, Math.round((g.stake + made) * 100) / 100), sale: { how: "order" } });
+  }
+  return r;
+}
+// everyone who opted in, at most once a minute each (run when someone looks at the tickets)
+async function serverSyncAll(env, force = false) {
+  const last = Number(await setting(env, "sync_all_at")) || 0;
+  if (!force && Date.now() - last < 45000) return;
+  await setSetting(env, "sync_all_at", String(Date.now()));
+  const rows = (await env.DB.prepare("SELECT * FROM sync_keys").all()).results.slice(0, 25);
+  for (const row of rows) {
+    try {
+      await serverSyncOne(env, row);
+      await env.DB.prepare("UPDATE sync_keys SET synced=?, fails=0, last_error=NULL WHERE email=?").bind(new Date().toISOString(), row.email).run();
+    } catch (e) {
+      // a key that Kalshi keeps refusing (deleted on kalshi.com) is dropped after a few tries
+      if (e.status === 401 && row.fails >= 4) await env.DB.prepare("DELETE FROM sync_keys WHERE email=?").bind(row.email).run();
+      else await env.DB.prepare("UPDATE sync_keys SET fails=fails+1, last_error=? WHERE email=?").bind(String(e.message || e).slice(0, 200), row.email).run();
+    }
+  }
 }
 
 // ---------- cashing out a Kalshi slip: sold back on Kalshi, settled here at what the sale brought ----------
@@ -304,7 +374,7 @@ async function cashOut(env, email, id, body) {
 // device with their own key. This passes it on unchanged: it never sees a key (only a signature that's good for this one
 // request and expires), keeps nothing, and only reaches the Kalshi paths the slip flow uses.
 const KALSHI = { live: "https://external-api.kalshi.com", demo: "https://external-api.demo.kalshi.co" };
-const KPATH = /^(portfolio\/balance|portfolio\/intra_exchange_instance_transfer|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|portfolio\/positions|events|markets\/[\w.-]+(\/orderbook)?|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
+const KPATH = /^(api_keys\/generate|api_keys\/[\w-]+|portfolio\/balance|portfolio\/intra_exchange_instance_transfer|portfolio\/events\/orders|portfolio\/orders\/[\w-]+|portfolio\/fills|portfolio\/positions|events|markets\/[\w.-]+(\/orderbook)?|multivariate_event_collections(\/[\w.-]+)?|communications\/rfqs(\/[\w-]+(\/quotes\/[\w-]+\/accept)?)?|communications\/quotes)$/;
 async function relayKalshi(request, env, path) {
   const host = (env.KALSHI_BASE && JSON.parse(env.KALSHI_BASE)[path[0]]) || KALSHI[path[0]], sub = path.slice(1).join("/");
   if (!host) return bad("Unknown Kalshi environment.", 404);
@@ -320,7 +390,7 @@ async function relayKalshi(request, env, path) {
 }
 
 // ---------- routes ----------
-export async function onRequest({ request, env, params }) {
+export async function onRequest({ request, env, params, waitUntil }) {
   if (!env.DB) return bad("Bet slips storage isn't connected yet.", 503);
   await init(env);
   const email = await whoIs(request, env);
@@ -341,6 +411,21 @@ export async function onRequest({ request, env, params }) {
   }
   if (!me) return bad("Pick a username first.", 403);
 
+  if (what === "kalshi-sync") {
+    if (m === "GET") { const r = await env.DB.prepare("SELECT env, key_id, created, synced, fails, last_error FROM sync_keys WHERE email=?").bind(email).first(); return json(r ? { on: true, env: r.env, tail: r.key_id.slice(-4), created: r.created, synced: r.synced, error: r.fails ? r.last_error : null } : { on: false }); }
+    if (m === "POST") {
+      const keyId = String(body?.keyId || "").trim(), pem = String(body?.pem || "");
+      if (!/^[\w-]{8,80}$/.test(keyId) || !/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE KEY-----/.test(pem) || pem.length > 8000) return bad("That read-only key doesn't look right.");
+      try { await importKey(pem); } catch (e) { return bad(e.message); }
+      await env.DB.prepare("INSERT INTO sync_keys (email, env, key_id, secret, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET env=excluded.env, key_id=excluded.key_id, secret=excluded.secret, created=excluded.created, synced=NULL, fails=0, last_error=NULL")
+        .bind(email, body?.env === "demo" ? "demo" : "live", keyId, await seal(env, pem), new Date().toISOString()).run();
+      const row = await env.DB.prepare("SELECT * FROM sync_keys WHERE email=?").bind(email).first();
+      let first = null;
+      try { first = await serverSyncOne(env, row); await env.DB.prepare("UPDATE sync_keys SET synced=? WHERE email=?").bind(new Date().toISOString(), email).run(); } catch (e) { first = { error: e.message }; }
+      return json({ on: true, tail: keyId.slice(-4), first });
+    }
+    if (m === "DELETE") { const r = await env.DB.prepare("SELECT key_id, env FROM sync_keys WHERE email=?").bind(email).first(); await env.DB.prepare("DELETE FROM sync_keys WHERE email=?").bind(email).run(); return json({ on: false, keyId: r?.key_id || null, env: r?.env || null }); }
+  }
   if (what === "slips" && m === "POST" && !path[1]) return placeSlip(env, email, body);
   if (what === "slips" && m === "POST" && path[1] === "sync") return syncKalshi(env, email, body);
   if (what === "slips" && m === "DELETE" && path[1]) {
@@ -354,6 +439,11 @@ export async function onRequest({ request, env, params }) {
   }
   if (what === "slips" && m === "POST" && path[1] && path[2] === "cashout") return cashOut(env, email, path[1], body);
 
+  if (m === "GET" && (what === "tickets" || what === "slips")) {
+    const run = serverSyncAll(env).catch(() => {});
+    if (env.SYNC_INLINE === "1") await run;
+    else { await Promise.race([run, new Promise(r => setTimeout(r, 4000))]); if (waitUntil) waitUntil(run); }
+  }
   await gradePending(env).catch(() => {});
   const slipsOf = async em => (await env.DB.prepare("SELECT * FROM slips WHERE email=? ORDER BY created DESC").bind(em).all()).results.map(rowToSlip);
   if (what === "slips" && m === "GET") { const slips = await slipsOf(email); return json({ username: me.username, slips, stats: bettorStats(slips) }); }
