@@ -3989,10 +3989,10 @@ function LegBar({ p, res }) {
   const above = kids => <div style={{ position: "relative", height: 13, marginTop: 4 }}>{kids}</div>;
   if (p.kind === "margin") {
     // the line in the middle; the fill runs green to the right by how much it's covering, red to the left by how much
-    // it's short, and the spread the team is playing at right now rides on the end of it
+    // it's short, and that many points (from covering) ride on the end of it
     const w = Math.min(50, (Math.abs(p.m) / p.scale) * 50), gap = Math.max(w, 10), end = p.m >= 0 ? 50 + gap : 50 - gap;
     return <div>
-      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), w > 0 && tag(sgn(p.at), end, c, p.m >= 0 ? (end > 88 ? "end" : "start") : (end < 12 ? "start" : "end"), "a")])}
+      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), tag(fmt(Math.abs(p.m)), w > 0 ? end : 50 + 10, c, p.m >= 0 ? (end > 88 ? "end" : "start") : (end < 12 ? "start" : "end"), "a")])}
       <div role="progressbar" aria-valuenow={p.m} aria-label={p.text} style={{ ...track, marginTop: 2 }}>
         <div style={{ position: "absolute", top: 0, bottom: 0, left: p.m >= 0 ? "50%" : `${50 - w}%`, width: `${w}%`, background: c, boxShadow: `0 0 8px ${c}aa`, transition: "all .6s ease" }}/>
         <div style={{ position: "absolute", top: -1, bottom: -1, left: "50%", width: 1, background: T.ink }}/>
