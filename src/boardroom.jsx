@@ -4039,10 +4039,10 @@ function LegBar({ p, res }) {
   if (p.kind === "margin") {
     // the line in the middle; the fill runs green to the right by how much it's covering, red to the left by how much
     // it's short, and that many points (from covering) ride on the end of it
-    // covering: the whole line goes green to the end (like a prop that's cleared), with the points it's covering by there
+    // covering: the whole line goes green to the end (like a prop that's cleared); the team's lead rides on the fill's end
     const cover = p.m > 0, w = cover ? 50 : Math.min(50, (Math.abs(p.m) / p.scale) * 50), gap = Math.max(w, 10), end = cover ? 100 : p.m === 0 ? 60 : 50 - gap;
     return <div>
-      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), tag(fmt(Math.abs(p.m)), end, c, cover ? "end" : p.m === 0 ? "start" : (end < 12 ? "start" : "end"), "a")])}
+      {above([tag(sgn(p.line), 50, T.ink, "mid", "l"), tag(fmt(p.lead ?? Math.abs(p.m)), end, c, cover ? "end" : p.m === 0 ? "start" : (end < 12 ? "start" : "end"), "a")])}
       <div role="progressbar" aria-valuenow={p.m} aria-label={p.text} style={{ ...track, marginTop: 2 }}>
         <div style={{ position: "absolute", top: 0, bottom: 0, left: cover ? "0%" : `${50 - w}%`, width: cover ? "100%" : `${w}%`, background: c, boxShadow: `0 0 8px ${c}aa`, transition: "all .6s ease" }}/>
         <div style={{ position: "absolute", top: -1, bottom: -1, left: "50%", width: 1, background: T.ink }}/>

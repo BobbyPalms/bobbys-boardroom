@@ -39,7 +39,10 @@ check("under: losing once over", (x => !x.ok && x.win === false && x.text === "o
 check("over / props still building: neither winning nor losing yet", legProgress(L("total", "over", 47.5), g).win === null);
 check("spread: its line and where the team stands now, in spread terms (BUF up 7 = -7, MIN down 7 = +7)", (x => x.line === -2.5 && x.at === -7)(legProgress(L("spread", "away", -2.5), g)) && legProgress(L("spread", "home", 3), g).at === 7);
 check("spread: a bar around the cover number (NFL scale 14)", (x => x.kind === "margin" && x.m === 4.5 && x.scale === 14 && x.win === true)(legProgress(L("spread", "away", -2.5), g)) && legProgress(L("spread", "home", 3), g).win === false);
-check("spread: covering / not", (x => x.ok && x.text === "covering by 4.5")(legProgress(L("spread", "away", -2.5), g)) && (x => !x.ok && x.text === "needs 4 more to cover")(legProgress(L("spread", "home", 3), g)));
+check("spread text: the team's lead and the line (up 7 · covering -2.5; down 7 · 4 short of +3)", (x => x.ok && x.lead === 7 && x.text === "up 7 · covering -2.5")(legProgress(L("spread", "away", -2.5), g)) && (x => !x.ok && x.lead === -7 && x.text === "down 7 · 4 short of +3")(legProgress(L("spread", "home", 3), g)));
+const g7 = { state: "in", away: { score: "14" }, home: { score: "7" } };
+check("never 'covering by 0.5': up 7 on -6.5 reads up 7 (the screen that came up)", (x => x.lead === 7 && x.text === "up 7 · covering -6.5" && !/0\.5/.test(x.text))(legProgress(L("spread", "away", -6.5), g7)));
+check("up 4 on -6.5: 2.5 short", legProgress(L("spread", "away", -6.5), { state: "in", away: { score: "10" }, home: { score: "6" } }).text === "up 4 · 2.5 short of -6.5");
 check("moneyline: winning / losing / tied", legProgress(L("ml", "away"), g).win === true && legProgress(L("ml", "home"), g).win === false && legProgress(L("ml", "away"), { state: "in", away: { score: "3" }, home: { score: "3" } }).win === null);
 check("moneyline: up / down", legProgress(L("ml", "away"), g).text === "Bills up 7" && legProgress(L("ml", "home"), g).text === "Vikings down 7" && !legProgress(L("ml", "home"), g).ok);
 // Kalshi game lines (bought in the Kalshi app): read as the same bet on the scoreboard game (BUF 17, MIN 10)

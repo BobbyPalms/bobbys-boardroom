@@ -134,10 +134,12 @@ export function legProgress(leg, row, F) {
   }
   const me = leg.side === "away" ? a : h, them = leg.side === "away" ? h : a, who = (leg.side === "away" ? leg.away : leg.home)?.name || "";
   if (leg.market === "spread") {
-    const m = me - them + Number(leg.line), d = Math.round(Math.abs(m) * 10) / 10;
+    const line = Number(leg.line), m = me - them + line, d = Math.round(Math.abs(m) * 10) / 10, lead = me - them;
     const scale = ["NHL", "MLB", "Soccer"].includes(leg.sport) ? 3 : 14;
-    // line: the spread taken (-6.5); at: where the team stands right now in the same terms (up 3 = -3, down 2 = +2)
-    return { kind: "margin", m, scale, line: Number(leg.line), at: them - me, ok: m > 0, win: m > 0 ? true : m < 0 ? false : null, text: m > 0 ? `covering by ${d}` : m === 0 ? "right on the number" : `needs ${d} more to cover` };
+    // the number people read is the team's lead (up 7 on -6.5 shows 7), with the line it has to beat
+    const ln = line === 0 ? "PK" : `${line > 0 ? "+" : ""}${line}`, where = lead > 0 ? `up ${lead}` : lead < 0 ? `down ${-lead}` : "tied";
+    return { kind: "margin", m, scale, line, lead, at: them - me, ok: m > 0, win: m > 0 ? true : m < 0 ? false : null,
+      text: m > 0 ? `${where} · covering ${ln}` : m === 0 ? `${where} · right on ${ln}` : `${where} · ${d} short of ${ln}` };
   }
   if (leg.market === "draw") return { kind: "status", ok: a === h, win: a === h, text: a === h ? `level ${a}-${h}` : `${Math.max(a, h)}-${Math.min(a, h)}, not level` };
   const lead = me - them;
