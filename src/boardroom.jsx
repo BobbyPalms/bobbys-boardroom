@@ -4,7 +4,7 @@ import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3727,48 +3727,81 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
       onDone({ cost: Math.round(filled * paid * 100) / 100, legOdds: [priceToAm(paid)], kalshi: { env: kal.env, orders: [{ ticker: k.ticker, side: k.side, count: filled, price: paid, order_id: o.order_id, filled }] }, summary: `Bought ${filled} ${k.side.toUpperCase()} at ${cents(paid)} on Kalshi.` });
     } catch (e) { setSt({ step: "failed", msg: e.message }); }
   };
-  const askCombo = async () => {
-    setSt({ step: "quoting", left: 25 });
-    try {
-      const colls = await kalshiCall({ env: kal.env }, "GET", "multivariate_event_collections?status=open&limit=200").then(j => j.multivariate_contracts || j.multivariate_event_collections || []);
-      const c = comboCollection(colls, plan.map(p => p.k));
-      if (!c) { setSt({ step: "failed", msg: "Kalshi doesn't offer this combination as a combo (some legs can't be combined). Nothing was bought." }); return; }
-      const legsSel = plan.map(p => ({ event_ticker: p.k.event_ticker, market_ticker: p.k.ticker, side: p.k.side }));
-      const made = await kalshiCall(kal, "POST", `multivariate_event_collections/${c.collection_ticker}`, { selected_markets: legsSel });
-      const rfq = await kalshiCall(kal, "POST", "communications/rfqs", { market_ticker: made.market_ticker, target_cost_dollars: stake.toFixed(2), rest_remainder: false, replace_existing: true });
-      const t0 = Date.now();
-      while (!cancelled.current && Date.now() - t0 < 25000) {
-        const q = await kalshiCall(kal, "GET", `communications/quotes?rfq_id=${rfq.id}&status=open`).catch(() => ({ quotes: [] }));
-        const best = bestComboQuote(q.quotes);
-        if (best) { setSt({ step: "quote", best, rfq: rfq.id, market: made.market_ticker, coll: c.collection_ticker }); return; }
-        setSt({ step: "quoting", left: Math.max(0, Math.round(25 - (Date.now() - t0) / 1000)) });
-        await sleep(1500);
-      }
-      await kalshiCall(kal, "DELETE", `communications/rfqs/${rfq.id}`).catch(() => {});
-      if (!cancelled.current) setSt({ step: "failed", msg: "No market maker quoted this combo in time. Nothing was bought. Try again, or fewer legs." });
-    } catch (e) { setSt({ step: "failed", msg: e.message }); }
-  };
-  const acceptCombo = async () => {
-    const { best, rfq, market, coll } = st;
-    setSt({ ...st, step: "accepting" });
-    try {
-      await fundFor(market, stake);                                                              // combos trade on their own shard
-      setSt({ ...st, step: "accepting" });
-      await kalshiCall(kal, "PUT", `communications/rfqs/${rfq}/quotes/${best.quote.id}/accept`, { accepted_side: "no" });   // the maker's NO side = buying YES
-      const t0 = Date.now();
-      while (Date.now() - t0 < 12000) {
-        await sleep(1000);
-        const q = await kalshiCall(kal, "GET", `communications/quotes?rfq_id=${rfq}`).catch(() => ({ quotes: [] }));
-        const mine = (q.quotes || []).find(x => x.status === "executed") || (q.quotes || []).find(x => x.id === best.quote.id);
-        if (mine?.status === "executed") {
-          const n = parseFloat(mine.yes_contracts_fp || mine.no_contracts_fp || mine.contracts_fp || best.contracts || 0), price = 1 - parseFloat(mine.no_bid_dollars || best.quote.no_bid_dollars);
-          onDone({ cost: Math.round(n * price * 100) / 100, legOdds: plan.map(p => p.k.am), kalshi: { env: kal.env, dec: 1 / price, orders: [], combo: { market_ticker: market, collection: coll, rfq_id: rfq, quote_id: mine.id, price, contracts: n } }, summary: `Combo bought on Kalshi: ${n} YES at ${cents(price)}.` });
-          return;
+  // ---- combos: Kalshi prices them through market makers (an RFQ). The ask goes out as soon as this review opens and stays
+  // open, re-reading the makers' quotes every second, so a live price is already there when you tap. One tap buys it.
+  const live = useRef(null), buying = useRef(false), rfqRef = useRef(null);
+  const [q, setQ] = useState(null), [waited, setWaited] = useState(0), [round, setRound] = useState(0), stepRef = useRef("review");
+  stepRef.current = st.step;
+  useEffect(() => {
+    if (straight) return;
+    let alive = true, fails = 0;
+    const t0 = Date.now();
+    (async () => {
+      try {
+        const colls = await kalshiCall({ env: kal.env }, "GET", "multivariate_event_collections?status=open&limit=200").then(j => j.multivariate_contracts || j.multivariate_event_collections || []);
+        const c = comboCollection(colls, plan.map(p => p.k));
+        if (!c) { alive && setSt({ step: "failed", msg: "Kalshi doesn't offer this combination as a combo (some legs can't be combined). Nothing was bought." }); return; }
+        const made = await kalshiCall(kal, "POST", `multivariate_event_collections/${c.collection_ticker}`, { selected_markets: plan.map(p => ({ event_ticker: p.k.event_ticker, market_ticker: p.k.ticker, side: p.k.side })) });
+        let n = 0;
+        while (alive && !cancelled.current && stepRef.current !== "failed") {
+          if (!buying.current) {
+            try {
+              if (!rfqRef.current) rfqRef.current = (await kalshiCall(kal, "POST", "communications/rfqs", { market_ticker: made.market_ticker, target_cost_dollars: stake.toFixed(2), rest_remainder: false, replace_existing: true })).id;
+              const best = bestComboQuote((await kalshiCall(kal, "GET", quotesPath(rfqRef.current))).quotes);
+              live.current = best ? { best, rfq: rfqRef.current, market: made.market_ticker, coll: c.collection_ticker } : null;
+              if (alive) { setQ(live.current); setWaited(Math.round((Date.now() - t0) / 1000)); }
+              // every few seconds: is the ask still open on Kalshi? if it expired, ask again
+              if (++n % 8 === 0) { const r = await kalshiCall(kal, "GET", `communications/rfqs/${rfqRef.current}`).catch(() => null); if (r && (r.rfq?.status || r.status) && (r.rfq?.status || r.status) !== "open") rfqRef.current = null; }
+              fails = 0;
+            } catch (e) {
+              // a real error from Kalshi is shown, never quietly read as "no quotes"
+              if (++fails >= 3) { if (alive) setSt({ step: "failed", msg: `Kalshi: ${e.message} Nothing was bought.` }); return; }
+              rfqRef.current = null;
+            }
+          }
+          await sleep(1000);
         }
-        if (mine?.status === "cancelled") break;
+      } catch (e) { if (alive) setSt({ step: "failed", msg: e.message }); }
+    })();
+    return () => { alive = false; if (rfqRef.current && !buying.current) kalshiCall(kal, "DELETE", `communications/rfqs/${rfqRef.current}`).catch(() => {}); };
+  }, [round]);
+  // one tap: buy the live quote; if a maker backs out in the 3-second window, take the next one at that price or better
+  const buyCombo = async () => {
+    const want = live.current;
+    if (!want) return;
+    const cap = want.best.price, tried = new Set();
+    buying.current = true; setSt({ step: "accepting" });
+    try {
+      await fundFor(want.market, stake);                                                          // combos trade on their own shard
+      setSt({ step: "accepting" });
+      const t0 = Date.now();
+      let pick = want.best, rfq = want.rfq;
+      while (Date.now() - t0 < 20000) {
+        if (!pick) {
+          await sleep(500);
+          rfq = rfqRef.current || rfq;
+          pick = bestComboQuote((await kalshiCall(kal, "GET", quotesPath(rfq)).catch(() => ({ quotes: [] }))).quotes, { maxPrice: cap, skip: tried });
+          continue;
+        }
+        tried.add(pick.quote.id);
+        const ok = await kalshiCall(kal, "PUT", `communications/rfqs/${rfq}/quotes/${pick.quote.id}/accept`, { accepted_side: "no" }).then(() => true).catch(() => false);   // the maker's NO side = buying YES
+        const s0 = Date.now();
+        while (ok && Date.now() - s0 < 6000) {                                                    // combos: 3s for the maker to confirm, 1s to execute
+          await sleep(600);
+          const mine = ((await kalshiCall(kal, "GET", quotesPath(rfq)).catch(() => ({ quotes: [] }))).quotes || []).find(x => x.id === pick.quote.id);
+          if (mine?.status === "executed") {
+            const nC = parseFloat(mine.yes_contracts_fp || mine.no_contracts_fp || mine.contracts_fp || pick.contracts || 0), price = 1 - parseFloat(mine.no_bid_dollars || pick.quote.no_bid_dollars);
+            rfqRef.current = null;
+            onDone({ cost: Math.round(nC * price * 100) / 100, legOdds: plan.map(p => p.k.am), kalshi: { env: kal.env, dec: 1 / price, orders: [], combo: { market_ticker: want.market, collection: want.coll, rfq_id: rfq, quote_id: mine.id, price, contracts: nC } }, summary: `Combo bought on Kalshi: ${nC} YES at ${cents(price)}.` });
+            return;
+          }
+          if (!mine || mine.status === "cancelled") break;
+        }
+        pick = null;
       }
-      setSt({ step: "failed", msg: "The market maker didn't confirm the trade, so nothing was bought. You can ask for a new quote." });
+      setSt({ step: "review", note: `No maker would fill it at ${cents(cap)} or better just now, so nothing was bought. The live price is below.` });
     } catch (e) { setSt({ step: "failed", msg: e.message }); }
+    finally { buying.current = false; }
   };
   const row = (a, b, c) => <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, padding: "5px 0", borderTop: `1px solid ${T.line}`, fontSize: 12 }}><span style={{ color: T.dim }}>{a}</span><span style={{ fontFamily: F.d, color: c || T.ink, textAlign: "right" }}>{b}</span></div>;
   const big = (on, txt, fn, c = T.chrome) => <button onClick={fn} disabled={!on} style={{ width: "100%", marginTop: 10, padding: 13, border: `1px solid ${on ? c : T.line}`, background: on ? `${c}33` : "none", color: on ? "#fff" : T.faint, fontFamily: F.d, fontSize: 12, letterSpacing: 2, cursor: on ? "pointer" : "not-allowed" }}>{txt}</button>;
@@ -3781,18 +3814,16 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
       {fund && !fund.err && fund.covered && fund.moves.length > 0 && <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginTop: 6 }}>This market trades on Kalshi's {shardName(fund.shard)} shard, which holds {kalshiMoney(fund.here)} of your cash. The slip moves {kalshiMoney(fund.moves.reduce((a, m) => a + m.amount, 0))} there first, inside your Kalshi account (the Kalshi app does this on its own), then buys.</div>}
       {fund && !fund.err && !fund.covered && <div style={{ marginTop: 8, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>Not enough cash in your Kalshi account: {kalshiMoney(fund.total)} available, this needs {kalshiMoney(fund.need)} with the fee.</div>}
     </div>}
-    {!straight && st.step === "review" && <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.6, marginTop: 8 }}>Kalshi prices a combo by asking market makers for a quote. Ask now and you'll see the price before anything is bought; {kalshiMoney(stake)} is the most it can cost, fees included.</div>}
-    {st.step === "quoting" && <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>Asking market makers for a quote… ({st.left}s)</div>}
-    {(st.step === "quote" || st.step === "accepting") && <div style={{ marginTop: 8 }}>
-      {row("Combo price", `${cents(st.best.price)} (${fmtAm(st.best.am)})`)}{row("Contracts", st.best.contracts ? st.best.contracts.toFixed(2) : "—")}{row("Pays if every leg wins", st.best.contracts ? kalshiMoney(st.best.contracts) : "—", NEON.green)}
-      <div style={{ fontSize: 11, color: T.faint, marginTop: 6 }}>Quotes last only seconds on combos.</div>
+    {!straight && (st.step === "review" || st.step === "accepting") && <div style={{ marginTop: 8 }}>
+      {row("Combo price", q ? `${cents(q.best.price)} (${fmtAm(q.best.am)})` : "asking Kalshi…", q ? undefined : T.dim)}{row("Contracts", q?.best.contracts ? q.best.contracts.toFixed(2) : "—")}{row("Pays if every leg wins", q?.best.contracts ? kalshiMoney(q.best.contracts) : "—", NEON.green)}
+      <div style={{ fontSize: 11, color: T.faint, marginTop: 6, lineHeight: 1.5 }}>{q ? `Live from Kalshi's market makers, refreshed every second. ${kalshiMoney(stake)} is the most it costs, fees included.` : waited >= 15 ? "No Kalshi market maker has priced this combo yet. Still asking every second; nothing is bought until you confirm." : "Kalshi prices combos through market makers. Getting the price…"}</div>
+      {st.note && <div style={{ fontSize: 12, color: NEON.gold, marginTop: 6, lineHeight: 1.5 }}>{st.note}</div>}
     </div>}
     {st.step === "failed" && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{st.msg}</div>}
     {st.step === "sending" && st.what && <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>{st.what}</div>}
     {straight && (st.step === "review" || st.step === "sending") && big(st.step === "review" && !(fund && !fund.err && !fund.covered), st.step === "sending" ? "SENDING TO KALSHI…" : `CONFIRM: BUY ON KALSHI FOR ${kalshiMoney(size?.cost || 0)}`, buyStraight, NEON.teal)}
-    {!straight && st.step === "review" && big(true, "GET A KALSHI QUOTE", askCombo, NEON.teal)}
-    {(st.step === "quote" || st.step === "accepting") && big(st.step === "quote", st.step === "accepting" ? "BUYING…" : `CONFIRM: BUY THE COMBO AT ${cents(st.best.price)}`, acceptCombo, NEON.teal)}
-    {st.step === "failed" && big(true, "TRY AGAIN", () => setSt({ step: "review" }))}
+    {!straight && (st.step === "review" || st.step === "accepting") && big(st.step === "review" && !!q, st.step === "accepting" ? "BUYING ON KALSHI…" : q ? `CONFIRM: BUY THE COMBO AT ${cents(q.best.price)}` : "GETTING KALSHI'S PRICE…", buyCombo, NEON.teal)}
+    {st.step === "failed" && big(true, "TRY AGAIN", () => { rfqRef.current = null; setQ(null); setSt({ step: "review" }); setRound(r => r + 1); })}
     <button onClick={onCancel} disabled={st.step === "sending" || st.step === "accepting"} style={{ width: "100%", marginTop: 8, padding: 10, border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 2, cursor: "pointer" }}>CANCEL</button>
   </div>;
 }

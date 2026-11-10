@@ -111,8 +111,11 @@ export function comboCollection(collections, mapped) {
   return ok.find(c => /SPORTS/.test(c.collection_ticker)) || ok[0] || null;
 }
 // a quote on a combo: buying YES means accepting the maker's NO side, at 1 - no_bid
-export function bestComboQuote(quotes) {
-  const open = (quotes || []).filter(q => q.status === "open" && dollars(q.no_bid_dollars) > 0);
+// Kalshi only lists quotes for a requester's own RFQ with rfq_user_filter=self (rfq_id alone is refused with a 403)
+export const quotesPath = rfqId => `communications/quotes?rfq_user_filter=self&rfq_id=${encodeURIComponent(rfqId)}`;
+// maxPrice: only quotes at that price or better; skip: quote ids already tried
+export function bestComboQuote(quotes, { maxPrice = 1, skip = null } = {}) {
+  const open = (quotes || []).filter(q => q.status === "open" && dollars(q.no_bid_dollars) > 0 && 1 - dollars(q.no_bid_dollars) <= maxPrice + 1e-9 && !(skip && skip.has(q.id)));
   if (!open.length) return null;
   const q = open.sort((a, b) => dollars(b.no_bid_dollars) - dollars(a.no_bid_dollars))[0];
   const price = Math.round((1 - dollars(q.no_bid_dollars)) * 10000) / 10000;

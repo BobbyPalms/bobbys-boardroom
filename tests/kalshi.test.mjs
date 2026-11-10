@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateKeyPairSync, verify, constants, webcrypto } from "crypto";
-import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, readPem, importKey, signHeaders } from "../src/kalshi.js";
+import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, readPem, importKey, signHeaders } from "../src/kalshi.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const K = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "kalshi_events.json"), "utf8"));
@@ -56,6 +56,10 @@ check("combo: the sports collection holding every leg", coll && /KXMVESPORTSMULT
 const bq = bestComboQuote([{ id: "a", status: "open", yes_bid_dollars: "0.10", no_bid_dollars: "0.78", yes_contracts_fp: "45.00" }, { id: "b", status: "open", yes_bid_dollars: "0.12", no_bid_dollars: "0.81", yes_contracts_fp: "52.00" }, { id: "c", status: "cancelled", no_bid_dollars: "0.95" }]);
 check("combo quote: best YES price is the highest NO bid (1 - 0.81 = 19¢)", bq.quote.id === "b" && bq.price === 0.19 && bq.am === 426, bq);
 check("no quotes", bestComboQuote([]) === null);
+const qs3 = [{ id: "a", status: "open", no_bid_dollars: "0.78", yes_contracts_fp: "45.00" }, { id: "b", status: "open", no_bid_dollars: "0.81", yes_contracts_fp: "52.00" }];
+check("never pays more than the price you confirmed", bestComboQuote(qs3, { maxPrice: 0.20 }).quote.id === "b" && bestComboQuote(qs3, { maxPrice: 0.18 }) === null);
+check("a quote already tried is skipped", bestComboQuote(qs3, { skip: new Set(["b"]) }).quote.id === "a");
+check("quotes are asked for with rfq_user_filter=self (Kalshi refuses rfq_id alone)", quotesPath("ae03d6d6-ec0b") === "communications/quotes?rfq_user_filter=self&rfq_id=ae03d6d6-ec0b");
 
 // ---- signing on the device ----
 const subtle = webcrypto.subtle;
