@@ -315,6 +315,22 @@ export function injuryNote(inj, max = 4) {
   return key.length ? key.map(i => `${i.team} ${i.name} (${i.pos}) ${i.status}`).join("; ") : "";
 }
 // ---------- final scores for grading ----------
+// every finished game on a scoreboard as a row for the season game log (power ratings): team ids, final score, neutral
+// site. Preseason and all-star games are left out (they say nothing about the season); so are games without two teams.
+export function resultRows(j) {
+  const out = [];
+  for (const ev of j?.events || []) {
+    const c = ev.competitions?.[0], st = c?.status?.type || ev.status?.type || {};
+    if (!c || !st.completed || /postpon|cancel|abandon|forfeit/i.test(`${st.name || ""} ${st.description || ""}`)) continue;
+    const stype = Number(ev.season?.type ?? c.season?.type);
+    if (stype === 1 || /all[- ]star|exhibition|preseason/i.test(`${ev.name || ""} ${c.type?.abbreviation || ""} ${c.notes?.[0]?.headline || ""} ${ev.season?.slug || ""}`)) continue;
+    const H = (c.competitors || []).find(x => x.homeAway === "home"), A = (c.competitors || []).find(x => x.homeAway === "away");
+    const hid = String(H?.team?.id || ""), aid = String(A?.team?.id || ""), hs = n(H?.score), as = n(A?.score), t = Date.parse(ev.date || c.date);
+    if (!hid || !aid || hid === aid || hs == null || as == null || !Number.isFinite(t)) continue;
+    out.push({ id: String(ev.id), day: Math.floor(t / 864e5), h: hid, a: aid, ha: H.team.abbreviation || "", aa: A.team.abbreviation || "", hs, as, neutral: c.neutralSite === true });
+  }
+  return out;
+}
 export function finalsFrom(j) {
   const out = [];
   for (const ev of j?.events || []) {

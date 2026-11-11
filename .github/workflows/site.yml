@@ -89,7 +89,7 @@ jobs:
           # every finished game's archive is committed every run (it isn't carried in the Actions cache)
           git add data/games 2>/dev/null || true
           if [ "$last" != "$today" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            git add data/history data/officials data/matches data/ratings data/track data/learned.json 2>/dev/null || true
+            git add data/history data/officials data/matches data/ratings data/track data/results data/learned.json 2>/dev/null || true
           fi
           git diff --cached --quiet || (git commit -m "data snapshot $today [skip ci]" && git pull --rebase --autostash && git push)
       # Keep the data fresh without depending on GitHub's schedule: every run queues the next one, about five

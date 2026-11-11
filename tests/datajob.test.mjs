@@ -39,6 +39,10 @@ const off = J("officials/NBA.json");
 check("officials logged with finals", Object.values(off).some(g => g.o[0].startsWith("Sean Wright") && g.hs + g.as === 210), off);
 check("live board written", Object.keys(J("live/NBA.json").days).length === 3);
 check("line snapshots for upcoming games", Object.values(J("lines/NBA.json")).some(a => a.length >= 1));
+// the season game log the power ratings are fitted on
+const RS = J("results/NBA.json"), rg = Object.values(RS.leagues?.nba?.g || {});
+check("season game log: every finished game as [day, home id, away id, home score, away score, neutral, spread, total]", rg.length >= 1 && rg.every(r => r.length === 8 && Number.isInteger(r[0]) && r[3] + r[4] === 210 && RS.leagues.nba.t[r[1]] && RS.leagues.nba.t[r[2]]), [rg.length, rg[0], RS.back]);
+check("season game log: backfill from the start of the season is under way", /^\d{8}$/.test(RS.back.day || "") || RS.back.done === true, RS.back);
 const shards = readdirSync(join(dir, "data/matches/Tennis"));
 check("tennis matches sharded by year, from 2015", shards.includes("2015.json") && shards.length >= 11, shards);
 const RT = J("ratings/Tennis.json");
@@ -51,6 +55,8 @@ const mt = p => statSync(join(dir, "data", p)).mtimeMs, before = { h: mt("histor
 const r2 = run();
 check("second run succeeds", r2.status === 0, (r2.stderr || "").slice(-400));
 const reqs = n => Number((n.stdout.match(/requests (\d+)/) || [])[1]);
+const RS2 = J("results/NBA.json");
+check("season game log: the backfill moves on each run until it has caught up", RS2.back.done === true || (RS2.back.day || "") > (RS.back.day || ""), [RS.back, RS2.back]);
 check("second run is incremental (far fewer requests)", reqs(r2) < reqs(r1) / 5, [reqs(r1), reqs(r2)]);
 check("unchanged files are left alone (no churn)", mt("history/NBA.json") === before.h && mt("matches/Tennis/2016.json") === before.m, before);
 console.log(`datajob: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

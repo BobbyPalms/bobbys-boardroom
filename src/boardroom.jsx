@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { parseFinal, finalRundown, algoReview, teamStatRows, colOrder, groupTitle } from "./postgame.js";
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { propOf, gameFor, legProgress, kalshiGameLeg } from "./legtrack.js";
+import { fitPower, marketScores, dcTau, applyKeyNumbers, logitPool } from "./power.js";
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
@@ -474,6 +475,7 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
   const score = teamQueryScore;   // abbreviations, short names (UMass), nicknames, "St" for State, either order
   const hist = await loadHistory(sport);
+  await loadResults(sport);                                 // the season's game log: power ratings (v4)
   let found = null, foundLeague = null;
   // the next 8 days of boards, read once up front (tabs with many leagues: only the leagues with games each day)
   const days = Array.from({ length: 8 }, (_, k) => ymd(new Date(Date.now() + k * 864e5)));
@@ -543,6 +545,58 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
     posted: { away: found.away?.lineupInfo?.status === "official", home: found.home?.lineupInfo?.status === "official" } };
   return md;
 }
+
+// ─── POWER RATINGS (engine v4): opponent-adjusted, recency-weighted, market-informed team strength ────────────
+// The data job keeps every finished game of the season (data/results/<SPORT>.json), with its closing spread and total
+// where the lines were on file. Each league is fitted with the attack / defense model in src/power.js; a team's prior is
+// its own multi-season history (seasonPrior). The fit replaces raw points per game as the evidence in poolSide.
+// POWER [S] = walk-forward backtests on seasons the settings never saw (scratch scripts; numbers in the project doc):
+//   CBB  2022-24, 16,390 games: margin RMSE 12.20 -> 11.56; November games 14.09 -> 12.51, winner 72.9% -> 75.1%
+//   NFL  2017-26, 2,630 games:  13.18 -> 13.12 with closing lines as evidence (the closing line itself: 12.76)
+//   NBA  2018-23, 7,059 games:  13.66 -> 13.64      Soccer (ENG/ESP/ITA/GER 2013+): 1X2 log loss 0.9837 -> 0.9832
+// xi = fade per day · pk = prior strength multiplier · mkt = results one closing line is worth (point-spread sports
+// only: a run line / puck line / handicap is not an expected margin). Sports without a backtest are [J].
+const POWER = {
+  NFL: { xi: 0.006, pk: 1, mkt: 10 }, NBA: { xi: 0.008, pk: 1, mkt: 6 }, CBB: { xi: 0, pk: 0.35, mkt: 6 }, CBBW: { xi: 0, pk: 0.35, mkt: 6 },
+  CFB: { xi: 0, pk: 0.6, mkt: 10 }, WNBA: { xi: 0.008, pk: 1, mkt: 6 }, Soccer: { xi: 0.002, pk: 1, mkt: 0 }, NHL: { xi: 0.002, pk: 1, mkt: 0 },
+  MLB: { xi: 0.002, pk: 1, mkt: 0 }, HOOPS: { xi: 0.004, pk: 0.6, mkt: 6 }, GRID: { xi: 0.003, pk: 0.6, mkt: 10 },
+};
+const POWER_DEF = { xi: 0.003, pk: 1, mkt: 0 };
+const RESULTS = {}, _powerFits = {};
+async function loadResults(sport) {
+  if (!(sport in RESULTS)) { RESULTS[sport] = null; const [R, H] = await Promise.all([dataFile(`results/${sport}.json`), loadHistory(sport)]); RESULTS[sport] = R && R.leagues ? { R, hist: H } : null; for (const k of Object.keys(_powerFits)) if (k.startsWith(sport + "|")) delete _powerFits[k]; }
+  return RESULTS[sport];
+}
+// one league's fit, cached: { teams: { espnId: { o, d, ro, no, rd, nd, g } }, L, eta, n }
+function powerLeague(sport, league) {
+  const X = RESULTS[sport], lg = X?.R?.leagues?.[league];
+  if (!lg || !lg.g) return null;
+  const key = `${sport}|${league}`;
+  if (_powerFits[key]) return _powerFits[key];
+  const P = LEAGUE[sport], W = POWER[sport] || POWER_DEF, curY = seasonYear(sport), games = [];
+  // a league with standings on file: games against teams outside it (a Division I team's game with a lower-division
+  // school) are left out, since there is nothing to say how good that opponent is
+  const members = X.hist && Object.keys(X.hist).length >= 20 ? X.hist : null;
+  for (const r of Object.values(lg.g)) {
+    if (members && (!members[String(r[1])] || !members[String(r[2])])) continue;
+    const mk = W.mkt > 0 && r[6] != null && r[7] != null ? marketScores(r[6], r[7]) : null;
+    games.push({ t: r[0], h: String(r[1]), a: String(r[2]), hs: r[3], as: r[4], n: !!r[5], ...(mk || {}) });
+  }
+  if (games.length < 4) return (_powerFits[key] = null);
+  // league average: this season's games, steadied by the table value until there are enough of them
+  const sum = games.reduce((a, g) => a + g.hs + g.as, 0), Lg = (sum + 40 * P.L) / (2 * games.length + 40);
+  const prior = {}, ids = new Set(games.flatMap(g => [g.h, g.a]));
+  for (const id of ids) {
+    const t = { name: "", abbr: lg.t?.[id] || "", hist: X.hist?.[id] || [] };
+    const side = sd => { const H = HIST_PARAMS[sport]?.[sd] || { k: P.k, fL: 0, rho: P.rho }; return seasonPrior(seasonRows(t, sport, sd, Lg, curY), H, curY); };
+    const po = side("off"), pd = side("def");
+    prior[id] = { o: po.m, d: pd.m, so: po.S * W.pk, sd: pd.S * W.pk };
+  }
+  const fit = fitPower(games, { L: Lg, eta0: P.hfa / (2 * Lg), kEta: 40, k: P.k * W.pk, prior, xi: W.xi, mkt: W.mkt, now: Math.floor(Date.now() / 864e5) });
+  fit.lines = games.filter(g => g.ms > 0).length;
+  return (_powerFits[key] = fit);
+}
+const powerTeam = (sport, league, t) => (t?.espnId != null && league ? powerLeague(sport, league)?.teams?.[String(t.espnId)] || null : null);
 
 // ─── SHARP FACTOR ENGINE ─────────────────────────────────────────────────────
 // Rest and travel effects are small and measured against what is normal in each sport. [J] magnitudes: the
@@ -758,7 +812,7 @@ function teamGP(t, sport) {
   return clampTo(x, 1, P.season * 2);
 }
 // side "off": runs/goals/points scored per game. side "def": allowed per game (lower = better defense).
-function poolSide(t, sport, L, side, adv) {
+function poolSide(t, sport, L, side, adv, pw = null) {
   const P = LEAGUE[sport], gp = teamGP(t, sport), off = side === "off";
   // no completed games yet (a 0-0 record): any "per game" number is the score of a game in progress, so it isn't used
   const played = t.gp > 0 ? t.gp : recordGP(t.record);
@@ -777,6 +831,17 @@ function poolSide(t, sport, L, side, adv) {
   const cur = wsum > 0 && n > 0 ? { r: pcs.reduce((s, p) => s + p[0] * p[1], 0) / wsum, n } : null;
   const curY = seasonYear(sport), H = HIST_PARAMS[sport]?.[side] || { k: P.k, fL: 0, rho: P.rho };
   const pr = seasonPrior(seasonRows(t, sport, side, L, curY), H, curY);
+  // v4: the season's games, adjusted for opponent, venue and recency (and closing lines), replace raw points per game.
+  // Each piece of evidence counts for the games behind it: the fitted results, xG (worth a game per game played) and
+  // the published efficiency rating; the team's own history is the prior.
+  const pe = pw && pw.g >= 1 ? (off ? { r: pw.ro, n: pw.no } : { r: pw.rd, n: pw.nd }) : null;
+  if (pe && pe.r > 0 && pe.n > 0) {
+    const S0 = pr.S * (POWER[sport] || POWER_DEF).pk;
+    let num = S0 * pr.m + pe.n * clampTo(pe.r, 0.3, 3), den = S0 + pe.n;
+    if (xg > 0) { num += gp * (xg / L); den += gp; }
+    if (effOK) { const ne = adv?.n > 0 ? adv.n : 0.5 * P.wEff * gp; num += ne * ef; den += ne; }
+    return { r: clampTo(num / den, 0.45, 2.0), n: den, seasons: pr.seasons, from: pr.from, power: { r: pe.r, n: pe.n, g: pw.g } };
+  }
   const cn = cur ? cur.n : 0;
   const r = (pr.S * pr.m + (cn ? cn * cur.r : 0)) / (pr.S + cn);
   return { r: clampTo(r, 0.45, 2.0), n: pr.S + cn, seasons: pr.seasons, from: pr.from };
@@ -834,7 +899,8 @@ function tieProb(rH, rA, P) {
 function buildPlan(home, away, sport, md, opts = {}) {
   const P = LEAGUE[sport], L = leagueL(md, sport), neutral = !!opts.neutral;
   const factors = computeFactors(md, sport, { neutral });
-  const parts = (t, adv) => ({ off: poolSide(t, sport, L, "off", adv), def: poolSide(t, sport, L, "def", adv), sp: starterRatio(t, sport), lu: lineupFactor(t, sport), qb: qbFactor(t, sport) });
+  const lgSlug = md?.leagueSlug || (ROUTES[sport]?.leagues.length === 1 ? ROUTES[sport].leagues[0] : null);
+  const parts = (t, adv) => { const pw = opts.power === false ? null : powerTeam(sport, lgSlug, t); return { off: poolSide(t, sport, L, "off", adv, pw), def: poolSide(t, sport, L, "def", adv, pw), sp: starterRatio(t, sport), lu: lineupFactor(t, sport), qb: qbFactor(t, sport), pw: pw ? { o: pw.o, d: pw.d, g: pw.g } : null }; };
   const H = parts(home, md?.advancedHome), A = parts(away, md?.advancedAway);
   const faced = S => S.sp == null ? S.def.r : (1 - P.omega) * S.def.r + P.omega * S.sp;   // the defense the OTHER side faces
   const eta = neutral ? 0 : P.hfa / (2 * L);
@@ -880,9 +946,17 @@ function sampleNormalPair(plan, P) {                       // correlated normals
   return [Math.max(0, Math.round(plan.muH + sH * z1)), Math.max(0, Math.round(plan.muA + sA * y))];
 }
 
+// Soccer [S]: independent Poisson scores under-count draws. The Dixon-Coles correction (rho -0.07, fitted on England,
+// Spain, Italy and Germany 2003-12; on 2013+ predicted draws went 23.8% -> 25.4% against 24.9% real) reweights the
+// 0-0, 1-0, 0-1 and 1-1 scorelines. Not applied to a game in progress (the scores left to come aren't the final score).
+const DC_RHO = { Soccer: -0.07 };
 function simulateGame(plan, sport) {
-  const P = LEAGUE[sport], cfg = SPORT_CFG[sport];
+  const P = LEAGUE[sport], cfg = SPORT_CFG[sport], rho = !plan.live && DC_RHO[sport] || 0;
   let [hS, aS] = P.fam === "norm" ? sampleNormalPair(plan, P) : [sampleCount(plan.muH, P), sampleCount(plan.muA, P)];
+  if (rho) {                                                  // accept each sampled scoreline in proportion to its correction
+    const M = 1 + Math.abs(rho) * Math.max(1, plan.muH * plan.muA);
+    for (let k = 0; k < 20 && Math.random() * M > dcTau(hS, aS, plan.muH, plan.muA, rho); k++) { hS = sampleCount(plan.muH, P); aS = sampleCount(plan.muA, P); }
+  }
   if (plan.live) { hS += plan.live.hs; aS += plan.live.as; }    // a game in progress: what's left on top of the current score
   if (hS !== aS) return { hS, aS, extra: null };
   if (cfg.hasDraw) return { hS, aS, extra: "draw" };
@@ -1098,6 +1172,7 @@ async function fetchRundown(md, sim, signals, sport) {
     const bits = [];
     bits.push(`The engine rates ${poss(t.name)} attack ${rel(off.r)} (ratio ${f2(off.r)}) and their defense as ${relD(def.r)} (ratio ${f2(def.r)}).`);
     if (t.has?.gpg && t.gp) bits.push(`This season they score ${f1(t.gpg)} and allow ${f1(t.gaa)} ${u} a game over ${t.gp} games.`);
+    if (off.power && def.power) bits.push(`Those raw numbers aren't taken at face value: every one of their ${off.power.g} games this season is adjusted for who it was against, where it was played and how long ago${(POWER[sport] || POWER_DEF).mkt > 0 ? ", and each game's closing line counts as evidence too" : ""}. On that basis their attack has run at ${f2(off.power.r)}× what an average team would have scored against the same schedule, and their defense has allowed ${f2(def.power.r)}×.`);
     else bits.push(`They have little or no current-season scoring on file yet, so the rating leans on what came before.`);
     if (t.prev?.gpg) bits.push(`Last season: ${f1(t.prev.gpg)} scored, ${f1(t.prev.gaa)} allowed per game.`);
     if (off.seasons) bits.push(`Behind that sit ${off.seasons} past season${off.seasons === 1 ? "" : "s"} on file${off.from ? ` going back to ${off.from}` : ""}, pooled with older years fading; together they are worth about ${Math.round(off.n)} games of evidence for the attack and ${Math.round(def.n)} for the defense, so ${off.n > 60 ? "one hot or cold week barely moves the number" : "the rating can still move quickly"}.`);
@@ -1309,6 +1384,7 @@ async function fetchSlate(sport, opts = {}) {
   const R = ROUTES[sport];
   if (!R) throw new Error(`${sport} isn't on the live routes yet.`);
   const hist = await loadHistory(sport);
+  await loadResults(sport);                                 // the season's game log: power ratings (v4)
   // today, else the next day with games (football: the coming week). Tabs with many leagues read only the leagues with
   // games that day, and a league's standings are fetched only once it has a game still to start.
   const ks = sport === "NFL" || sport === "CFB" || sport === "GRID" ? [0, 1, 2, 3, 4, 5, 6] : [0, 1];
@@ -1438,6 +1514,7 @@ function slateGameToMatchData(g, sport) {
   const sharp = m.sharp === "away" || m.sharp === "home" ? m.sharp : gap != null && Math.abs(gap) >= 12 ? (gap > 0 ? "away" : "home") : null;
   const total = nn(m.total) > 0 ? nn(m.total) : null, awaySpread = nn(m.awaySpread) != null && Math.abs(nn(m.awaySpread)) <= 100 ? nn(m.awaySpread) : null;
   const raw = {
+    leagueSlug: g.league || null,
     matchInfo: { league: sport, game: "", venue: g.venue ? String(g.venue) : "", time: g.time ? String(g.time) : "", injuryNote: g.note ? String(g.note) : "" },
     league: { gpg: nn(g.lg) },
     weather: wx ? { applicable: !wx.dome, dome: !!wx.dome, tempF: nn(wx.tempF), windMph: nn(wx.windMph), precipitation: wx.precip ? String(wx.precip) : "none",
@@ -1522,8 +1599,9 @@ function priceGame(plan, sport, scale = 1) {
     const K = scoreCap(P), a = countPmf(rH, P, K), b = countPmf(rA, P, K);
     // i, j = scoring still to come; the final adds the current score (dH, dA). One spare slot each side for overtime.
     mLo = dH - dA - K - 1; tLo = dH + dA; pm = new Array(2 * K + 3).fill(0); pt = new Array(2 * K + 2).fill(0);
+    const rho = !lv && DC_RHO[sport] || 0;
     for (let i = 0; i <= K; i++) for (let j = 0; j <= K; j++) {
-      const w = a[i] * b[j], im = i - j + K + 1;
+      const w = a[i] * b[j] * (rho ? Math.max(0, dcTau(i, j, rH, rA, rho)) : 1), im = i - j + K + 1;
       if (i + dH !== j + dA) { pm[im] += w; pt[i + j] += w; }
       else if (draw) { pm[im] += w; pt[i + j] += w; }
       else { pm[im + 1] += w * otP; pm[im - 1] += w * (1 - otP); pt[i + j + 1] += w; }
@@ -1536,11 +1614,17 @@ function priceGame(plan, sport, scale = 1) {
   }
   const norm = a => { const z = a.reduce((t, v) => t + v, 0) || 1; return a.map(v => v / z); };   // tails cut off at the ends (totals below 0, scores past the cap) are renormalised away
   pm = norm(pm); pt = norm(pt);
+  // football margins land on 3, 7, 10... far more than a bell curve says (applied the way the multipliers were fitted)
+  if (KEY_NUMBERS[sport] && !lv) pm = applyKeyNumbers(pm, mLo, KEY_NUMBERS[sport]);
   let pH = 0, pA = 0, pD = 0, meanM = 0, meanT = 0;
   pm.forEach((p, i) => { const d = mLo + i; meanM += d * p; if (d > 0) pH += p; else if (d < 0) pA += p; else pD += p; });
   pt.forEach((p, i) => { meanT += (tLo + i) * p; });
   return { ml: { pH, pD: draw ? pD : null, pA }, margin: L => pmfProbs(pm, mLo, L), total: L => pmfProbs(pt, tLo, L), meanM, meanT, otP };
 }
+// NFL [S, nflverse]: how often each final margin happened in 2006-2026 (5,567 games) against a bell curve around the
+// closing spread. Fitted on 2006-16, it lifted the log score of the exact margin on 2017-26 from 4.006 to 3.891, and
+// "favoured by 3, wins by exactly 3" from 3.1% to 8.3% (it really happened 9.7% of the time).
+const KEY_NUMBERS = { NFL: { 1: 0.489, 2: 0.769, 3: 2.692, 4: 0.946, 5: 0.72, 6: 1.254, 7: 1.803, 8: 0.822, 9: 0.354, 10: 1.197, 11: 0.532, 12: 0.439, 13: 0.652, 14: 1.428, 15: 0.485, 16: 0.727, 17: 1.25, 18: 0.922, 19: 0.481, 20: 1.007, 21: 1.423, rest: 1.134 } };
 const decOdds = o => o > 0 ? 1 + o / 100 : 1 + 100 / -o;
 const fmtOdds = o => (o > 0 ? "+" : "") + Math.round(o);
 const fmtLine = l => l === 0 ? "PK" : (l > 0 ? "+" : "-") + Math.abs(l);
@@ -1549,20 +1633,25 @@ const OTHER_DEFAULT = -110;
 
 // The sim's probability is blended with the no-vig market price: the market also knows injuries, rotations and
 // roster moves the team stats can't see. bw = weight on the sim (learned per sport from graded games, see learnFrom).
-// [J] starting weight on the sim until 60 graded games teach it. College starts lower: its ratings follow BPI / FPI,
-// which sit well inside the closing line in buy games (a top program at home to a low-major), so the price leads there.
-const MARKET_BLEND_BY = { CBB: 0.2, CBBW: 0.2, CFB: 0.25 };
-const startBlend = sport => MARKET_BLEND_BY[sport] ?? 0.35;
+// Starting weight on the sim until 60 graded moneylines teach it (learnFrom). v4 [S]: on 2,620 NFL games 2017-26 the
+// closing moneyline alone (log loss 0.6080) beat every blend with the ratings (0.6086 at 10% sim, 0.6118 at the old
+// 35%), and this site's own graded games said the same in every sport with enough of them (CBB 0.401 market vs 0.532
+// sim, soccer 0.536 vs 0.640, NHL 0.595 vs 0.643). So the sim starts as a small voice next to the price and has to
+// earn more. The two are pooled on the log-odds scale (the standard for combining forecasts; never worse in the test).
+const MARKET_BLEND_BY = { NFL: 0.10, CBB: 0.10, CBBW: 0.10 };
+const startBlend = sport => MARKET_BLEND_BY[sport] ?? 0.15;
 const blendW = sport => { const x = LEARNED[sport]; return x && x.bw != null ? x.bw : startBlend(sport); };
 function makeBet({ key, market, side, label, line = null, odds, w, push = 0, l, fair, bw = 1 }) {
-  const b = decOdds(odds) - 1, d0 = w + l || 1, wcRaw = w / d0, wc = fair != null ? bw * wcRaw + (1 - bw) * fair : wcRaw;
+  const b = decOdds(odds) - 1, d0 = w + l || 1, wcRaw = w / d0, wc = fair != null ? (wcRaw > 0 && wcRaw < 1 && fair > 0 && fair < 1 ? logitPool(wcRaw, fair, bw) : bw * wcRaw + (1 - bw) * fair) : wcRaw;
   w = wc * (1 - push); l = (1 - wc) * (1 - push);
   const d = w + l || 1;
   const ev = w * b - l;                                        // per $1 staked, pushes refunded
   const edge = (wc - fair) * 100;                              // points above the no-vig price
   const wEff = Math.min(wc, fair + 0.10);                      // a gap beyond 10 pts earns no extra credit
   const kelly = Math.max(0, (wEff * b - (1 - wEff)) / b);
-  return { key, market, side, label, line, odds, w, push, l, wc, wcRaw, fair, be: 1 / decOdds(odds), ev, edge, kelly, capped: wc - fair > 0.10 };
+  // need: the American price at which this bet breaks even on the algo's number ("a bet at this price or better")
+  const dn = w > 0 ? 1 + l / w : null, need = dn == null ? null : dn >= 2 ? Math.round((dn - 1) * 100) : Math.round(-100 / (dn - 1));
+  return { key, market, side, label, line, odds, w, push, l, wc, wcRaw, fair, be: 1 / decOdds(odds), ev, edge, kelly, need, capped: wc - fair > 0.10 };
 }
 
 const median = xs => { const s = [...xs].sort((a, b) => a - b), n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null; };
@@ -1833,6 +1922,7 @@ function backOutGame(g) {
 }
 async function reconstructCall(sport, league, eventId, day) {
   if (!ROUTES[sport] || isIndiv(sport) || isField(sport)) return null;
+  await loadResults(sport);
   const hist = await loadHistory(sport), ctx = await routeContextMemo(sport, league, hist);
   const j = await board(sport, league, day).catch(() => null);
   const g = j ? parseScoreboard(j, sport, { ...ctx, league }).find(x => x.id === String(eventId)) : null;
@@ -1908,7 +1998,7 @@ function learnFrom(games, sport) {
     let best = null;
     for (let w = 0.05; w <= 0.951; w += 0.05) {
       let ll = 0;
-      for (const g of ml) { const ih = 1 / decOdds(g.mkt.homeML), ia = 1 / decOdds(g.mkt.awayML), f = ih / (ih + ia), pm = g.p.h / Math.max(1e-9, g.p.h + g.p.a), p = clampTo(w * pm + (1 - w) * f, 1e-4, 1 - 1e-4); ll -= Math.log(g.result.hs > g.result.as ? p : 1 - p); }
+      for (const g of ml) { const ih = 1 / decOdds(g.mkt.homeML), ia = 1 / decOdds(g.mkt.awayML), f = ih / (ih + ia), pm = g.p.h / Math.max(1e-9, g.p.h + g.p.a), p = clampTo(logitPool(clampTo(pm, 1e-4, 1 - 1e-4), f, w), 1e-4, 1 - 1e-4); ll -= Math.log(g.result.hs > g.result.as ? p : 1 - p); }
       if (!best || ll < best.ll) best = { w, ll };
     }
     const w0 = startBlend(sport); bw = clampTo(w0 + (best.w - w0) * ml.length / (ml.length + 100), 0.05, 0.9);
@@ -1922,9 +2012,39 @@ function learnFrom(games, sport) {
     const rh = Math.log((g.result.hs + 0.5) / (ph + 0.5)) - mlog, ra = Math.log((g.result.as + 0.5) / (pa + 0.5)) - mlog;
     add(g.home.abbr, 0, rh); add(g.home.abbr, 1, ra); add(g.away.abbr, 0, ra); add(g.away.abbr, 1, rh);
   }
+  const card = reportCard(gs, sport);
   const teams = {};
   for (const [abbr, [o, d, k]] of Object.entries(acc)) if (k >= 3) { const w = 1 / (k + 12); teams[abbr] = [+clampTo(Math.exp(o * w), 0.96, 1.04).toFixed(4), +clampTo(Math.exp(d * w), 0.96, 1.04).toFixed(4), k]; }
-  return { s, h, n, bw, nMl: ml.length, teams };
+  return { s, h, n, bw, nMl: ml.length, teams, card };
+}
+// The engine's report card against the market, from every graded game (shown as is, good or bad):
+// how far the projected margin and total landed from the final next to the closing line's miss, the log loss of the
+// sim's win probability next to the no-vig moneyline's (lower is better; the market is the bar to clear), the record
+// of the plays it graded, and how the sim did against the closing spread when it disagreed by 2+ points.
+function reportCard(gs, sport) {
+  const c = { n: gs.length, mae: null, maeMkt: null, nLine: 0, llSim: null, llMkt: null, nMl: 0, picks: [0, 0, 0], units: 0, ats: [0, 0] };
+  let em = 0, et = 0, mm = 0, mt = 0, ls = 0, lm = 0;
+  const spreadIsMargin = LEAGUE[sport]?.fam === "norm";       // a run line / puck line / handicap isn't an expected margin
+  for (const g of gs) {
+    const m = g.result.hs - g.result.as, tot = g.result.hs + g.result.as;
+    em += Math.abs(g.proj.rawMargin - m); et += Math.abs(g.proj.rawTotal - tot);
+    if (spreadIsMargin && g.mkt && g.mkt.awaySpread != null && g.mkt.total != null) {
+      c.nLine++; mm += Math.abs(g.mkt.awaySpread - m); mt += Math.abs(g.mkt.total - tot);
+      const d = g.proj.rawMargin - g.mkt.awaySpread, cover = m - g.mkt.awaySpread;
+      if (Math.abs(d) >= 2 && cover !== 0) c.ats[(d > 0) === (cover > 0) ? 0 : 1]++;
+    }
+    if (g.mkt && g.mkt.homeML != null && g.mkt.awayML != null && m !== 0 && g.p) {
+      const ih = 1 / decOdds(g.mkt.homeML), ia = 1 / decOdds(g.mkt.awayML), f = ih / (ih + ia), pm = clampTo(g.p.h / Math.max(1e-9, g.p.h + g.p.a), 1e-4, 1 - 1e-4);
+      c.nMl++; ls -= Math.log(m > 0 ? pm : 1 - pm); lm -= Math.log(m > 0 ? f : 1 - f);
+    }
+    const pk = g.pick ? (g.plays || []).find(p => p.key === g.pick) : null;
+    if (pk && pk.res) { c.picks[pk.res === "W" ? 0 : pk.res === "L" ? 1 : 2]++; c.units += pk.u || 0; }
+  }
+  if (c.n) c.mae = [+(em / c.n).toFixed(2), +(et / c.n).toFixed(2)];
+  if (c.nLine) c.maeMkt = [+(mm / c.nLine).toFixed(2), +(mt / c.nLine).toFixed(2)];
+  if (c.nMl) { c.llSim = +(ls / c.nMl).toFixed(4); c.llMkt = +(lm / c.nMl).toFixed(4); }
+  c.units = +c.units.toFixed(2);
+  return c;
 }
 let LEARNED = {};
 const learnedFor = sport => { const x = LEARNED[sport]; return x && !x.inactive && (x.s !== 1 || x.h !== 0 || (x.teams && Object.keys(x.teams).length)) ? x : null; };   // scoring/home edge only; the blend weight is read by blendW
@@ -1966,7 +2086,7 @@ async function fetchFinals(sport, games) {
   return n;
 }
 // The background tracker (scripts/track.mjs, run by the GitHub data job) drives these. The page never logs or grades.
-export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup, driverLine, poolSide };   // for the tests
+export const engine = { runSimulations, priceGame, liveState, LEAGUE, learnFrom, buildPlan, fetchMatchup, driverLine, poolSide, powerLeague, RESULTS, _powerFits, startBlend, makeBet, reportCard };   // for the tests
 export const tracker = { fetchSlate, rankSlate, trackSlate, fetchIndiv, trackIndiv, fetchFinals, trackLoad, trackSave, refreshLearned, trackStats, startedET, isIndiv, isField, SPORT_KEYS, TRACK_LS,
   reconstructCall, trackKey, trackUpsert, trackGrade, board, leaguesOn, indivFinal, etISO, LEAGUE };
 // <<< SLATE ENGINE
@@ -2511,7 +2631,7 @@ function SlateRow({ r, sport, open, onToggle, onRunFull }) {
   const cfg = SPORT_CFG[sport], A = r.md.away, H = r.md.home, pk = r.pick, g = GRADE[r.grade] || GRADE.PASS;
   let head, sub, right = null;
   if (r.status === "bet") { head = pk.label; sub = `${MKT_NAME[pk.market]} · algo ${pc(pk.wc)}${pk.wcRaw != null && Math.abs(pk.wcRaw - pk.wc) > 0.005 ? ` (sim ${pc(pk.wcRaw)})` : ""} vs ${pc(pk.fair)} priced · edge ${signed(pk.edge)} pts`; right = <div style={{ textAlign: "right" }}><div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: g.c }}>{signed(pk.ev * 100)}%</div><div style={{ fontSize: 10, color: T.dim }}>EV</div></div>; }
-  else if (r.status === "pass") { head = "No value at these prices"; sub = `closest: ${pk.label} · EV ${signed(pk.ev * 100)}%`; }
+  else if (r.status === "pass") { head = "No value at these prices"; sub = `closest: ${pk.label} · EV ${signed(pk.ev * 100)}%${Number.isFinite(pk.need) ? ` · a bet at ${fmtOdds(pk.need)} or better` : ""}`; }
   else if (r.status === "model") { const homeFav = r.pricing.pH >= r.pricing.pA; head = `Algo leans ${homeFav ? H.abbr : A.abbr}`; sub = `${pc(Math.max(r.pricing.pH, r.pricing.pA))} to win · no usable odds found, so there is nothing to price`; }
   else { head = "Not enough sourced data to simulate"; sub = r.flags[0] || ""; }
   const proj = r.proj ? `proj ${A.abbr} ${r.proj.away.toFixed(1)} – ${H.abbr} ${r.proj.home.toFixed(1)} · total ${r.proj.total.toFixed(1)}` : "";
@@ -2544,11 +2664,37 @@ function SlateRow({ r, sport, open, onToggle, onRunFull }) {
   </div>;
 }
 
+// The engine's report card for this sport, from every graded game (data/learned.json): shown as is, good or bad.
+function ReportCard({ sport }) {
+  const c = LEARNED[sport]?.card;
+  if (!c || !(c.n >= 10)) return null;
+  const u = SPORT_CFG[sport].unit, cells = [];
+  cells.push(["GAMES GRADED", String(c.n), T.ink, "every game, logged before it starts"]);
+  if (c.mae) cells.push(["MARGIN MISS", `${c.mae[0].toFixed(1)} ${u}`, c.maeMkt ? (c.mae[0] <= c.maeMkt[0] ? NEON.green : T.ink) : T.ink, c.maeMkt ? `closing line missed by ${c.maeMkt[0].toFixed(1)}` : "average miss on the final margin"]);
+  if (c.mae) cells.push(["TOTAL MISS", `${c.mae[1].toFixed(1)} ${u}`, c.maeMkt ? (c.mae[1] <= c.maeMkt[1] ? NEON.green : T.ink) : T.ink, c.maeMkt ? `closing total missed by ${c.maeMkt[1].toFixed(1)}` : "average miss on the final total"]);
+  if (c.nMl >= 10) cells.push(["WIN % SCORE", c.llSim.toFixed(3), c.llSim <= c.llMkt ? NEON.green : T.ink, `market ${c.llMkt.toFixed(3)} · lower is better`]);
+  const [w, l, p] = c.picks;
+  if (w + l > 0) cells.push(["PICKS", `${w}-${l}${p ? `-${p}` : ""}`, c.units > 0 ? NEON.green : c.units < 0 ? NEON.red : T.ink, `${c.units > 0 ? "+" : ""}${c.units.toFixed(1)} units at the posted prices`]);
+  if (c.ats[0] + c.ats[1] >= 10) cells.push(["VS THE SPREAD", `${c.ats[0]}-${c.ats[1]}`, T.ink, "when the sim was 2+ off the line"]);
+  return <Panel title="ENGINE REPORT CARD" right={SPORT_CFG[sport].label}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(132px,1fr))", gap: 8 }}>
+      {cells.map(([k, v, col, d]) => <div key={k} style={{ minWidth: 0, border: `1px solid ${T.line}`, padding: "9px 10px", background: "rgba(9,2,17,.5)" }}>
+        <div style={{ fontSize: 10, color: T.faint, letterSpacing: 1 }}>{k}</div>
+        <div style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, color: col, marginTop: 3, overflowWrap: "anywhere" }}>{v}</div>
+        <div style={{ fontSize: 10, color: T.dim, lineHeight: 1.45, marginTop: 3, overflowWrap: "anywhere" }}>{d}</div>
+      </div>)}
+    </div>
+    <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.6, marginTop: 10 }}>The closing line is the bar: it is the sharpest public forecast there is. Green means the engine beat it on that measure.</div>
+  </Panel>;
+}
+
 function SlateFootnote({ ranked, sport }) {
   const sd = SPREAD_SD[sport], sc = ranked.scale;
   return <Panel title="HOW THIS IS RANKED">
     <div style={{ fontSize: 11, color: T.dim, lineHeight: 1.75 }}>
       <div>▸ Every game runs through the same factor engine and 10,000-run sim as the full sim. No AI picks anything: the inputs come straight from the live routes.</div>
+      <div>▸ Team strength comes from every game of the season, adjusted for opponent, venue and recency{(POWER[sport] || POWER_DEF).mkt > 0 ? " (and each game's closing line)" : ""}, on top of each team's multi-season history.</div>
+      <div>▸ The sim starts as {Math.round(blendW(sport) * 100)}% of the final number and the market price as {100 - Math.round(blendW(sport) * 100)}%: on thousands of past games the closing price out-predicted every model tested, so the sim has to earn more weight from graded games. A game with no value shows the price that would make it a bet.</div>
       <div>▸ Each bet is priced against the posted odds, using the sim's probability blended with the no-vig market price (the market knows injuries and roster news the stats can't; the blend weight is learned from graded games). Games rank by grade first (A, B, C), then by Kelly score: how far the algo's probability beats the price, scaled by the odds. A gap past 10 pts earns no extra credit and cannot grade A, and missing inputs cut the score.</div>
       <div>▸ Win, cover and over probabilities come from the algo's own score distribution for each game (a typical {SPORT_CFG[sport].label} game swings about ±{sd.m.toFixed(1)} on the margin and ±{sd.t.toFixed(1)} on the total). Overtime is settled by team strength; no home edge is applied at a neutral site.</div>
       {sc.mode === "slate" && <div>▸ The algo's scoring level sits {Math.abs((sc.median - 1) * 100).toFixed(0)}% {sc.median > 1 ? "above" : "below"} the market's on this board, past the 7% band it is trusted within, so projections are divided by ×{sc.s.toFixed(2)}. Picks reflect the algo's relative view.</div>}
@@ -2586,6 +2732,7 @@ function SlateScreen({ ranked, sport, meta, onBack, onBest, onRunFull, onRefresh
         return [head, <SlateRow key={r.id} r={r} sport={sport} open={!!open[r.id]} onToggle={() => setOpen(o => ({ ...o, [r.id]: !o[r.id] }))} onRunFull={onRunFull} />];
       })}
     </div>
+    {rows.length > 0 && <ReportCard sport={sport} />}
     {rows.length > 0 && <SlateFootnote ranked={ranked} sport={sport} />}
     {meta.sources && meta.sources.length > 0 && <div style={{ fontSize: 10, color: T.faint, marginTop: 10 }}>sources: {meta.sources.join(" · ")}</div>}
   </Shell>;
@@ -2615,7 +2762,7 @@ function BestPickScreen({ ranked, sport, meta, onBack, onSlate, onRunFull, onRef
         <div style={{ textAlign: "center", padding: "26px 0 10px" }}>
           <div style={{ fontFamily: F.d, fontSize: 24, fontWeight: 900, color: T.dim, letterSpacing: 3 }}>NO PLAY</div>
           <div style={{ fontSize: 13, color: T.dim, marginTop: 10, lineHeight: 1.7 }}>{rows.length ? `The algo finds no bet worth making on this ${cfg.label} slate at the posted prices.` : `No ${cfg.label} games with usable data were found for this slate.`}</div>
-          {closest && <div style={{ fontSize: 12, color: T.dim, marginTop: 10 }}>Closest: {closest.md.away.abbr} @ {closest.md.home.abbr}, {closest.pick.label} (EV {signed(closest.pick.ev * 100)}%)</div>}
+          {closest && <div style={{ fontSize: 12, color: T.dim, marginTop: 10, lineHeight: 1.6 }}>Closest: {closest.md.away.abbr} @ {closest.md.home.abbr}, {closest.pick.label} (EV {signed(closest.pick.ev * 100)}%){Number.isFinite(closest.pick.need) ? `. It becomes a bet at ${fmtOdds(closest.pick.need)} or better.` : ""}</div>}
         </div>
         {algo}{footer}
       </Panel>

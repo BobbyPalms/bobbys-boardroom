@@ -6,10 +6,12 @@
 //   officials/<SPORT>.json   each finished game's officials with its final score (referee tendencies)
 //   matches/<SPORT>/<YEAR>.json  tennis matches / UFC fights, every one on record
 //   ratings/<SPORT>.json     Elo for every player / fighter, fitted and back-tested on held-out matches
+//   results/<SPORT>.json     the season's game log: every finished game, with its closing spread and total where the
+//                            lines were on file (the power ratings, engine v4, are fitted on it)
 // State carries over between runs through the deployed site (scripts/restore-state.mjs) and a daily commit.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { powerTeamUrl, parsePower, SPLITS, anSplitsUrl, dkSplitsUrl, parseANSplits, parseDKSplits } from "../src/routes.js";
-import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd, makeBoards, seasonStartYear } from "../src/routes.js";
+import { ROUTES, TEAM_SPORTS, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, finalsFrom, espnSeason, ymd, makeBoards, seasonStartYear, resultRows, SEASON_START, ALL_BOARD, allBoardUrl, splitAllBoard } from "../src/routes.js";
 import { parseTennis, parseUFC, fitElo, tennisProfiles, h2hShard } from "../src/ratings.js";
 
 const FORCE_BACKFILL = process.argv.includes("--backfill");
@@ -75,10 +77,59 @@ async function history(sport) {
   write(file, H);
 }
 
+// ---- the season game log: data/results/<SPORT>.json ----
+// { season, leagues: { slug: { t: { teamId: abbr }, g: { eventId: [day, homeId, awayId, homeScore, awayScore, neutral,
+//   closing home spread | null, closing total | null] } } }, back: { key: last day backfilled } }
+function resultsFile(sport) {
+  const season = startYearNow(sport), R = read(`data/results/${sport}.json`, null);
+  return R && R.season === season && R.leagues ? R : { season, leagues: {}, back: {} };
+}
+function addResult(R, league, r, line) {
+  const lg = (R.leagues[league] = R.leagues[league] || { t: {}, g: {} }), old = lg.g[r.id];
+  lg.t[r.h] = r.ha; lg.t[r.a] = r.aa;
+  const sp = line && line[1] != null ? -line[1] : old?.[6] ?? null, tot = line && line[2] != null ? line[2] : old?.[7] ?? null;
+  lg.g[r.id] = [r.day, r.h, r.a, r.hs, r.as, r.neutral ? 1 : 0, sp, tot];
+}
+// Everything from the start of the season to two days ago, one day per request (the same request the live boards
+// make), a few days each run until it has caught up. Single-league tabs and the sports with an "all leagues" board;
+// the other many-league tabs fill in from the live boards as their games are played.
+async function backfillResults(sport, R, active) {
+  const r = ROUTES[sport], all = ALL_BOARD.has(r.sport) && r.leagues.length > 1;
+  if (!active || !(all || r.leagues.length === 1) || R.back.done) return;
+  const start = Date.UTC(R.season, SEASON_START[sport] ?? 7, 1), end = Date.now() - 2 * 864e5;
+  let t = R.back.day ? Date.parse(`${R.back.day.slice(0, 4)}-${R.back.day.slice(4, 6)}-${R.back.day.slice(6, 8)}T00:00:00Z`) + 864e5 : start, budget = 14;
+  for (; t <= end && budget > 0; t += 864e5, budget--) {
+    const d = ymd(new Date(t + 12 * 3600e3)), j = await get(all ? allBoardUrl(sport, d) : scoreboardUrl(sport, r.leagues[0], d));
+    if (!j) break;                                           // try this day again next run
+    if (all) { for (const [league, b] of Object.entries(splitAllBoard(sport, j))) for (const row of resultRows(b)) addResult(R, league, row, null); }
+    else for (const row of resultRows(j)) addResult(R, r.leagues[0], row, null);
+    R.back.day = d;
+    await sleep(60);
+  }
+  if (t > end) R.back.done = true;
+}
+// closing lines the results tracker logged before each game (it has them back to the site's first day)
+function linesFromTrack(sport, R) {
+  const dir = `data/track/${sport}`;
+  if (!existsSync(dir)) return;
+  const by = new Map();
+  for (const f of readdirSync(dir)) for (const g of Object.values(read(`${dir}/${f}`, { games: {} }).games || {})) {
+    if (!g?.mkt || g.mkt.awaySpread == null || g.mkt.total == null || !g.home?.abbr || !g.away?.abbr) continue;
+    const k = `${g.home.abbr}|${g.away.abbr}`; (by.get(k) || by.set(k, []).get(k)).push([Math.floor(Date.parse(`${g.day}T12:00:00Z`) / 864e5), -g.mkt.awaySpread, g.mkt.total]);
+  }
+  if (!by.size) return;
+  for (const lg of Object.values(R.leagues)) for (const row of Object.values(lg.g)) {
+    if (row[6] != null && row[7] != null) continue;
+    const hit = (by.get(`${lg.t[row[1]]}|${lg.t[row[2]]}`) || []).find(x => Math.abs(x[0] - row[0]) <= 1);
+    if (hit) { row[6] = hit[1]; row[7] = hit[2]; }
+  }
+}
+
 // ---- 2. live boards, 3. line snapshots, 4. officials (team sports) ----
 async function live(sport) {
   const days = [-1, 0, 1].map(k => ymd(new Date(Date.now() + k * 864e5)));
   const L = { days: {} }, lines = read(`data/lines/${sport}.json`, {}), offs = read(`data/officials/${sport}.json`, {});
+  const RES = resultsFile(sport);
   const finals = [];
   const jobs = [];
   for (const d of days) for (const league of await BOARDS.leaguesOn(sport, d)) jobs.push([league, d]);
@@ -94,7 +145,11 @@ async function live(sport) {
       if (!last || last.slice(1).join() !== snap.slice(1).join()) arr.push(snap);
     }
     for (const f of finalsFrom(j)) finals.push({ ...f, league });
+    for (const r of resultRows(j)) addResult(RES, league, r, (lines[r.id] || []).at(-1));   // closing line = the last snapshot before the start
   }
+  await backfillResults(sport, RES, Object.values(L.days).some(a => a.length > 0));
+  linesFromTrack(sport, RES);
+  write(`data/results/${sport}.json`, RES);
   let budget = 40;
   for (const f of finals) {
     if (offs[f.id] || budget <= 0) continue;
