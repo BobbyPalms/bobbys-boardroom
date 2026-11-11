@@ -24,10 +24,15 @@ export const priceToAm = p => { if (!(p > 0 && p < 1)) return null; const d = 1 
 export const cents = p => `${Math.round(p * 100)}¢`;
 // Kalshi's trading fee: 7% x contracts x price x (1 - price), rounded up to the cent (an estimate shown before confirming)
 export const feeEstimate = (count, p) => Math.ceil(0.07 * count * p * (1 - p) * 100 - 1e-9) / 100;
-// contracts for a dollar amount at a price (fractions to 0.01 are allowed), and what it costs and pays
+// contracts for a dollar amount at a price (fractions to 0.01 are allowed), and what it costs and pays.
+// The amount is everything that leaves the account: cost plus Kalshi's fee never comes to more than `stake`
+// (the same way Kalshi sizes a combo bought by dollar amount).
 export function sizeOrder(stake, p) {
   if (!(stake > 0) || !(p > 0 && p < 1)) return null;
-  const count = Math.floor((stake / p) * 100 + 1e-9) / 100;
+  let count = Math.floor((stake / (p + 0.07 * p * (1 - p))) * 100 + 1e-9) / 100;
+  const over = n => Math.round(n * p * 100) / 100 + feeEstimate(n, p) > stake + 1e-9;
+  while (count > 0 && over(count)) count = Math.round((count - 0.01) * 100) / 100;
+  if (!(count > 0)) return null;
   const cost = Math.round(count * p * 100) / 100, fee = feeEstimate(count, p);
   return { count, cost, fee, payout: Math.round(count * 100) / 100, profit: Math.round((count - cost - fee) * 100) / 100 };
 }
@@ -113,13 +118,46 @@ export function comboCollection(collections, mapped) {
 // a quote on a combo: buying YES means accepting the maker's NO side, at 1 - no_bid
 // Kalshi only lists quotes for a requester's own RFQ with rfq_user_filter=self (rfq_id alone is refused with a 403)
 export const quotesPath = rfqId => `communications/quotes?rfq_user_filter=self&rfq_id=${encodeURIComponent(rfqId)}`;
+// the first value that reads as a number above zero (Kalshi sends "0.00" for the fields a quote doesn't use)
+export const firstPos = (...vs) => { for (const v of vs) { const x = dollars(v); if (x > 0) return x; } return null; };
+// contracts a quote fills when you BUY YES: the maker's NO side (no_contracts_fp). A quote on an ask made by dollar
+// amount carries two sizes, one per side: yes_contracts_fp is the size if you took the maker's YES bid instead, and is
+// never the size of a YES purchase. (Reading it sized a $50 combo as 55 contracts when Kalshi filled 395.)
+export const buyYesContracts = q => firstPos(q?.no_contracts_fp, q?.contracts_fp);
+// contracts a quote fills when you SELL YES into the maker's YES bid
+export const sellYesContracts = q => firstPos(q?.contracts_fp, q?.yes_contracts_fp);
 // maxPrice: only quotes at that price or better; skip: quote ids already tried
 export function bestComboQuote(quotes, { maxPrice = 1, skip = null } = {}) {
   const open = (quotes || []).filter(q => q.status === "open" && dollars(q.no_bid_dollars) > 0 && 1 - dollars(q.no_bid_dollars) <= maxPrice + 1e-9 && !(skip && skip.has(q.id)));
   if (!open.length) return null;
   const q = open.sort((a, b) => dollars(b.no_bid_dollars) - dollars(a.no_bid_dollars))[0];
   const price = Math.round((1 - dollars(q.no_bid_dollars)) * 10000) / 10000;
-  return { quote: q, price, am: priceToAm(price), contracts: dollars(q.yes_contracts_fp ?? q.no_contracts_fp ?? q.contracts_fp) };
+  return { quote: q, price, am: priceToAm(price), contracts: buyYesContracts(q) };
+}
+// what a combo quote costs against the dollars asked for: contracts, cost, fee, total, payout.
+// est: Kalshi's quote didn't carry a size, so it's worked out from the dollars asked (the fill is read back after).
+// over: it would cost more than the slip says, so it is never bought. short: it covers well under the amount asked.
+export function comboCost(best, stake) {
+  if (!best || !(best.price > 0 && best.price < 1) || !(stake > 0)) return null;
+  const est = !(best.contracts > 0), p = best.price;
+  const contracts = est ? sizeOrder(stake, p)?.count : best.contracts;
+  if (!(contracts > 0)) return null;
+  const cost = Math.round(contracts * p * 100) / 100, fee = feeEstimate(contracts, p), total = Math.round((cost + fee) * 100) / 100;
+  return { contracts, est, cost, fee, total, payout: Math.round(contracts * 100) / 100, over: total > stake + 0.02, short: total < stake * 0.9 - 0.02 };
+}
+// what Kalshi actually filled, from GET portfolio/fills for one order: contracts, dollars at the fill prices, fees.
+// side: the side bought or sold ("yes" / "no"); each fill carries both prices.
+export function fillTotals(fills, side = "yes") {
+  let count = 0, gross = 0, fee = 0;
+  for (const f of fills || []) {
+    const n = dollars(f.count_fp ?? f.count), p = dollars(side === "no" ? f.no_price_dollars : f.yes_price_dollars);
+    if (!(n > 0) || !(p > 0 && p < 1)) continue;
+    count += n; gross += n * p; fee += dollars(f.fee_cost) || 0;
+  }
+  if (!(count > 0)) return null;
+  const r2 = v => Math.round(v * 100) / 100;
+  // total: what a buy took from the account; net: what a sale put back
+  return { count: r2(count), gross: r2(gross), fee: r2(fee), total: r2(gross + fee), net: r2(gross - fee), price: gross / count };
 }
 
 // ---------- cashing out: selling a position back at Kalshi's current bids ----------
@@ -151,7 +189,7 @@ export function bestSellQuote(quotes, { minPrice = 0, skip = null } = {}) {
   const open = (quotes || []).filter(q => q.status === "open" && dollars(q.yes_bid_dollars) > 0 && dollars(q.yes_bid_dollars) >= minPrice - 1e-9 && !(skip && skip.has(q.id)));
   if (!open.length) return null;
   const q = open.sort((a, b) => dollars(b.yes_bid_dollars) - dollars(a.yes_bid_dollars))[0];
-  return { quote: q, price: dollars(q.yes_bid_dollars), contracts: dollars(q.yes_contracts_fp ?? q.contracts_fp) };
+  return { quote: q, price: dollars(q.yes_bid_dollars), contracts: sellYesContracts(q) };
 }
 
 // someone else's combo: no maker can be asked for them, so an estimate from each leg's current bid (Kalshi's combo
@@ -172,13 +210,23 @@ export function syncPayload(positions, mkts) {
     const n = dollars(p.position_fp ?? p.position);
     if (!n) continue;
     const m = mkts[p.ticker] || {}, count = Math.abs(n), side = n > 0 ? "yes" : "no";
-    const cost = dollars(p.market_exposure_dollars) || dollars(p.total_traded_dollars) || 0;
+    const cost = positionCost(p, count);
     if (!(cost > 0)) continue;
     const legs = (m.mve_selected_legs || []).map(l => { const lm = mkts[l.market_ticker] || {}; const b = dollars(l.side === "no" ? lm.no_bid_dollars : lm.yes_bid_dollars) || dollars(lm.last_price_dollars);
       return { ticker: l.market_ticker, side: l.side === "no" ? "no" : "yes", name: lm.yes_sub_title || l.market_ticker, title: lm.title || "", close: lm.close_time || lm.expected_expiration_time || null, price: b > 0 && b < 1 ? b : null }; });
-    out.push({ ticker: p.ticker, side, count: Math.round(count * 100) / 100, cost: Math.round(Math.min(cost, count) * 100) / 100, combo: legs.length > 0, legs, name: m.yes_sub_title || p.ticker, title: m.title || "", close: m.close_time || m.expected_expiration_time || null, since: p.last_updated_ts || null });
+    out.push({ ticker: p.ticker, side, count: Math.round(count * 100) / 100, cost, combo: legs.length > 0, legs, name: m.yes_sub_title || p.ticker, title: m.title || "", close: m.close_time || m.expected_expiration_time || null, since: p.last_updated_ts || null });
   }
   return out;
+}
+// what an open position cost, fees included: the dollars at the fill prices (Kalshi's market_exposure) plus the fees
+// paid to buy it. With nothing sold yet, fees_paid is exactly the buying fees; once some has been sold it also holds
+// selling fees, so the buying fees on what's left are estimated and never more than what was paid.
+export function positionCost(p, count) {
+  const base = dollars(p.market_exposure_dollars) || dollars(p.total_traded_dollars) || 0;
+  if (!(base > 0) || !(count > 0)) return 0;
+  const paid = dollars(p.fees_paid_dollars) || 0, sold = Math.abs(dollars(p.realized_pnl_dollars) || 0) > 1e-9;
+  const fee = sold ? Math.min(paid, feeEstimate(count, Math.min(0.99, base / count))) : paid;
+  return Math.round(Math.min(base + fee, count) * 100) / 100;
 }
 
 // ---------- the key: imported once into this browser, never readable again ----------

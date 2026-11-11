@@ -6,7 +6,7 @@ import { fitPower, marketScores, dcTau, applyKeyNumbers, logitPool } from "./pow
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, syncPayload, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, syncPayload, comboCost, fillTotals, buyYesContracts, sellYesContracts, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
@@ -3670,6 +3670,18 @@ async function kalshiCall(rec, method, sub, body) {
   }
   return j;
 }
+// What Kalshi actually filled for one order (GET portfolio/fills): the record a slip keeps is this, never a quote's
+// numbers. Fills land a moment after an order executes, so it's read a few times; null if Kalshi never lists them.
+async function kalshiFilled(kal, orderId, side = "yes", tries = 6) {
+  if (!orderId) return null;
+  for (let i = 0; i < tries; i++) {
+    const j = await kalshiCall(kal, "GET", `portfolio/fills?order_id=${encodeURIComponent(orderId)}&limit=100`).catch(() => null);
+    const t = fillTotals((j?.fills || []).filter(f => !f.order_id || f.order_id === orderId), side);
+    if (t) return t;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return null;
+}
 // ---- SYNC: every open position on this person's Kalshi (bought here or in the Kalshi app) becomes a ticket ----
 // Runs on this device with their own key: reads the positions, looks up each market (and a combo's legs) on Kalshi's
 // public data, and hands the site what it needs. A synced ticket that's no longer open was either settled (it grades
@@ -3963,8 +3975,11 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
       const o = await kalshiCall(kal, "POST", "portfolio/events/orders", { ticker: k.ticker, side: k.side === "yes" ? "bid" : "ask", count: size.count.toFixed(2), price: yesPrice.toFixed(2), time_in_force: "fill_or_kill", self_trade_prevention_type: "taker_at_cross", client_order_id: crypto.randomUUID() });
       const filled = parseFloat(o.fill_count || "0");
       if (!(filled > 0)) { setSt({ step: "failed", msg: "The price moved before it filled, so nothing was bought. Review the new price and try again." }); return; }
-      const avgYes = parseFloat(o.average_fill_price || yesPrice), paid = k.side === "yes" ? avgYes : 1 - avgYes;
-      onDone({ cost: Math.round(filled * paid * 100) / 100, legOdds: [priceToAm(paid)], kalshi: { env: kal.env, orders: [{ ticker: k.ticker, side: k.side, count: filled, price: paid, order_id: o.order_id, filled }] }, summary: `Bought ${filled} ${k.side.toUpperCase()} at ${cents(paid)} on Kalshi.` });
+      const avgYes = parseFloat(o.average_fill_price || yesPrice), paid0 = k.side === "yes" ? avgYes : 1 - avgYes;
+      // the slip keeps what Kalshi actually filled and charged (fees included), read back from the fills
+      const real = await kalshiFilled(kal, o.order_id, k.side), n = real?.count || filled, paid = real?.price || paid0;
+      const cost = real ? real.total : Math.round((n * paid + feeEstimate(n, paid)) * 100) / 100;
+      onDone({ cost, legOdds: [priceToAm(paid)], kalshi: { env: kal.env, dec: n / cost, orders: [{ ticker: k.ticker, side: k.side, count: n, price: paid, order_id: o.order_id, filled: n }] }, summary: `Bought ${n} ${k.side.toUpperCase()} at ${cents(paid)} on Kalshi for ${kalshiMoney(cost)} with the fee.` });
     } catch (e) { setSt({ step: "failed", msg: e.message }); }
   };
   // ---- combos: Kalshi prices them through market makers (an RFQ). The ask goes out as soon as this review opens and stays
@@ -4008,7 +4023,7 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
   // one tap: buy the live quote; if a maker backs out in the 3-second window, take the next one at that price or better
   const buyCombo = async () => {
     const want = live.current;
-    if (!want) return;
+    if (!want || comboCost(want.best, stake)?.over) return;
     const cap = want.best.price, tried = new Set();
     buying.current = true; setSt({ step: "accepting" });
     try {
@@ -4021,6 +4036,7 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
           await sleep(500);
           rfq = rfqRef.current || rfq;
           pick = bestComboQuote((await kalshiCall(kal, "GET", quotesPath(rfq)).catch(() => ({ quotes: [] }))).quotes, { maxPrice: cap, skip: tried });
+          if (pick && comboCost(pick, stake)?.over) { tried.add(pick.quote.id); pick = null; }       // never more than the slip says
           continue;
         }
         tried.add(pick.quote.id);
@@ -4030,9 +4046,14 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
           await sleep(600);
           const mine = ((await kalshiCall(kal, "GET", quotesPath(rfq)).catch(() => ({ quotes: [] }))).quotes || []).find(x => x.id === pick.quote.id);
           if (mine?.status === "executed") {
-            const nC = parseFloat(mine.yes_contracts_fp || mine.no_contracts_fp || mine.contracts_fp || pick.contracts || 0), price = 1 - parseFloat(mine.no_bid_dollars || pick.quote.no_bid_dollars);
+            // the slip keeps what Kalshi actually filled and charged (fees included): the fills for this buy's own order.
+            // If Kalshi doesn't list them yet, the size of the side that was bought (the maker's NO side), never the other.
+            const qPrice = 1 - parseFloat(mine.no_bid_dollars || pick.quote.no_bid_dollars);
+            const real = await kalshiFilled(kal, mine.rfq_creator_order_id, "yes");
+            const nC = real?.count || buyYesContracts(mine) || pick.contracts || comboCost({ price: qPrice }, stake)?.contracts || 0, price = real?.price || qPrice;
+            const cost = real ? real.total : Math.round((nC * price + feeEstimate(nC, price)) * 100) / 100;
             rfqRef.current = null;
-            onDone({ cost: Math.round(nC * price * 100) / 100, legOdds: plan.map(p => p.k.am), kalshi: { env: kal.env, dec: 1 / price, orders: [], combo: { market_ticker: want.market, collection: want.coll, rfq_id: rfq, quote_id: mine.id, price, contracts: nC } }, summary: `Combo bought on Kalshi: ${nC} YES at ${cents(price)}.` });
+            onDone({ cost, legOdds: plan.map(p => p.k.am), kalshi: { env: kal.env, dec: nC / cost, orders: [], combo: { market_ticker: want.market, collection: want.coll, rfq_id: rfq, quote_id: mine.id, price, contracts: nC } }, summary: `Combo bought on Kalshi: ${nC} YES at ${cents(price)} for ${kalshiMoney(cost)} with the fee. Pays ${kalshiMoney(nC)} if every leg wins.` });
             return;
           }
           if (!mine || mine.status === "cancelled") break;
@@ -4043,6 +4064,7 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
     } catch (e) { setSt({ step: "failed", msg: e.message }); }
     finally { buying.current = false; }
   };
+  const cc = q ? comboCost(q.best, stake) : null;
   const row = (a, b, c) => <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, padding: "5px 0", borderTop: `1px solid ${T.line}`, fontSize: 12 }}><span style={{ color: T.dim }}>{a}</span><span style={{ fontFamily: F.d, color: c || T.ink, textAlign: "right" }}>{b}</span></div>;
   const big = (on, txt, fn, c = T.chrome) => <button onClick={fn} disabled={!on} style={{ width: "100%", marginTop: 10, padding: 13, border: `1px solid ${on ? c : T.line}`, background: on ? `${c}33` : "none", color: on ? "#fff" : T.faint, fontFamily: F.d, fontSize: 12, letterSpacing: 2, cursor: on ? "pointer" : "not-allowed" }}>{txt}</button>;
   return <div style={{ marginTop: 12, border: `1px solid ${NEON.teal}88`, background: "rgba(23,242,208,.05)", padding: 12 }}>
@@ -4055,14 +4077,16 @@ function KalshiReview({ kal, plan, stake, onDone, onCancel }) {
       {fund && !fund.err && !fund.covered && <div style={{ marginTop: 8, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>Not enough cash in your Kalshi account: {kalshiMoney(fund.total)} available, this needs {kalshiMoney(fund.need)} with the fee.</div>}
     </div>}
     {!straight && (st.step === "review" || st.step === "accepting") && <div style={{ marginTop: 8 }}>
-      {row("Combo price", q ? `${cents(q.best.price)} (${fmtAm(q.best.am)})` : "asking Kalshi…", q ? undefined : T.dim)}{row("Contracts", q?.best.contracts ? q.best.contracts.toFixed(2) : "—")}{row("Pays if every leg wins", q?.best.contracts ? kalshiMoney(q.best.contracts) : "—", NEON.green)}
-      <div style={{ fontSize: 11, color: T.faint, marginTop: 6, lineHeight: 1.5 }}>{q ? `Live from Kalshi's market makers, refreshed every second. ${kalshiMoney(stake)} is the most it costs, fees included.` : waited >= 15 ? "No Kalshi market maker has priced this combo yet. Still asking every second; nothing is bought until you confirm." : "Kalshi prices combos through market makers. Getting the price…"}</div>
+      {row("Combo price", q ? `${cents(q.best.price)} (${fmtAm(q.best.am)})` : "asking Kalshi…", q ? undefined : T.dim)}{row("Contracts", cc ? `${cc.est ? "about " : ""}${cc.contracts.toFixed(2)}` : "—")}{row("Cost", cc ? kalshiMoney(cc.cost) : "—")}{row("Kalshi fee (est.)", cc ? kalshiMoney(cc.fee) : "—")}{row("You pay", cc ? kalshiMoney(cc.total) : "—", cc?.over ? NEON.red : "#fff")}{row("Pays if every leg wins", cc ? kalshiMoney(cc.payout) : "—", NEON.green)}
+      {cc?.over && <div style={{ marginTop: 8, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>Kalshi's quote would cost {kalshiMoney(cc.total)}, more than the {kalshiMoney(stake)} on this slip, so it can't be bought. Still asking for one that fits.</div>}
+      {cc?.short && <div style={{ fontSize: 12, color: NEON.gold, marginTop: 6, lineHeight: 1.5 }}>Kalshi's quote covers {kalshiMoney(cc.total)} of the {kalshiMoney(stake)} on this slip. Confirming buys {kalshiMoney(cc.total)}.</div>}
+      <div style={{ fontSize: 11, color: T.faint, marginTop: 6, lineHeight: 1.5 }}>{q ? `Live from Kalshi's market makers, refreshed every second. The slip records what Kalshi actually fills, read back from your account.` : waited >= 15 ? "No Kalshi market maker has priced this combo yet. Still asking every second; nothing is bought until you confirm." : "Kalshi prices combos through market makers. Getting the price…"}</div>
       {st.note && <div style={{ fontSize: 12, color: NEON.gold, marginTop: 6, lineHeight: 1.5 }}>{st.note}</div>}
     </div>}
     {st.step === "failed" && <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #FF335566", background: "rgba(255,51,85,.08)", fontSize: 12, color: "#FF8095", lineHeight: 1.5 }}>{st.msg}</div>}
     {st.step === "sending" && st.what && <div style={{ fontSize: 12, color: T.dim, marginTop: 8 }}>{st.what}</div>}
-    {straight && (st.step === "review" || st.step === "sending") && big(st.step === "review" && !(fund && !fund.err && !fund.covered), st.step === "sending" ? "SENDING TO KALSHI…" : `CONFIRM: BUY ON KALSHI FOR ${kalshiMoney(size?.cost || 0)}`, buyStraight, NEON.teal)}
-    {!straight && (st.step === "review" || st.step === "accepting") && big(st.step === "review" && !!q, st.step === "accepting" ? "BUYING ON KALSHI…" : q ? `CONFIRM: BUY THE COMBO AT ${cents(q.best.price)}` : "GETTING KALSHI'S PRICE…", buyCombo, NEON.teal)}
+    {straight && (st.step === "review" || st.step === "sending") && big(st.step === "review" && !(fund && !fund.err && !fund.covered), st.step === "sending" ? "SENDING TO KALSHI…" : `CONFIRM: BUY ON KALSHI FOR ${kalshiMoney(need)}`, buyStraight, NEON.teal)}
+    {!straight && (st.step === "review" || st.step === "accepting") && big(st.step === "review" && !!cc && !cc.over, st.step === "accepting" ? "BUYING ON KALSHI…" : cc ? `CONFIRM: BUY THE COMBO FOR ${kalshiMoney(cc.total)}` : "GETTING KALSHI'S PRICE…", buyCombo, NEON.teal)}
     {st.step === "failed" && big(true, "TRY AGAIN", () => { rfqRef.current = null; setQ(null); setSt({ step: "review" }); setRound(r => r + 1); })}
     <button onClick={onCancel} disabled={st.step === "sending" || st.step === "accepting"} style={{ width: "100%", marginTop: 8, padding: 10, border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 11, letterSpacing: 2, cursor: "pointer" }}>CANCEL</button>
   </div>;
@@ -4167,7 +4191,7 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
       </div>; })}
     </div>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}` }}>
-      <span style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Bet <b style={{ color: T.ink }}>{cash(sl.stake)}</b>{sl.status === "pending" ? <> · to win <b style={{ color: NEON.green }}>{cash(sl.stake * (amToDec(sl.odds) - 1))}</b></> : sl.status === "won" ? <> · won <b style={{ color: NEON.green }}>{cash(sl.profit)}</b></> : sl.status === "lost" ? <> · lost <b style={{ color: NEON.red }}>{cash(sl.stake)}</b></> : sl.status === "cashed" ? <> · cashed out <b style={{ color: NEON.gold }}>{cash(sl.stake + sl.profit)}</b> <span style={{ color: sl.profit > 0 ? NEON.green : sl.profit < 0 ? NEON.red : T.dim }}>({sCash(sl.profit)})</span></> : " · refunded"}</span>
+      <span style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Bet <b style={{ color: T.ink }}>{cash(sl.stake)}</b>{sl.status === "pending" ? <> · to win <b style={{ color: NEON.green }}>{cash(sl.stake * ((sl.kalshi?.dec > 1 ? sl.kalshi.dec : amToDec(sl.odds)) - 1))}</b></> : sl.status === "won" ? <> · won <b style={{ color: NEON.green }}>{cash(sl.profit)}</b></> : sl.status === "lost" ? <> · lost <b style={{ color: NEON.red }}>{cash(sl.stake)}</b></> : sl.status === "cashed" ? <> · cashed out <b style={{ color: NEON.gold }}>{cash(sl.stake + sl.profit)}</b> <span style={{ color: sl.profit > 0 ? NEON.green : sl.profit < 0 ? NEON.red : T.dim }}>({sCash(sl.profit)})</span></> : " · refunded"}</span>
       {canTakeBack && open && !sl.kalshi ? <button onClick={onTakeBack} style={{ background: "none", border: `1px solid ${T.line}`, color: T.dim, fontFamily: F.m, fontSize: 10, padding: "4px 8px", cursor: "pointer", whiteSpace: "nowrap" }}>take back</button> : <span/>}
     </div>
     {foot}
@@ -4324,9 +4348,10 @@ function CashOut({ sl, kal, onCashed }) {
           await new Promise(r => setTimeout(r, 600));
           const q = ((await kalshiCall(kal, "GET", quotesPath(want.rfq)).catch(() => ({ quotes: [] }))).quotes || []).find(x => x.id === pick.quote.id);
           if (q?.status === "executed") {
-            const n = parseFloat(q.yes_contracts_fp || q.contracts_fp || want.count), p = parseFloat(q.yes_bid_dollars);
+            const real = await kalshiFilled(kal, q.rfq_creator_order_id, "yes");
+            const n = real?.count || sellYesContracts(q) || want.count, p = real?.price || parseFloat(q.yes_bid_dollars);
             rfq.current = null;
-            await settle(Math.round((n * p - feeEstimate(n, p)) * 100) / 100, { how: "rfq", quote_id: q.id, price: p, count: n });
+            await settle(real ? real.net : Math.round((n * p - feeEstimate(n, p)) * 100) / 100, { how: "rfq", quote_id: q.id, price: p, count: n });
             return;
           }
           if (!q || q.status === "cancelled") break;

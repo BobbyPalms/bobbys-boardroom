@@ -266,6 +266,54 @@ check("someone else can't sync into your account (it's per login)", (await call(
   check("turned off: gone from the server, its key id handed back to delete on Kalshi", off.j.on === false && off.j.keyId === "ro-key-123456" && !db.prepare("SELECT * FROM sync_keys WHERE email='kim@x.com'").get());
   delete env.SYNC_SECRET; delete env.SYNC_INLINE; globalThis.__kx = null;
 }
+// ---- a ticket placed here is held to the Kalshi position (the Nov 11 ticket: recorded as 55.25 contracts / $6.57
+// when Kalshi filled 395.56 for $49.97, then 356.01 more were bought in the Kalshi app) ----
+{
+  await call("rec@x.com", "POST", "me", { username: "Recon" });
+  const comboLegs = [legNBA("Lakers ML", "401", "ml", "away", null, "-150"), legNBA("76ers ML", "402", "ml", "away", null, "-110")];
+  const T1 = "KXMVECROSSCATEGORY-S2026UB23-Z4SA", age = (id, ms) => db.prepare("UPDATE slips SET created=? WHERE id=?").run(new Date(Date.now() - ms).toISOString(), id);
+  for (const id of ["401", "402"]) Object.assign(games[id], { state: "pre", date: new Date(Date.now() + 3 * 3600e3).toISOString(), as: "", hs: "" });
+  const wrong = (await call("rec@x.com", "POST", "slips", { stake: 6.57, legs: comboLegs, kalshi: { env: "live", dec: 1 / 0.119, combo: { market_ticker: T1, rfq_id: "r9", quote_id: "q9", price: 0.119, contracts: 55.25 } } })).j.slip;
+  const P = (count, cost) => [{ ticker: T1, side: "yes", count, cost, combo: true, legs: [] }];
+  let r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: P(751.57, 94.95) });
+  check("just placed (under a minute): left alone while the fill lands", r.j.updated === 0 && r.j.added === 0 && r.j.gone.length === 0, r.j);
+  age(wrong.id, 5 * 60000);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: P(751.57, 94.95) });
+  const fixed = (await call("rec@x.com", "GET", "slips")).j.slips.find(x => x.id === wrong.id);
+  check("the ticket follows Kalshi: $94.95 on 751.57 contracts, not a second ticket", r.j.updated === 1 && r.j.added === 0 && fixed.stake === 94.95 && fixed.kalshi.combo.contracts === 751.57 && fixed.legs.length === 2 && fixed.legs[0].pick === "Lakers ML", { r: r.j, fixed });
+  check("its odds are what it really pays (bet x odds = contracts)", Math.abs(fixed.stake * fixed.kalshi.dec - 751.57) < 0.005 && fixed.odds === 692, [fixed.odds, fixed.kalshi.dec]);
+  check("what was first recorded is kept on the ticket", fixed.kalshi.placed.stake === 6.57 && fixed.kalshi.placed.contracts === 55.25 && !!fixed.kalshi.matched && fixed.kalshi.combo.quote_id === "q9", fixed.kalshi);
+  const seenBy = (await call("bob@x.com", "GET", "tickets/live")).j.tickets.find(x => x.id === wrong.id);
+  check("everyone sees the real size (and nothing about the order)", seenBy.stake === 94.95 && seenBy.kalshi.count === 751.57 && seenBy.kalshi.dec > 7.9 && !JSON.stringify(seenBy).includes("q9"), seenBy.kalshi);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: P(751.57, 94.95) });
+  check("already matching: nothing written", r.j.updated === 0);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: P(751.57, 94.96) });
+  check("a cent of rounding isn't a change", r.j.updated === 0);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: P(400, 50.5) });
+  check("sold some in the app: the ticket follows down too", r.j.updated === 1 && (x => x.stake === 50.5 && x.kalshi.combo.contracts === 400 && x.kalshi.placed.stake === 6.57)((await call("rec@x.com", "GET", "slips")).j.slips.find(x => x.id === wrong.id)));
+  check("cash-out fits the real size now ($80 on 400 contracts)", (await call("rec@x.com", "POST", `slips/${wrong.id}/cashout`, { proceeds: 80, sale: { how: "order" } })).j.slip?.profit === 29.5);
+  // a straight placed here, then two tickets on one market
+  const T2 = "KXNBAGAME-26NOV12LALBOS-LAL";
+  const st1 = (await call("rec@x.com", "POST", "slips", { stake: 10, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "-150")], kalshi: { env: "live", orders: [{ ticker: T2, side: "yes", count: 16.66, price: 0.6, order_id: "o-21", filled: 16.66 }] } })).j.slip;
+  const st2 = (await call("rec@x.com", "POST", "slips", { stake: 20, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "-150")], kalshi: { env: "live", orders: [{ ticker: T2, side: "yes", count: 33.34, price: 0.6, order_id: "o-22", filled: 33.34 }] } })).j.slip;
+  age(st1.id, 5 * 60000);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [{ ticker: T2, side: "yes", count: 100, cost: 61.5 }] });
+  check("one of the tickets on that market is new: none touched yet", r.j.updated === 0);
+  age(st2.id, 5 * 60000);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [{ ticker: T2, side: "yes", count: 50, cost: 30 }] });
+  check("two tickets that add up to the position: nothing written", r.j.updated === 0 && r.j.gone.length === 0, r.j);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [{ ticker: T2, side: "yes", count: 100, cost: 61.5 }] });
+  const two = (await call("rec@x.com", "GET", "slips")).j.slips.filter(x => [st1.id, st2.id].includes(x.id)).sort((a, b) => a.stake - b.stake);
+  check("two tickets on one market share the position by their size, adding up exactly", r.j.updated === 2 && two[0].kalshi.orders[0].filled === 33.32 && two[1].kalshi.orders[0].filled === 66.68 && Math.round((two[0].stake + two[1].stake) * 100) === 6150 && two[0].stake === 20.49 && two[0].kalshi.orders[0].order_id === "o-21", two.map(x => [x.stake, x.kalshi.orders[0].filled]));
+  check("a NO position on a market held as YES here isn't mixed in", (await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [{ ticker: T2, side: "yes", count: 100, cost: 61.5 }, { ticker: T2, side: "no", count: 5, cost: 2 }] })).j.updated === 0);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "demo", positions: [] });
+  check("another Kalshi environment's sync doesn't touch live tickets", r.j.gone.length === 0 && r.j.updated === 0);
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [] });
+  check("no longer open on Kalshi: reported back to be checked and cashed (sold in the app)", r.j.gone.length === 2 && r.j.gone.every(g => g.ticker === T2 && g.side === "yes" && g.stake > 0), r.j.gone);
+  const st3 = (await call("rec@x.com", "POST", "slips", { stake: 5, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-110")], kalshi: { env: "live", orders: [{ ticker: "KXNBAGAME-26NOV12PHIDET-PHI", side: "yes", count: 9, price: 0.52, order_id: "o-23", filled: 9 }] } })).j.slip;
+  r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [{ ticker: T2, side: "yes", count: 100, cost: 61.5 }] });
+  check("a ticket placed moments ago is never reported as gone", !r.j.gone.some(g => g.id === st3.id), r.j.gone);
+}
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
 function decToAmLocal(list) { const d = list.reduce((a, o) => a * (o > 0 ? 1 + o / 100 : 1 + 100 / -o), 1); return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }

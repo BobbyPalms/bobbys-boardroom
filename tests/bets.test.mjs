@@ -95,5 +95,8 @@ check("read by format", readOddsAs("-120", "am") === -120 && readOddsAs("54", "p
 const tl = legFromRow(rows[0], { market: "spread", side: "home", line: -4 });
 check("tail leg = typed leg", JSON.stringify(tl) === JSON.stringify({ ...R("Celtics -4").leg }), [tl, R("Celtics -4").leg]);
 check("tail leg: ML carries no line", legFromRow(rows[2], { market: "ml", side: "away", line: 5 }).line === null && legLabel(legFromRow(rows[2], { market: "ml", side: "away" })) === "Real Madrid ML");
+// a Kalshi ticket pays its contracts: bet (fees in) x its own odds = contracts, for straights and combos alike
+check("Kalshi ticket: wins what the contracts pay over what was paid ($751.57 - $94.95)", settleSlip({ stake: 94.95, kalshi: { dec: 751.57 / 94.95 }, legs: [{ res: "W", odds: -178 }, { res: "W", odds: -223 }, { res: "W", odds: 223 }, { res: "W", odds: -733 }] }).profit === 656.62);
+check("Kalshi straight with its own price: same rule", settleSlip({ stake: 9.99, kalshi: { dec: 16.2 / 9.99 }, legs: [{ res: "W", odds: -150 }] }).profit === 6.21);
 console.log(`bets: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

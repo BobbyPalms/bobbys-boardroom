@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateKeyPairSync, verify, constants, webcrypto } from "crypto";
-import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, comboEstimate, syncPayload, readPem, importKey, signHeaders } from "../src/kalshi.js";
+import { seriesFor, mapLeg, findGameEvent, sizeOrder, priceToAm, feeEstimate, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, comboEstimate, syncPayload, comboCost, fillTotals, buyYesContracts, sellYesContracts, positionCost, readPem, importKey, signHeaders } from "../src/kalshi.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const K = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "kalshi_events.json"), "utf8"));
@@ -47,7 +47,8 @@ check("a league Kalshi doesn't carry", !mapLeg({ sport: "Soccer", league: "fifa.
 // ---- money ----
 check("price to American", priceToAm(0.56) === -127 && priceToAm(0.45) === 122 && priceToAm(0.5) === 100 && priceToAm(1) === null);
 const s = sizeOrder(10, 0.56);
-check("sizing: $10 at 56¢ is 17.85 contracts, costs $10.00, pays $17.85", s.count === 17.85 && s.cost === 10 && s.payout === 17.85 && s.fee === feeEstimate(17.85, 0.56) && s.fee > 0.3 && s.fee < 0.32, s);
+check("sizing: $10 at 56¢ is 17.32 contracts: $9.70 + 30¢ fee = the $10 asked, pays $17.32", s.count === 17.32 && s.cost === 9.7 && s.fee === 0.3 && s.payout === 17.32 && s.profit === 7.32, s);
+check("sizing: cost + fee never comes to more than the amount asked (every price, odd amounts)", [0.03, 0.119, 0.25, 0.5, 0.56, 0.77, 0.97].every(p => [1, 7.77, 50, 250].every(st => { const z = sizeOrder(st, p); return z && z.cost + z.fee <= st + 1e-9 && z.cost + z.fee > st * 0.97 - 0.03; })));
 check("fee rounds up to the cent", feeEstimate(1, 0.5) === 0.02);
 
 // ---- combos ----
@@ -56,14 +57,33 @@ check("combo: the sports collection holding every leg", coll && /KXMVESPORTSMULT
 const bq = bestComboQuote([{ id: "a", status: "open", yes_bid_dollars: "0.10", no_bid_dollars: "0.78", yes_contracts_fp: "45.00" }, { id: "b", status: "open", yes_bid_dollars: "0.12", no_bid_dollars: "0.81", yes_contracts_fp: "52.00" }, { id: "c", status: "cancelled", no_bid_dollars: "0.95" }]);
 check("combo quote: best YES price is the highest NO bid (1 - 0.81 = 19¢)", bq.quote.id === "b" && bq.price === 0.19 && bq.am === 426, bq);
 check("no quotes", bestComboQuote([]) === null);
-const qs3 = [{ id: "a", status: "open", no_bid_dollars: "0.78", yes_contracts_fp: "45.00" }, { id: "b", status: "open", no_bid_dollars: "0.81", yes_contracts_fp: "52.00" }];
+// the quote Kalshi really sent for a $50 combo at 11.9¢ (Nov 11): one size per side. Buying YES fills the maker's NO
+// side (395.56); yes_contracts_fp (55.25) is the size of the other side and was once read as the size bought.
+const realQ = { id: "7797", status: "open", contracts_fp: "0.00", no_bid_dollars: "0.8810", no_contracts_fp: "395.56", yes_bid_dollars: "0.1020", yes_contracts_fp: "55.25", rfq_target_cost_dollars: "50.0000" };
+const rb = bestComboQuote([realQ]), rc = comboCost(rb, 50);
+check("combo size: the side being bought (395.56), never the other side's 55.25", rb.price === 0.119 && rb.contracts === 395.56 && buyYesContracts(realQ) === 395.56, rb);
+check("combo cost: 395.56 x 11.9¢ = $47.07 + $2.91 fee = $49.98 of the $50 asked, pays $395.56", rc.cost === 47.07 && rc.fee === 2.91 && rc.total === 49.98 && rc.payout === 395.56 && !rc.over && !rc.short && !rc.est, rc);
+check("a quote that would cost more than the slip is flagged (never bought)", comboCost({ price: 0.119, contracts: 500 }, 50).over === true);
+check("a quote covering well under the amount is flagged short, with its real total", (x => x.short && !x.over && x.total === 6.98)(comboCost({ price: 0.119, contracts: 55.25 }, 50)));
+check("a quote with no size: worked out from the dollars asked, marked as an estimate", (x => x.est && x.total <= 50 && x.total > 49.9 && Math.abs(x.contracts - 395.6) < 0.3)(comboCost({ price: 0.119, contracts: null }, 50)));
+check("selling: the count asked for, not a zero placeholder", sellYesContracts({ contracts_fp: "40.00", yes_contracts_fp: "0.00" }) === 40 && sellYesContracts({ contracts_fp: "0.00", yes_contracts_fp: "12.50" }) === 12.5 && sellYesContracts({}) === null);
+// what Kalshi filled (the real fills behind that ticket: the buy on the site, then more bought in the Kalshi app)
+const fl = [{ count_fp: "356.01", yes_price_dollars: "0.1190", no_price_dollars: "0.8810", fee_cost: "2.612710", order_id: "o2" }, { count_fp: "395.56", yes_price_dollars: "0.1190", no_price_dollars: "0.8810", fee_cost: "2.902960", order_id: "o1" }];
+check("fills for one order: contracts, dollars, fee, total out of the account", (x => x.count === 395.56 && x.gross === 47.07 && x.fee === 2.9 && x.total === 49.97 && Math.abs(x.price - 0.119) < 1e-9)(fillTotals(fl.filter(f => f.order_id === "o1"))), fillTotals(fl.filter(f => f.order_id === "o1")));
+check("fills: NO side reads the NO price; nothing filled = null", fillTotals([fl[0]], "no").gross === 313.64 && fillTotals([]) === null && fillTotals([{ count_fp: "0.00", yes_price_dollars: "0.5" }]) === null);
+check("a sale's fills: what came back after the fee", fillTotals([{ count_fp: "100.00", yes_price_dollars: "0.2500", fee_cost: "1.3125" }]).net === 23.69);
+const realPos = { ticker: "C", position_fp: "751.57", market_exposure_dollars: "89.436830", total_traded_dollars: "89.436830", fees_paid_dollars: "5.515670", realized_pnl_dollars: "0.000000" };
+check("a position's cost is what left the account: exposure + fees ($89.44 + $5.52 = $94.95)", positionCost(realPos, 751.57) === 94.95);
+check("after selling some, buying fees on what's left are estimated, never more than was paid", positionCost({ market_exposure_dollars: "20.00", fees_paid_dollars: "3.00", realized_pnl_dollars: "4.10" }, 40) === 20.7 && positionCost({ market_exposure_dollars: "20.00", fees_paid_dollars: "0.10", realized_pnl_dollars: "-1" }, 40) === 20.1);
+const qs3 = [{ id: "a", status: "open", no_bid_dollars: "0.78", no_contracts_fp: "45.00" }, { id: "b", status: "open", no_bid_dollars: "0.81", no_contracts_fp: "52.00" }];
 check("never pays more than the price you confirmed", bestComboQuote(qs3, { maxPrice: 0.20 }).quote.id === "b" && bestComboQuote(qs3, { maxPrice: 0.18 }) === null);
 check("a quote already tried is skipped", bestComboQuote(qs3, { skip: new Set(["b"]) }).quote.id === "a");
 check("quotes are asked for with rfq_user_filter=self (Kalshi refuses rfq_id alone)", quotesPath("ae03d6d6-ec0b") === "communications/quotes?rfq_user_filter=self&rfq_id=ae03d6d6-ec0b");
 // ---- syncing positions from the Kalshi app ----
-const spl = syncPayload([{ ticker: "A", position_fp: "-20.00", market_exposure_dollars: "8.400000", last_updated_ts: "2026-11-09T23:00:00Z" }, { ticker: "C", position_fp: "50.00", market_exposure_dollars: "9.5" }, { ticker: "Z", position_fp: "0.00", market_exposure_dollars: "1" }],
+const spl = syncPayload([{ ticker: "A", position_fp: "-20.00", market_exposure_dollars: "8.400000", last_updated_ts: "2026-11-09T23:00:00Z" }, { ticker: "C", position_fp: "50.00", market_exposure_dollars: "9.5", fees_paid_dollars: "0.54" }, { ticker: "Z", position_fp: "0.00", market_exposure_dollars: "1" }],
   { A: { yes_sub_title: "Buffalo", title: "Buffalo at Minnesota", close_time: "2026-11-10T04:00:00Z" }, C: { title: "combo", mve_selected_legs: [{ market_ticker: "L1", side: "yes" }, { market_ticker: "L2", side: "no" }] }, L1: { yes_sub_title: "Dalton Kincaid: 20+", yes_bid_dollars: "0.70" }, L2: { yes_sub_title: "Buffalo wins by over 6.5", no_bid_dollars: "0.55" } });
 check("sync payload: NO = negative position, cost from exposure, flat positions skipped", spl.length === 2 && spl[0].side === "no" && spl[0].count === 20 && spl[0].cost === 8.4 && spl[0].name === "Buffalo" && spl[0].since === "2026-11-09T23:00:00Z" && !spl[0].combo, spl[0]);
+check("sync payload: the cost includes the fees paid to buy it", spl[1].cost === 10.04, spl[1].cost);
 check("sync payload: a combo carries its legs with their sides and prices", spl[1].combo && spl[1].legs.length === 2 && spl[1].legs[0].name === "Dalton Kincaid: 20+" && spl[1].legs[0].price === 0.7 && spl[1].legs[1].side === "no" && spl[1].legs[1].price === 0.55, spl[1]);
 // ---- cashing out ----
 check("someone's combo: estimate = each leg's bid multiplied", comboEstimate([{ side: "yes", market: { yes_bid_dollars: "0.50" } }, { side: "no", market: { no_bid_dollars: "0.40" } }]) === 0.2 && comboEstimate([{ side: "yes", market: { yes_bid_dollars: "0" } }]) === null && comboEstimate([]) === null);

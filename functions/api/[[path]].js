@@ -76,7 +76,7 @@ const rowToSlip = r => ({ id: r.id, created: r.created, stake: r.stake, odds: r.
 function publicKalshi(k) {
   const o = (k.orders || [])[0], mkt = k.combo ? k.combo.market_ticker : o?.ticker || null;
   const count = k.combo ? Number(k.combo.contracts) || 0 : (k.orders || []).filter(x => x.ticker === mkt).reduce((a, x) => a + (Number(x.filled) || 0), 0);
-  return { env: k.env, combo: !!k.combo, imported: !!k.imported, mkt, side: k.combo ? "yes" : o?.side === "no" ? "no" : "yes", count: Math.round(count * 100) / 100 };
+  return { env: k.env, combo: !!k.combo, imported: !!k.imported, mkt, side: k.combo ? "yes" : o?.side === "no" ? "no" : "yes", count: Math.round(count * 100) / 100, dec: k.dec > 1 ? k.dec : null };
 }
 const publicSlip = (s, mine) => (mine || !s.kalshi ? s : { ...s, kalshi: publicKalshi(s.kalshi) });
 
@@ -237,28 +237,52 @@ export function kalshiResult(m, side = "yes") {
 }
 
 // ---------- syncing: every open Kalshi position becomes a ticket here, wherever it was bought ----------
-// The page reads the positions with the person's own key (never sent here) and posts them. A position already tracked
-// by a slip placed on this site is left alone; one bought elsewhere (the Kalshi app) becomes a "synced" ticket and is
-// kept up to date (bought more, sold some). Synced tickets grade on Kalshi's own result like any Kalshi leg.
+// The page reads the positions with the person's own key (never sent here) and posts them. Kalshi's position is the
+// truth for every pending Kalshi ticket: one bought elsewhere (the Kalshi app) becomes a "synced" ticket, and a ticket
+// placed on this site is held to the position too, so its bet and contracts are always what Kalshi shows (bought more
+// in the app, sold some, or a slip that recorded the wrong size). Tickets grade on Kalshi's own result as before.
+const SYNC_FRESH = 60000;                // a slip placed in the last minute is left alone: its fill may still be landing
 async function syncKalshi(env, email, body) { return json(await syncCore(env, email, body)); }
 async function syncCore(env, email, body) {
-  const kenv = body?.env === "demo" ? "demo" : "live";
-  const str = (v, n = 140) => String(v ?? "").slice(0, n), TICK = /^[A-Z0-9][\w.-]{2,119}$/;
+  const kenv = body?.env === "demo" ? "demo" : "live", now = Date.now();
+  const str = (v, n = 140) => String(v ?? "").slice(0, n), TICK = /^[A-Z0-9][\w.-]{2,119}$/, r2 = v => Math.round(v * 100) / 100;
   const rows = (await env.DB.prepare("SELECT * FROM slips WHERE email=? AND status='pending' AND kalshi IS NOT NULL").bind(email).all()).results.map(rowToSlip);
-  const covered = new Set(), synced = new Map();
+  const covered = new Set(), synced = new Map(), mine = new Map();
+  const held = s => (s.kalshi.combo ? Number(s.kalshi.combo.contracts) || 0 : (s.kalshi.orders || []).reduce((a, o) => a + (Number(o.filled) || 0), 0));
   for (const s of rows) {
     if (s.kalshi.imported) { synced.set(`${s.kalshi.mkt}|${s.kalshi.side}`, s); continue; }
     if (s.kalshi.combo?.market_ticker) covered.add(s.kalshi.combo.market_ticker);
     for (const o of s.kalshi.orders || []) covered.add(o.ticker);
+    // a slip placed here sits on one Kalshi market and side
+    const one = publicKalshi(s.kalshi);
+    if (one.mkt && s.kalshi.env === kenv && (s.kalshi.combo || (s.kalshi.orders || []).every(o => o.ticker === one.mkt))) { const k = `${one.mkt}|${one.side}`; mine.set(k, [...(mine.get(k) || []), s]); }
   }
   const seen = new Set(), writes = [];
   let added = 0, updated = 0;
   for (const p of (Array.isArray(body?.positions) ? body.positions : []).slice(0, 100)) {
-    const ticker = str(p.ticker, 120), side = p.side === "no" ? "no" : "yes", count = Math.round(Number(p.count) * 100) / 100, cost = Math.round(Number(p.cost) * 100) / 100;
+    const ticker = str(p.ticker, 120), side = p.side === "no" ? "no" : "yes", count = r2(Number(p.count)), cost = r2(Number(p.cost));
     if (!TICK.test(ticker) || !(count > 0 && count <= 1e6) || !(cost > 0 && cost <= count)) continue;
     const key = `${ticker}|${side}`;
     seen.add(key);
-    if (covered.has(ticker)) continue;
+    if (covered.has(ticker)) {
+      // placed on this site: the ticket follows the position. Several tickets on one market share it by their size.
+      const list = mine.get(key) || [];
+      if (!list.length || list.some(s => now - Date.parse(s.created) < SYNC_FRESH)) continue;
+      const S = list.reduce((a, s) => a + held(s), 0), St = list.reduce((a, s) => a + s.stake, 0);
+      if (Math.abs(S - count) < 0.005 && Math.abs(St - cost) < 0.015) continue;
+      let leftC = count, leftS = cost;
+      list.forEach((s, i) => {
+        const last = i === list.length - 1, share = S > 0 ? held(s) / S : 1 / list.length;
+        const c = last ? r2(leftC) : r2(count * share), st = last ? r2(leftS) : r2(cost * share);
+        leftC -= c; leftS -= st;
+        if (!(c > 0 && st >= 0.01) || (Math.abs(c - held(s)) < 0.005 && Math.abs(st - s.stake) < 0.015)) return;
+        const dec = c / st, k = { ...s.kalshi, dec, placed: s.kalshi.placed || { stake: s.stake, contracts: held(s), odds: s.odds }, matched: new Date(now).toISOString() };
+        if (k.combo) k.combo = { ...k.combo, contracts: c };
+        else { const o = k.orders[0]; k.orders = [{ ...o, count: c, filled: c }]; }
+        writes.push(env.DB.prepare("UPDATE slips SET stake=?, odds=?, kalshi=? WHERE id=? AND status='pending'").bind(st, decToAm(dec), JSON.stringify(k), s.id)); updated++;
+      });
+      continue;
+    }
     const price = Math.min(0.99, Math.max(0.01, cost / count)), dec = 1 / price;
     const legsIn = p.combo && Array.isArray(p.legs) && p.legs.length ? p.legs.slice(0, 20) : [{ ticker, side, name: p.name, title: p.title, close: p.close, price }];
     const legs = legsIn.filter(l => TICK.test(str(l.ticker, 120))).map(l => {
@@ -268,7 +292,8 @@ async function syncCore(env, email, body) {
         away: { name: vs.length === 2 ? vs[0] : title, abbr: "" }, home: { name: vs.length === 2 ? vs[1] : "", abbr: "" }, res: null, live: true };
     });
     if (!legs.length) continue;
-    const odds = decToAm(dec), kalshi = { env: kenv, imported: true, mkt: ticker, side, count, dec: legs.length > 1 ? dec : null,
+    // the ticket pays its contracts: bet x dec = contracts, with the fees in the bet
+    const odds = decToAm(dec), kalshi = { env: kenv, imported: true, mkt: ticker, side, count, dec: count / cost,
       ...(legs.length > 1 ? { combo: { market_ticker: ticker, contracts: count, price } } : { orders: [{ ticker, side, count, price, order_id: null, filled: count }] }) };
     const old = synced.get(key);
     if (old) {
@@ -280,8 +305,10 @@ async function syncCore(env, email, body) {
     }
   }
   if (writes.length) await env.DB.batch(writes);
-  // synced tickets that aren't open on Kalshi any more: settled (graded here from Kalshi's result) or sold in the app
+  // tickets that aren't open on Kalshi any more: settled (graded here from Kalshi's result) or sold in the app.
+  // The caller checks each one against Kalshi (market still open, position really at zero) before cashing it.
   const gone = [...synced.entries()].filter(([k, s]) => !seen.has(k) && s.kalshi.env === kenv).map(([, s]) => ({ id: s.id, ticker: s.kalshi.mkt, side: s.kalshi.side, stake: s.stake, created: s.created }));
+  for (const [k, list] of mine) if (!seen.has(k)) for (const s of list) if (now - Date.parse(s.created) > 2 * SYNC_FRESH) gone.push({ id: s.id, ticker: k.split("|")[0], side: k.split("|")[1], stake: s.stake, created: s.created });
   return { added, updated, gone };
 }
 
