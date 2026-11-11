@@ -550,14 +550,17 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
 // The data job keeps every finished game of the season (data/results/<SPORT>.json), with its closing spread and total
 // where the lines were on file. Each league is fitted with the attack / defense model in src/power.js; a team's prior is
 // its own multi-season history (seasonPrior). The fit replaces raw points per game as the evidence in poolSide.
-// POWER [S] = walk-forward backtests on seasons the settings never saw (scratch scripts; numbers in the project doc):
-//   CBB  2022-24, 16,390 games: margin RMSE 12.20 -> 11.56; November games 14.09 -> 12.51, winner 72.9% -> 75.1%
-//   NFL  2017-26, 2,630 games:  13.18 -> 13.12 with closing lines as evidence (the closing line itself: 12.76)
-//   NBA  2018-23, 7,059 games:  13.66 -> 13.64      Soccer (ENG/ESP/ITA/GER 2013+): 1X2 log loss 0.9837 -> 0.9832
+// POWER [S] = walk-forward backtests on seasons the settings never saw (scratch scripts; numbers in the project doc),
+// with exactly these settings and the home edge held at the engine's own value:
+//   CBB  2022-24, 16,390 games: margin RMSE 12.20 -> 11.54; November games 14.09 -> 12.55, winner 72.9% -> 75.1%
+//   NFL  2017-26, 2,630 games:  13.18 -> 13.15 with closing lines as evidence, 13.15 without (the closing line: 12.76)
+//   NBA  2018-23, 7,059 games:  13.66 -> 13.63      Soccer (ENG/ESP/ITA/GER 2013+): 1X2 log loss 0.9837 -> 0.9831
+// The pro leagues are close to the noise floor (schedules are balanced, so raw rates were already fair); college is
+// where adjusting for the opponent pays.
 // xi = fade per day · pk = prior strength multiplier · mkt = results one closing line is worth (point-spread sports
 // only: a run line / puck line / handicap is not an expected margin). Sports without a backtest are [J].
 const POWER = {
-  NFL: { xi: 0.006, pk: 1, mkt: 10 }, NBA: { xi: 0.008, pk: 1, mkt: 6 }, CBB: { xi: 0, pk: 0.35, mkt: 6 }, CBBW: { xi: 0, pk: 0.35, mkt: 6 },
+  NFL: { xi: 0.006, pk: 0.6, mkt: 10 }, NBA: { xi: 0.008, pk: 1, mkt: 6 }, CBB: { xi: 0, pk: 0.35, mkt: 6 }, CBBW: { xi: 0, pk: 0.35, mkt: 6 },
   CFB: { xi: 0, pk: 0.6, mkt: 10 }, WNBA: { xi: 0.008, pk: 1, mkt: 6 }, Soccer: { xi: 0.002, pk: 1, mkt: 0 }, NHL: { xi: 0.002, pk: 1, mkt: 0 },
   MLB: { xi: 0.002, pk: 1, mkt: 0 }, HOOPS: { xi: 0.004, pk: 0.6, mkt: 6 }, GRID: { xi: 0.003, pk: 0.6, mkt: 10 },
 };
@@ -592,7 +595,10 @@ function powerLeague(sport, league) {
     const po = side("off"), pd = side("def");
     prior[id] = { o: po.m, d: pd.m, so: po.S * W.pk, sd: pd.S * W.pk };
   }
-  const fit = fitPower(games, { L: Lg, eta0: P.hfa / (2 * Lg), kEta: 40, k: P.k * W.pk, prior, xi: W.xi, mkt: W.mkt, now: Math.floor(Date.now() / 864e5) });
+  // the home edge is held at the engine's own value (kEta): early-season college schedules (strong teams at home to
+  // weak ones) would otherwise be read as a huge home edge and taken out of the home teams' ratings. Fitting it freely
+  // was no better in any backtest (CBB 11.555 free vs 11.540 held).
+  const fit = fitPower(games, { L: Lg, eta0: P.hfa / (2 * Lg), kEta: 1e9, k: P.k * W.pk, prior, xi: W.xi, mkt: W.mkt, now: Math.floor(Date.now() / 864e5) });
   fit.lines = games.filter(g => g.ms > 0).length;
   return (_powerFits[key] = fit);
 }
@@ -947,7 +953,7 @@ function sampleNormalPair(plan, P) {                       // correlated normals
 }
 
 // Soccer [S]: independent Poisson scores under-count draws. The Dixon-Coles correction (rho -0.07, fitted on England,
-// Spain, Italy and Germany 2003-12; on 2013+ predicted draws went 23.8% -> 25.4% against 24.9% real) reweights the
+// Spain, Italy and Germany 2003-12; on 2013+ predicted draws went 23.9% -> 25.4% against 24.9% real, log loss 0.9825) reweights the
 // 0-0, 1-0, 0-1 and 1-1 scorelines. Not applied to a game in progress (the scores left to come aren't the final score).
 const DC_RHO = { Soccer: -0.07 };
 function simulateGame(plan, sport) {
@@ -1634,7 +1640,7 @@ const OTHER_DEFAULT = -110;
 // The sim's probability is blended with the no-vig market price: the market also knows injuries, rotations and
 // roster moves the team stats can't see. bw = weight on the sim (learned per sport from graded games, see learnFrom).
 // Starting weight on the sim until 60 graded moneylines teach it (learnFrom). v4 [S]: on 2,620 NFL games 2017-26 the
-// closing moneyline alone (log loss 0.6080) beat every blend with the ratings (0.6086 at 10% sim, 0.6118 at the old
+// closing moneyline alone (log loss 0.6080) beat every blend with the ratings (0.6086 at 10% sim, 0.6117 at the old
 // 35%), and this site's own graded games said the same in every sport with enough of them (CBB 0.401 market vs 0.532
 // sim, soccer 0.536 vs 0.640, NHL 0.595 vs 0.643). So the sim starts as a small voice next to the price and has to
 // earn more. The two are pooled on the log-odds scale (the standard for combining forecasts; never worse in the test).
