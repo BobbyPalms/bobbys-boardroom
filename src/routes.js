@@ -8,7 +8,9 @@ export const CORE = "https://sports.core.api.espn.com/v2/sports";
 // one tab: the big US leagues keep their own tabs, and each ESPN sport's other leagues share one tab ("Hoops+" etc.).
 // `core` = the leagues a tab searched before it carried every league (the team-name search falls back to their
 // standings when a team has no game this week; doing that across 220 soccer leagues would be hundreds of calls).
-const slugs = sp => CATALOG[sp].map(r => r[0]);
+// youth leagues (U17-U23, Little League, Olympic qualifying) are left off every tab; college stays
+export const isYouthLeague = (slug, name = "") => slug !== "fifa.w.concacaf.olympicsq" && /little league|(^|[^a-z])u-?\d\d([^\d]|$)|under-\d\d|youth|junior|olympicsq|pre-olympic|^llb$|^lls$/i.test(`${slug} ${name}`);
+const slugs = sp => CATALOG[sp].filter(r => !isYouthLeague(r[0], r[2])).map(r => r[0]);
 const rest = (sp, taken) => slugs(sp).filter(s => !taken.includes(s));
 const SOCCER_CORE = ["eng.1", "esp.1", "ger.1", "ita.1", "fra.1", "usa.1", "mex.1", "uefa.champions", "uefa.europa", "fifa.world", "fifa.worldq.uefa", "fifa.friendly"];
 export const ROUTES = {

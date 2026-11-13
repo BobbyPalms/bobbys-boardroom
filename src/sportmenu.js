@@ -13,9 +13,11 @@ export const tabOf = (espn, slug) => TAB[`${espn}|${slug}`] || null;
 const WOMEN_SLUG = /(^|[.-])w([.-]|$)|wworld|wwc|wchampions|weuro|womens|nwsl|shebelieves|pinatar|arnold\.clark|copa_de_la_reina|femenina|wnba|^wta$|^lpga$|^wtgl$|softball|^lls$|^ifc$|^283$|^289237$/;
 const WOMEN_NAME = /women|femenil|femenina|vrouwen|ladies|softball|liga f\b/i;
 export const isWomen = (slug, name) => WOMEN_SLUG.test(slug) || WOMEN_NAME.test(name || "");
-// college and youth: always at the bottom
-const YOUTH = /college|ncaa|little league|\bu-?\d\d\b|under-\d\d|u\d\d|youth|junior|olympicsq|pre-olympic|^llb$|^lls$/i;
-export const isYouth = (slug, name) => YOUTH.test(slug) || YOUTH.test(name || "");
+// college: its own section at the bottom of each sport (youth leagues aren't on any tab: routes.js isYouthLeague)
+const COLLEGE = /college|ncaa/i;
+export const isCollege = (slug, name) => COLLEGE.test(slug) || COLLEGE.test(name || "");
+// the sports under "More", each with its own heading
+const SUB = { "australian-football": "Aussie rules", lacrosse: "Lacrosse", volleyball: "Volleyball", "water-polo": "Water polo", "field-hockey": "Field hockey" };
 
 // short names for the best-known leagues (the catalog's are long)
 const SHORT = {
@@ -57,10 +59,10 @@ export const MENU = [
   { key: "racing", label: "Racing", icon: "🏁", espn: ["racing"], all: "Racing", mixed: true, top: ["f1", "nascar-premier", "irl", "nascar-secondary", "nascar-truck"] },
   { key: "rugby", label: "Rugby", icon: "🏉", espn: ["rugby", "rugby-league"], all: "RUGBY", allLabel: "All rugby union",
     top: ["180659", "164205", "244293", "271937", "267979", "270557", "270559", "242041", "289262", "3", "289237", "283"] },
-  { key: "more", label: "More", icon: "🥍", espn: ["australian-football", "lacrosse", "volleyball", "water-polo", "field-hockey"], top: ["afl", "pll", "nll"] },
+  { key: "more", label: "More", icon: "🥍", espn: ["australian-football", "lacrosse", "volleyball", "water-polo", "field-hockey"], bySport: true, top: ["afl", "pll", "nll"] },
 ];
 
-// one sport's picker: { men: { top, more, young }, women: {...}, all } with items { id, label, sport, league }
+// one sport's picker: { men: { top, more, college }, women: {...}, all } with items { id, label, sport, league, sub }
 const _menu = {};
 export const menuFor = key => (_menu[key] ??= buildMenu(key));
 function buildMenu(key) {
@@ -73,15 +75,15 @@ function buildMenu(key) {
     if (!sport) continue;
     const single = ROUTES[sport].leagues.length === 1;
     items.push({ id: `${sport}|${single ? "" : slug}`, label: SHORT[slug] || name, name, sport, league: single ? null : slug,
-      women: !m.mixed && isWomen(slug, name), young: isYouth(slug, name), rank: rank.has(slug) ? rank.get(slug) : 1e9 });
+      women: !m.mixed && isWomen(slug, name), college: isCollege(slug, name), sub: m.bySport ? SUB[espn] : null, rank: rank.has(slug) ? rank.get(slug) : 1e9 });
   }
   const byFame = (a, b) => a.rank - b.rank || a.label.localeCompare(b.label);
   const part = list => {
-    const pro = list.filter(x => !x.young).sort(byFame), n = m.topN || 99;
+    const pro = list.filter(x => !x.college).sort(byFame), n = m.topN || 99;
     const top = pro.filter(x => x.rank < 1e9).slice(0, n);
-    return { top, more: pro.filter(x => !top.includes(x)), young: list.filter(x => x.young).sort(byFame) };
+    return { top, more: pro.filter(x => !top.includes(x)), college: list.filter(x => x.college).sort(byFame) };
   };
-  return { key: m.key, label: m.label, mixed: !!m.mixed, all: m.all ? { id: `${m.all}|`, label: m.allLabel || `All ${m.label.toLowerCase()}`, sport: m.all, league: null } : null,
+  return { key: m.key, label: m.label, mixed: !!m.mixed, bySport: !!m.bySport, all: m.all ? { id: `${m.all}|`, label: m.allLabel || `All ${m.label.toLowerCase()}`, sport: m.all, league: null } : null,
     men: part(items.filter(x => !x.women)), women: part(items.filter(x => x.women)) };
 }
 // the sport (and gender) a tab + league sits under, for opening the picker where the person already is
@@ -89,7 +91,7 @@ export function placeOf(sport, league) {
   for (const m of MENU) {
     const mm = menuFor(m.key);
     if (mm.all && mm.all.sport === sport && !league) return { key: m.key, women: false };
-    for (const g of ["men", "women"]) for (const part of ["top", "more", "young"]) if (mm[g][part].some(x => x.sport === sport && (x.league || null) === (league || null))) return { key: m.key, women: g === "women" };
+    for (const g of ["men", "women"]) for (const part of ["top", "more", "college"]) if (mm[g][part].some(x => x.sport === sport && (x.league || null) === (league || null))) return { key: m.key, women: g === "women" };
   }
   // a tab with several leagues opened whole (Hoops+...): the sport its leagues are in
   const espn = ROUTES[sport]?.sport, m = MENU.find(x => x.espn.includes(espn));
@@ -98,7 +100,7 @@ export function placeOf(sport, league) {
 export const itemLabel = (sport, league) => {
   for (const m of MENU) {
     const mm = menuFor(m.key);
-    for (const g of ["men", "women"]) for (const part of ["top", "more", "young"]) { const x = mm[g][part].find(y => y.sport === sport && (y.league || null) === (league || null)); if (x) return x.label; }
+    for (const g of ["men", "women"]) for (const part of ["top", "more", "college"]) { const x = mm[g][part].find(y => y.sport === sport && (y.league || null) === (league || null)); if (x) return x.label; }
   }
   return null;
 };

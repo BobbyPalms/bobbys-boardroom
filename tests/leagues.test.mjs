@@ -6,6 +6,7 @@ import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { CATALOG } from "../src/leagues.js";
+import { isYouthLeague } from "../src/routes.js";
 import { ROUTES, TEAM_SPORTS, FIELD_SPORTS, SEASON_START, splitAllBoard, makeBoards, fieldBoard, allBoardUrl, scoreboardUrl, liveBoard, parseScoreboard, leagueName } from "../src/routes.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 300)); } };
@@ -14,7 +15,9 @@ const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:"
 const routed = Object.values(ROUTES).flatMap(r => r.leagues.map(l => `${r.sport}/${l}`));
 const listed = Object.entries(CATALOG).flatMap(([sp, rows]) => rows.map(r => `${sp}/${r[0]}`));
 check("catalog: 359 leagues across 16 sports with leagues", listed.length === 359 && Object.values(CATALOG).filter(r => r.length).length === 16, listed.length);
-check("every catalog league is routed", listed.every(k => routed.includes(k)), listed.filter(k => !routed.includes(k)));
+const youth = Object.entries(CATALOG).flatMap(([sp, rows]) => rows.filter(r => isYouthLeague(String(r[0]), r[2])).map(r => `${sp}/${r[0]}`));
+check("youth leagues (U17-U23, Little League, U23 Olympic qualifying) are off every tab; college stays", youth.length === 13 && youth.every(k => !routed.includes(k)) && routed.includes("soccer/usa.ncaa.m.1") && routed.includes("baseball/college-baseball") && routed.includes("soccer/fifa.w.concacaf.olympicsq"), youth);
+check("every other catalog league is routed", listed.filter(k => !youth.includes(k)).every(k => routed.includes(k)), listed.filter(k => !routed.includes(k) && !youth.includes(k)));
 check("no league is routed twice", new Set(routed).size === routed.length);
 check("nothing is routed that ESPN doesn't list", routed.every(k => listed.includes(k)), routed.filter(k => !listed.includes(k)));
 check("the old tabs keep their leagues (soccer's first 12 are the original list, in order)", ROUTES.Soccer.leagues.slice(0, 12).join() === "eng.1,esp.1,ger.1,ita.1,fra.1,usa.1,mex.1,uefa.champions,uefa.europa,fifa.world,fifa.worldq.uefa,fifa.friendly" && ROUTES.NBA.leagues.join() === "nba" && ROUTES.MMA.leagues[0] === "ufc");

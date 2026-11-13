@@ -2119,6 +2119,13 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 @media (max-width:520px){.bb-top{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"brand clock" "status status"}.bb-top>span:nth-child(2){text-align:left}}
 .bb-sports{grid-template-columns:repeat(12,minmax(0,1fr))}
 .bb-cats{grid-template-columns:repeat(11,minmax(0,1fr))}
+.bb-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:16px;align-items:start;margin-top:14px}
+.bb-split-side{position:sticky;top:10px}
+.bb-split-side>section:first-of-type{margin-top:14px}
+@media (max-width:860px){.bb-split{grid-template-columns:minmax(0,1fr)}.bb-split-side{position:static}}
+.bb-tiles4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.bb-tiles2{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (max-width:520px){.bb-tiles4{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:720px){.bb-cats{grid-template-columns:repeat(6,minmax(0,1fr))}}
 @media (max-width:440px){.bb-cats{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:720px){.bb-sports{grid-template-columns:repeat(6,minmax(0,1fr))}}
@@ -2158,13 +2165,13 @@ function Rain(){
   return <canvas ref={ref} style={{position:"fixed",inset:0,zIndex:0,opacity:.2,pointerEvents:"none"}}/>;
 }
 function Clock(){const [t,setT]=useState(new Date());useEffect(()=>{const i=setInterval(()=>setT(new Date()),1000);return()=>clearInterval(i);},[]);return <span>{t.toLocaleTimeString([], {hour12:false})}</span>;}
-function Shell({children,status="online"}){
+function Shell({children,status="online",wide=false}){
   const fx={position:"fixed",left:0,right:0,zIndex:1,pointerEvents:"none"};
   return <div style={{minHeight:"100vh",background:"radial-gradient(ellipse at 50% -10%,#2b0a52 0%,#12031f 45%,#07010d 100%)",color:T.ink,fontFamily:F.m,position:"relative",overflow:"hidden"}}>
     <style>{CSS}</style><Rain/>
     <div style={{...fx,top:0,bottom:0,background:"repeating-linear-gradient(0deg,rgba(0,0,0,.26) 0 1px,transparent 1px 3px)"}}/>
     <div style={{...fx,top:0,height:140,background:"linear-gradient(180deg,transparent,rgba(143,0,255,0.13),transparent)",animation:"scan 8s linear infinite"}}/>
-    <div style={{position:"relative",zIndex:2,maxWidth:940,margin:"0 auto",padding:"0 14px 56px",animation:"boot .7s ease-out"}}>
+    <div style={{position:"relative",zIndex:2,maxWidth:wide?1180:940,margin:"0 auto",padding:"0 14px 56px",animation:"boot .7s ease-out"}}>
       <div className="bb-top" style={{display:"grid",columnGap:12,rowGap:6,alignItems:"center",padding:"12px 2px",borderBottom:`1px solid ${T.line}`,fontSize:11,color:T.dim}}>
         <span style={{gridArea:"brand",fontFamily:F.d,letterSpacing:3,color:T.chrome,fontSize:11,whiteSpace:"nowrap"}}>BOBBY'S BOARDROOM</span>
         <span style={{gridArea:"status",minWidth:0,lineHeight:1.4}}><span style={{color:T.chrome,animation:"blink 1.6s infinite"}}>●</span> {status}</span>
@@ -2363,7 +2370,7 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
 // ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
 const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
-function LiveScores({ sport, league = null, onPick, onFinal, onBox }) {
+function LiveScores({ sport, league = null, onPick, onFinal, onBox, dense = false }) {
   const cart = useCart(), inCart = new Set(cart.map(x => x.key));
   const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
   useEffect(() => {
@@ -2404,9 +2411,9 @@ function LiveScores({ sport, league = null, onPick, onFinal, onBox }) {
   const side = (x, r, which) => {
     const sets = String(x.score || "").split(" ").filter(Boolean), tennis = sport === "Tennis" && sets.length > 1;
     return <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0, fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400 }}>
         {x.abbr && <span style={{ fontFamily: F.d, fontWeight: 700, letterSpacing: 1, flexShrink: 0 }}>{x.abbr}</span>}
-        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: x.abbr ? T.dim : undefined }} title={x.full || x.name}>{x.name}</span>
+        <span style={{ minWidth: 0, overflowWrap: "break-word", lineHeight: 1.3, color: x.abbr ? T.dim : undefined }} title={x.full || x.name}>{x.name}</span>
         {x.win && r.state === "post" && <span style={{ color: NEON.green, flexShrink: 0 }}>✓</span>}
         {plus(r, which)}
       </div>
@@ -2420,7 +2427,21 @@ function LiveScores({ sport, league = null, onPick, onFinal, onBox }) {
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
     {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {label} {what} today.</div>}
     {show.some(r => r.state !== "post") && <div style={{ fontSize: 10, color: T.faint, marginBottom: 8, lineHeight: 1.5 }}>Tap <b style={{ color: T.ink }}>+</b> next to a team to put it on your Kalshi slip.</div>}
-    {show.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
+    {show.length > 0 && dense && <div style={{ display: "grid", maxHeight: 620, overflowY: "auto", borderTop: `1px solid ${T.line}` }}>
+      {show.map(r => { const fin = r.state === "post" && !!onFinal, c = r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome;
+        const act = (t, fn, col = T.chrome) => <button key={t} onClick={fn} style={{ padding: "5px 7px", border: `1px solid ${col}66`, background: "none", color: col === T.chrome ? T.ink : "#fff", fontFamily: F.d, fontSize: 9, letterSpacing: 1, cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>;
+        return <div key={r.id} style={{ display: "grid", gridTemplateColumns: "58px minmax(0,1fr) auto", gap: 10, alignItems: "center", padding: "8px 2px", borderBottom: `1px solid ${T.line}`, borderLeft: `2px solid ${r.state === "pre" ? "transparent" : c}`, paddingLeft: 8 }}>
+          <div style={{ minWidth: 0, fontSize: 10, lineHeight: 1.35 }}>
+            <div style={{ color: c, fontFamily: F.d, overflowWrap: "anywhere" }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : (etTime(r.date) || r.detail).replace(" ET", "")}</div>
+            {(manyLeagues(sport) || sport === "Tennis" || sport === "MMA") && r.league && <div style={{ color: T.faint, overflowWrap: "anywhere" }}>{r.league}</div>}
+          </div>
+          <div style={{ minWidth: 0, display: "grid", gap: 3 }}>{side(r.away, r, "away")}{side(r.home, r, "home")}</div>
+          <div style={{ display: "grid", gap: 4 }}>
+            {r.state === "post" ? (fin ? act("FINAL ▸", () => onFinal(r), NEON.green) : null) : <>{onPick && act("SIM ▸", () => onPick(r))}{r.state === "in" && onBox && act("BOX ▸", () => onBox(r), NEON.red)}</>}
+          </div>
+        </div>; })}
+    </div>}
+    {show.length > 0 && !dense && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
       {show.map(r => { const fin = r.state === "post" && !!onFinal, two = r.state === "in" && !!onBox, can = !two && ((onPick && r.state !== "post") || fin), go = () => (fin ? onFinal(r) : onPick(r));
         return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={fin ? "Open the final report" : can ? "Open the full simulation" : undefined}
         onClick={can ? go : undefined} onKeyDown={can ? e => { if (e.key === "Enter") go(); } : undefined}
@@ -2441,86 +2462,182 @@ function LiveScores({ sport, league = null, onPick, onFinal, onBox }) {
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,league=null,onPickSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
+// ─── HOME: four layouts to compare (VIEW switch at the top; remembered on this device) ────────────────────────────
+//   classic  the original: picker, Bet Slips, Tools, slate, matchup, games, one under the other
+//   split    a command center: games on the left; slate, slips, tools and the matchup in a column on the right
+//   tabs     a compact header and tabs: GAMES / SLATE / SIM, with SLIPS and TOOLS one tap away
+//   compact  a sportsbook board: four action tiles, the sport folded to one line, games as a dense list
+const LAYOUTS = [["classic", "CLASSIC"], ["split", "SPLIT"], ["tabs", "TABS"], ["compact", "COMPACT"]];
+const LAYOUT_LS = "bb.layout";
+const layoutPref = () => { try { const v = localStorage.getItem(LAYOUT_LS); return LAYOUTS.some(([k]) => k === v) ? v : "classic"; } catch (_) { return "classic"; } };
+function LayoutSwitch({ layout, setLayout }) {
+  return <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", gap: 10, alignItems: "center", marginTop: 10 }}>
+    <span style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint }}>VIEW</span>
+    <div role="group" aria-label="home layout" style={{ display: "grid", gridTemplateColumns: `repeat(${LAYOUTS.length},minmax(0,1fr))`, border: `1px solid ${T.line}` }}>
+      {LAYOUTS.map(([k, t]) => <button key={k} onClick={() => setLayout(k)} aria-pressed={layout === k} style={{ minWidth: 0, padding: "6px 2px", border: "none", background: layout === k ? "rgba(143,0,255,0.3)" : "none", color: layout === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 9, letterSpacing: 1, cursor: "pointer", overflowWrap: "anywhere" }}>{t}</button>)}
+    </div>
+  </div>;
+}
+// the sport on one line; tap to open the full picker (it folds again once a league is picked)
+function PickerFold({ sport, league, onPick }) {
+  const [open, setOpen] = useState(false), here = placeOf(sport, league), cat = MENU.find(m => m.key === here?.key);
+  const lbl = (league && itemLabel(sport, league)) || itemLabel(sport, null) || SPORT_CFG[sport].label;
+  return <div style={{ marginTop: 12 }}>
+    <button onClick={() => setOpen(!open)} aria-expanded={open} aria-label="change sport" style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", padding: "11px 12px", border: `1px solid ${T.chrome}`, background: "linear-gradient(90deg,rgba(143,0,255,.22),rgba(14,4,26,.7))", color: "#fff", cursor: "pointer", textAlign: "left" }}>
+      <span style={{ fontSize: 16 }}><Ico>{cat?.icon || SPORT_CFG[sport].icon}</Ico></span>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere", lineHeight: 1.3 }}><span style={{ fontFamily: F.d, fontSize: 12, letterSpacing: 2 }}>{(cat?.label || SPORT_CFG[sport].label).toUpperCase()}</span><span style={{ fontSize: 12, color: T.dim }}> · {lbl}{here?.women ? " (W)" : ""}</span></span>
+      <span style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, color: T.chrome, whiteSpace: "nowrap" }}>{open ? "DONE ▴" : "CHANGE ▾"}</span>
+    </button>
+    {open && <div style={{ marginTop: 8 }}><SportPicker sport={sport} league={league} onPick={onPick} onChose={() => setOpen(false)}/></div>}
+  </div>;
+}
+// SLATE · BEST · SLIPS · TOOLS as four tiles
+function ActionTiles({ onSlate, onBest, onBets, onTools, slateOff, cols = 4 }) {
+  const tile = (icon, t, sub, fn, c = T.chrome, off = false) => <button key={t} onClick={() => fn && fn()} disabled={off} style={{ display: "grid", gap: 4, justifyItems: "start", minWidth: 0, padding: "12px 10px", border: `1px solid ${c}`, background: `linear-gradient(160deg,${c}30,rgba(14,4,26,.75))`, color: "#fff", cursor: off ? "not-allowed" : "pointer", opacity: off ? 0.5 : 1, textAlign: "left", boxShadow: `0 0 14px ${c}33` }}>
+    <span style={{ fontSize: 16 }}>{icon}</span><span style={{ fontFamily: F.d, fontSize: 11, letterSpacing: 2, overflowWrap: "anywhere" }}>{t}</span><span style={{ fontSize: 10, color: T.dim, lineHeight: 1.3, overflowWrap: "anywhere" }}>{sub}</span>
+  </button>;
+  return <div className={cols === 4 ? "bb-tiles4" : "bb-tiles2"} style={{ display: "grid", gap: 8, marginTop: 12 }}>
+    {tile("▤", "SLATE", "every game, best to worst", onSlate, T.chrome, slateOff)}
+    {tile("★", "BEST BET", "the one pick", onBest, NEON.teal, slateOff)}
+    {tile("🎟", "SLIPS", "bet · track · tickets", onBets, NEON.purple)}
+    {tile("🧰", "TOOLS", "The Book · Kalshi", onTools, NEON.gold)}
+  </div>;
+}
+function SetupScreen({sport,league=null,onPickSport,layout="classic",setLayout,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
-  const indiv=isIndiv(sport), lbl=(league&&itemLabel(sport,league))||SPORT_CFG[sport].label;
+  const indiv=isIndiv(sport), lbl=(league&&itemLabel(sport,league))||SPORT_CFG[sport].label, field=isField(sport);
   const ph=sport==="Tennis"?["Jannik Sinner","Carlos Alcaraz"]:sport==="MMA"?["Fighter one","Fighter two"]:["Dallas Cowboys","San Francisco 49ers"];
-  return <Shell status="standing by">
-    <div style={{textAlign:"center",padding:"34px 0 22px"}}>
+  const [tab,setTab0]=useState(()=>ssGet("bb.homeTab","games")), setTab=t=>{setTab0(t);ssSet("bb.homeTab",t);};
+  const [simOpen,setSimOpen]=useState(false);
+  const hero=small=>small
+    ?<div role="heading" aria-level={1} aria-label="Bobby's Boardroom" style={{display:"flex",alignItems:"baseline",justifyContent:"center",gap:10,flexWrap:"wrap",padding:"16px 0 4px"}}>
+        <span style={{fontFamily:F.d,fontWeight:700,fontSize:12,letterSpacing:6,color:T.chrome}}>BOBBY'S</span>
+        <span style={{fontFamily:F.d,fontWeight:900,fontSize:"clamp(24px,6vw,34px)",letterSpacing:4,color:"#fff",lineHeight:1.05,textShadow:`0 0 14px ${T.brand}`}}>BOARDROOM</span>
+      </div>
+    :<div style={{textAlign:"center",padding:"34px 0 22px"}}>
       <div role="heading" aria-level={1} aria-label="Bobby's Boardroom">
         <div style={{fontFamily:F.d,fontWeight:700,fontSize:"clamp(14px,3.6vw,20px)",letterSpacing:10,color:T.chrome,marginBottom:4}}>BOBBY'S</div>
         <div style={{fontFamily:F.d,fontWeight:900,fontSize:"clamp(34px,9vw,58px)",letterSpacing:5,color:"#fff",lineHeight:1.05,textShadow:`0 0 18px ${T.brand},0 0 42px rgba(143,0,255,.55)`}}>BOARDROOM</div>
       </div>
       <div style={{fontSize:13,color:T.dim,marginTop:10}}>Pick a sport and two teams. Live data from the scores routes, 10,000 simulations.</div>
-    </div>
-    <SportPicker sport={sport} league={league} onPick={onPickSport}/>
-    <button onClick={()=>onBets&&onBets()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:16,padding:"13px 14px",border:`1px solid ${T.chrome}`,background:"linear-gradient(90deg,rgba(143,0,255,.28),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left",boxShadow:`0 0 18px rgba(143,0,255,.25)`}}>
+    </div>;
+  const switcher=setLayout?<LayoutSwitch layout={layout} setLayout={setLayout}/>:null;
+  const picker=<SportPicker sport={sport} league={league} onPick={onPickSport}/>;
+  const fold=<PickerFold sport={sport} league={league} onPick={onPickSport}/>;
+  const betsBtn=<button onClick={()=>onBets&&onBets()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:16,padding:"13px 14px",border:`1px solid ${T.chrome}`,background:"linear-gradient(90deg,rgba(143,0,255,.28),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left",boxShadow:`0 0 18px rgba(143,0,255,.25)`}}>
       <span style={{fontSize:18}}>🎟</span>
       <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>BET SLIPS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,lineHeight:1.4}}>Add your slips · auto-graded · leaderboards</span></span>
       <span style={{fontFamily:F.d,color:T.chrome}}>▸</span>
-    </button>
-    <button onClick={()=>onTools&&onTools()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:8,padding:"13px 14px",border:`1px solid ${NEON.gold}99`,background:"linear-gradient(90deg,rgba(255,194,38,.14),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left"}}>
+    </button>;
+  const toolsBtn=<button onClick={()=>onTools&&onTools()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:8,padding:"13px 14px",border:`1px solid ${NEON.gold}99`,background:"linear-gradient(90deg,rgba(255,194,38,.14),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left"}}>
       <span style={{fontSize:18}}>🧰</span>
-      <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>TOOLS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>The Book · Kalshi</span></span>
+      <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>TOOLS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,lineHeight:1.4}}>The Book · Kalshi</span></span>
       <span style={{fontFamily:F.d,color:NEON.gold}}>▸</span>
-    </button>
-    {isField(sport)?<FieldBoard sport={sport} league={league}/>:<>
-    <Panel title="TODAY'S SLATE" right={lbl}>
+    </button>;
+  const tiles=cols=><ActionTiles cols={cols} onSlate={onSlate} onBest={onBest} onBets={onBets} onTools={onTools} slateOff={slateOff||field}/>;
+  const slateNote=<>
+    <div style={{fontSize:10,color:T.dim,marginTop:8}}>{field?`${lbl} is a leaderboard sport: no slate to rank.`:slateInfo?`● ${lbl} scan ready (${slateInfo.age} min old): opens instantly`:`${lbl}: pulled live from the scores routes (free), then cached for 20 minutes.`}</div>
+    {slateErr&&<div style={{marginTop:10,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{slateErr}</div>}
+  </>;
+  const slatePanel=<Panel title="TODAY'S SLATE" right={lbl}>
       <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${lbl} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
       <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
         {[["▤ SLATE",onSlate],["★ BEST OF SLATE",onBest]].map(([t,fn])=><button key={t} onClick={()=>fn&&fn()} disabled={slateOff} style={{flex:"1 1 150px",padding:"13px 10px",border:`1px solid ${T.chrome}`,background:"rgba(143,0,255,0.22)",color:"#fff",fontFamily:F.d,fontSize:12,letterSpacing:2,cursor:slateOff?"not-allowed":"pointer",opacity:slateOff?.5:1,boxShadow:"0 0 16px rgba(143,0,255,0.32)"}}>{t}</button>)}
       </div>
       <div style={{fontSize:10,color:T.dim,marginTop:8}}>{slateInfo?`● scan ready (${slateInfo.age} min old): opens instantly`:"Pulled live from the scores routes (free), then cached for 20 minutes."}</div>
       {slateErr&&<div style={{marginTop:10,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{slateErr}</div>}
-    </Panel>
-    <Panel title="MATCHUP INPUT" right={lbl}>
+    </Panel>;
+  const matchupBody=<>
       <div style={{display:"flex",alignItems:"flex-end",gap:10}}>
-        <div style={{flex:1}}>
+        <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:11,color:AWAY_DEF,marginBottom:5}}>{indiv?(sport==="Tennis"?"player":"fighter"):"away"}</div>
-          <input value={awayInput} onChange={e=>setAwayInput(e.target.value)} placeholder={ph[0]} onKeyDown={e=>e.key==="Enter"&&ok&&onFetch()} style={inp(AWAY_DEF)}/>
+          <input aria-label="away team" value={awayInput} onChange={e=>setAwayInput(e.target.value)} placeholder={ph[0]} onKeyDown={e=>e.key==="Enter"&&ok&&onFetch()} style={inp(AWAY_DEF)}/>
         </div>
-        {!indiv&&<button onClick={()=>setIsNeutral(!isNeutral)} title="Toggle neutral venue" style={{width:42,height:42,marginBottom:0,border:`1px solid ${isNeutral?T.chrome:T.line}`,background:"none",color:isNeutral?T.chrome:T.dim,fontFamily:F.d,fontSize:14,cursor:"pointer",borderRadius:"50%"}}>{isNeutral?"N":"@"}</button>}{indiv&&<div style={{width:30,textAlign:"center",color:T.dim,fontFamily:F.d,paddingBottom:12}}>vs</div>}
-        <div style={{flex:1}}>
+        {!indiv&&<button onClick={()=>setIsNeutral(!isNeutral)} title="Toggle neutral venue" style={{width:42,height:42,flexShrink:0,marginBottom:0,border:`1px solid ${isNeutral?T.chrome:T.line}`,background:"none",color:isNeutral?T.chrome:T.dim,fontFamily:F.d,fontSize:14,cursor:"pointer",borderRadius:"50%"}}>{isNeutral?"N":"@"}</button>}{indiv&&<div style={{width:30,textAlign:"center",color:T.dim,fontFamily:F.d,paddingBottom:12}}>vs</div>}
+        <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:11,color:HOME_DEF,marginBottom:5}}>{indiv?(sport==="Tennis"?"player":"fighter"):"home"}</div>
-          <input value={homeInput} onChange={e=>setHomeInput(e.target.value)} placeholder={ph[1]} onKeyDown={e=>e.key==="Enter"&&ok&&onFetch()} style={inp(HOME_DEF)}/>
+          <input aria-label="home team" value={homeInput} onChange={e=>setHomeInput(e.target.value)} placeholder={ph[1]} onKeyDown={e=>e.key==="Enter"&&ok&&onFetch()} style={inp(HOME_DEF)}/>
         </div>
       </div>
       {isNeutral&&!indiv&&<div style={{fontSize:11,color:T.chrome,textAlign:"center",marginTop:10}}>Neutral venue: home edge removed from the model.</div>}
       <button onClick={onFetch} disabled={!ok} style={{width:"100%",marginTop:16,padding:"14px",border:`1px solid ${ok?T.chrome:T.line}`,background:ok?"rgba(143,0,255,0.29)":"none",color:ok?"#fff":T.faint,fontFamily:F.d,fontSize:13,letterSpacing:3,cursor:ok?"pointer":"not-allowed",boxShadow:ok?"0 0 22px rgba(143,0,255,0.45),inset 0 0 18px rgba(143,0,255,0.18)":"none"}}>{loading?"LOADING…":"RUN SIMULATION"}</button>
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
-    </Panel>
-    <LiveScores sport={sport} league={league} onPick={onPick} onFinal={onFinal} onBox={onBox}/>
-    </>}
+    </>;
+  const matchupPanel=<Panel title="MATCHUP INPUT" right={lbl}>{matchupBody}</Panel>;
+  const matchupFold=<Panel style={{padding:simOpen?undefined:"0"}}>
+      <button onClick={()=>setSimOpen(!simOpen)} aria-expanded={simOpen} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:8,width:"100%",padding:simOpen?"0 0 12px":"13px 14px",border:"none",background:"none",color:T.chrome,fontFamily:F.d,fontSize:11,letterSpacing:2,cursor:"pointer",textAlign:"left"}}><span style={{overflowWrap:"anywhere"}}>SIMULATE A MATCHUP · {lbl}</span><span>{simOpen?"▴":"▾"}</span></button>
+      {simOpen&&matchupBody}
+    </Panel>;
+  const games=dense=>field?<FieldBoard sport={sport} league={league}/>:<LiveScores dense={dense} sport={sport} league={league} onPick={onPick} onFinal={onFinal} onBox={onBox}/>;
+
+  if(layout==="split") return <Shell status="standing by" wide>
+    {switcher}{hero(true)}
+    <div className="bb-split">
+      <div className="bb-split-side">
+        {tiles(2)}{slateNote}
+        {!field&&<Panel title="MATCHUP INPUT" right={lbl}>{matchupBody}</Panel>}
+      </div>
+      <div className="bb-split-main">{picker}{games(false)}</div>
+    </div>
+  </Shell>;
+  if(layout==="tabs"){
+    const t=field&&tab!=="games"?"games":tab;
+    const nav=(k,label,fn)=><button key={k} onClick={fn||(()=>setTab(k))} aria-pressed={!fn&&t===k} style={{minWidth:0,padding:"11px 2px",border:"none",borderBottom:`2px solid ${!fn&&t===k?T.chrome:"transparent"}`,background:!fn&&t===k?"rgba(143,0,255,.18)":"none",color:!fn&&t===k?"#fff":T.dim,fontFamily:F.d,fontSize:10,letterSpacing:1.5,cursor:"pointer",overflowWrap:"anywhere"}}>{label}</button>;
+    return <Shell status="standing by">
+      {switcher}{hero(true)}{fold}
+      <nav aria-label="home sections" style={{position:"sticky",top:0,zIndex:5,display:"grid",gridTemplateColumns:"repeat(5,minmax(0,1fr))",marginTop:12,border:`1px solid ${T.line}`,background:"rgba(12,3,22,.96)"}}>
+        {nav("games","GAMES")}{!field&&nav("slate","SLATE")}{!field&&nav("sim","SIM")}{nav("slips","SLIPS ▸",onBets)}{nav("tools","TOOLS ▸",onTools)}
+      </nav>
+      {t==="games"&&games(false)}
+      {t==="slate"&&slatePanel}
+      {t==="sim"&&matchupPanel}
+    </Shell>;
+  }
+  if(layout==="compact") return <Shell status="standing by">
+    {switcher}{hero(true)}{tiles(4)}{slateNote}{fold}
+    {games(true)}
+    {!field&&matchupFold}
+  </Shell>;
+  return <Shell status="standing by">
+    {switcher}{hero(false)}{picker}{betsBtn}{toolsBtn}
+    {field?<FieldBoard sport={sport} league={league}/>:<>{slatePanel}{matchupPanel}{games(false)}</>}
   </Shell>;
 }
 // ─── THE SPORT PICKER: a few sports; open one for its leagues (men's first, women's second), best-known first, the
 // rest behind MORE, college and youth at the bottom. Picking a league narrows the slate and Today's Games to it.
-function SportPicker({ sport, league, onPick }) {
+function SportPicker({ sport, league, onPick, onChose }) {
   const here = placeOf(sport, league) || { key: MENU[0].key, women: false };
   const [open, setOpen] = useState(here.key), [women, setWomen] = useState(here.women);
-  const [more, setMore] = useState(false), [young, setYoung] = useState(false), [q, setQ] = useState("");
-  const m = menuFor(open), g = m[women && !m.mixed ? "women" : "men"], hasW = !m.mixed && (m.women.top.length + m.women.more.length + m.women.young.length) > 0;
+  const [more, setMore] = useState(false), [q, setQ] = useState("");
+  const m = menuFor(open), g = m[women && !m.mixed ? "women" : "men"], hasW = !m.mixed && (m.women.top.length + m.women.more.length + m.women.college.length) > 0;
   const isOn = x => x.sport === sport && (x.league || null) === (league || null);
-  const inCat = key => { const mm = menuFor(key); return (mm.all && isOn(mm.all)) || ["men", "women"].some(gg => ["top", "more", "young"].some(p => mm[gg][p].some(isOn))); };
+  const inCat = key => { const mm = menuFor(key); return (mm.all && isOn(mm.all)) || ["men", "women"].some(gg => ["top", "more", "college"].some(p => mm[gg][p].some(isOn))); };
   // a sport opened: if nothing in it is picked yet, its "all" (or its first league) is picked so the screen follows
   const openCat = key => {
-    setOpen(key); setMore(false); setYoung(false); setQ("");
+    setOpen(key); setMore(false); setQ("");
     const mm = menuFor(key);
     if (inCat(key)) { setWomen(placeOf(sport, league)?.women || false); return; }
     setWomen(false);
-    const first = mm.all || mm.men.top[0] || mm.men.young[0] || mm.women.top[0];
+    const first = mm.all || mm.men.top[0] || mm.men.college[0] || mm.women.top[0];
     if (first) onPick(first.sport, first.league);
   };
   const setG = w => {
-    setWomen(w); setMore(false); setYoung(false); setQ("");
-    const gg = m[w ? "women" : "men"], first = gg.top[0] || gg.young[0] || gg.more[0];
-    if (first && !(m.all && isOn(m.all)) && !["top", "more", "young"].some(p => gg[p].some(isOn))) onPick(first.sport, first.league);
+    setWomen(w); setMore(false); setQ("");
+    const gg = m[w ? "women" : "men"], first = gg.top[0] || gg.college[0] || gg.more[0];
+    if (first && !(m.all && isOn(m.all)) && !["top", "more", "college"].some(p => gg[p].some(isOn))) onPick(first.sport, first.league);
   };
-  const chip = x => <button key={x.id} onClick={() => onPick(x.sport, x.league)} aria-pressed={isOn(x)} title={x.name || x.label}
+  const chip = x => <button key={x.id} onClick={() => { onPick(x.sport, x.league); onChose && onChose(); }} aria-pressed={isOn(x)} title={x.name || x.label}
     style={{ minWidth: 0, padding: "8px 8px", border: `1px solid ${isOn(x) ? T.chrome : T.line}`, background: isOn(x) ? "rgba(143,0,255,0.28)" : "rgba(14,4,26,.6)", color: isOn(x) ? "#fff" : T.ink, fontFamily: F.m, fontSize: 11, lineHeight: 1.3, cursor: "pointer", textAlign: "left", overflowWrap: "break-word", boxShadow: isOn(x) ? "0 0 12px rgba(143,0,255,0.45)" : "none" }}>{x.label}</button>;
-  const grid = list => <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(128px,1fr))", gap: 6 }}>{list.map(chip)}</div>;
+  // "More" holds several sports: each gets its own heading
+  const grid = list => {
+    const one = l => <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(128px,1fr))", gap: 6 }}>{l.map(chip)}</div>;
+    if (!m.bySport) return one(list);
+    const subs = [...new Set(list.map(x => x.sub))];
+    return <div style={{ display: "grid", gap: 8 }}>{subs.map(sb => <div key={sb}><div style={{ fontSize: 9, color: T.faint, letterSpacing: 1.5, marginBottom: 4 }}>{String(sb).toUpperCase()}</div>{one(list.filter(x => x.sub === sb))}</div>)}</div>;
+  };
+  const head = t => <div style={{ fontFamily: F.d, fontSize: 9, color: T.faint, letterSpacing: 2, margin: "12px 0 6px" }}>{t}</div>;
   const fold = (on, set, label, n) => <button onClick={() => set(!on)} aria-expanded={on} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, width: "100%", marginTop: 10, padding: "8px 10px", border: `1px dashed ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer", textAlign: "left" }}><span style={oneLine}>{label} ({n})</span><span>{on ? "▴" : "▾"}</span></button>;
   const ql = q.trim().toLowerCase(), moreList = ql ? g.more.filter(x => `${x.label} ${x.name}`.toLowerCase().includes(ql)) : g.more;
   return <div>
@@ -2542,8 +2659,7 @@ function SportPicker({ sport, league, onPick }) {
         {g.more.length > 12 && <input aria-label="find a league" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a league…" style={{ ...fieldStyle(), marginBottom: 8, padding: "8px 10px", fontSize: 12 }}/>}
         {moreList.length ? grid(moreList) : <div style={{ fontSize: 11, color: T.faint }}>Nothing matches.</div>}
       </div>}
-      {g.young.length > 0 && fold(young, setYoung, "COLLEGE & YOUTH", g.young.length)}
-      {young && <div style={{ marginTop: 8 }}>{grid(g.young)}</div>}
+      {g.college.length > 0 && <>{head(g.top.length || g.more.length ? "COLLEGE" : "")}{grid(g.college)}</>}
     </div>
   </div>;
 }
@@ -4889,6 +5005,7 @@ export default function App() {
   const [finalRow,setFinalRow]=useState(B?.finalRow||null);
   const [toolsTab,setToolsTab]=useState(B?.toolsTab||"book");
   const pickSport=(sp,lg=null)=>{setSport(sp);setLeague(lg||null);};
+  const [layout,setLayout0]=useState(layoutPref), setLayout=v=>{setLayout0(v);try{localStorage.setItem(LAYOUT_LS,v);}catch(_){/* this visit only */}};
   const openBets=tab=>{if(tab)ssSet("bb.betsTab",tab);setPhase("bets");};
   // remember where this tab is (a refresh comes back here); loading screens keep the screen they're loading
   useEffect(()=>{
@@ -5023,7 +5140,7 @@ export default function App() {
       return phase==="slate"?<SlateScreen {...common} onBest={()=>setPhase("best")}/>:<BestPickScreen {...common} onSlate={()=>setPhase("slate")}/>;
     }
     if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
-    return <SetupScreen sport={sport} league={league} onPickSport={pickSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
+    return <SetupScreen sport={sport} league={league} onPickSport={pickSport} layout={layout} setLayout={setLayout} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
       onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>openBets("slip")} onTools={()=>{setToolsTab("book");setPhase("tools");}} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
       onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport,row:r})}/>;
   };
