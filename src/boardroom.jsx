@@ -7,7 +7,8 @@ import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tenni
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
 import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, syncPayload, comboCost, fillTotals, buyYesContracts, sellYesContracts, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
-import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
+import { MENU, menuFor, placeOf, itemLabel } from "./sportmenu.js";
+import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, sportsDay, sportsDayISO, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
 // ─── SPORT CONFIG ─────────────────────────────────────────────────────────────
 const SPORT_CFG = {
@@ -478,7 +479,7 @@ async function fetchMatchup(sport, awayName, homeName, isNeutral) {
   await loadResults(sport);                                 // the season's game log: power ratings (v4)
   let found = null, foundLeague = null;
   // the next 8 days of boards, read once up front (tabs with many leagues: only the leagues with games each day)
-  const days = Array.from({ length: 8 }, (_, k) => ymd(new Date(Date.now() + k * 864e5)));
+  const days = [...new Set(Array.from({ length: 9 }, (_, k) => sportsDay(k)))].slice(0, 8);   // from the sports day: a game past midnight is still found
   const onDay = await Promise.all(days.map(d => leaguesOn(sport, d).catch(() => [])));
   const pairs = days.flatMap((d, k) => onDay[k].map(l => [l, k]));
   const boardsBy = {};
@@ -1332,19 +1333,19 @@ function scoreIndiv(m, sport, R) {
   out.fav = out.pA >= 0.5 ? "a" : "b"; out.conf = Math.abs(out.pA - 0.5);
   return out;
 }
-async function fetchIndiv(sport) {
+async function fetchIndiv(sport, league = null) {
   const { R, fit, ok } = await loadRatings(sport);
   // tennis plays every day; UFC cards are about weekly, so MMA looks a week ahead to the next card
   const ahead = sport === "MMA" ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1];
   const boards = await Promise.all(ahead.map(async k => {
-    const day = ymd(new Date(Date.now() + k * 864e5)), lgs = await leaguesOn(sport, day);
+    const day = sportsDay(k), lgs = (await leaguesOn(sport, day)).filter(l => !league || l === league);
     return Promise.all(lgs.map(lg => board(sport, lg, day).then(j => sport === "Tennis" ? parseTennis(j, lg) : parseUFC(j)).catch(() => [])));
   })).then(r => r.flat());
   const seen = new Set(), list = [];
   for (const m of boards.flat()) if (!seen.has(m.id) && m.state === "pre") { seen.add(m.id); list.push(scoreIndiv(m, sport, R)); }
   list.sort((x, y) => (y.known - x.known) || (y.conf - x.conf));
   list.forEach((m, i) => { m.rank = i + 1; });
-  return { sport, list, fit, ratingsOK: ok, best: list.find(m => m.known) || null, t: Date.now() };
+  return { sport, league, list, fit, ratingsOK: ok, best: list.find(m => m.known) || null, t: Date.now() };
 }
 // A live tennis match from its current score: the point-by-point model (src/ratings.js), calibrated to the ratings
 const SLAM = /australian open|roland garros|french open|wimbledon|us open/i;
@@ -1394,9 +1395,9 @@ async function fetchSlate(sport, opts = {}) {
   // today, else the next day with games (football: the coming week). Tabs with many leagues read only the leagues with
   // games that day, and a league's standings are fetched only once it has a game still to start.
   const ks = sport === "NFL" || sport === "CFB" || sport === "GRID" ? [0, 1, 2, 3, 4, 5, 6] : [0, 1];
-  const days = ks.map(k => ymd(new Date(Date.now() + k * 864e5)));
+  const days = ks.map(k => sportsDay(k));
   const onDay = await Promise.all(days.map(d => leaguesOn(sport, d).catch(() => [])));
-  const per = await pool(R.leagues.filter(l => onDay.some(ls => ls.includes(l))), 6, async league => {
+  const per = await pool(R.leagues.filter(l => (!opts.league || l === opts.league) && onDay.some(ls => ls.includes(l))), 6, async league => {
     let ctx = null;
     for (let i = 0; i < ks.length; i++) {
       if (!onDay[i].includes(league)) continue;
@@ -1414,7 +1415,7 @@ async function fetchSlate(sport, opts = {}) {
   await applyPower(games, sport);
   await applySplits(games, sport);
   const sc = SLATE_SCOPE[sport];
-  return { sport, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard", "Public bets / money %: Action Network + DraftKings Network"], games: (!opts.all && sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
+  return { sport, league: opts.league || null, slateDate: games.length ? etDayLabel(games[0].date) : etDayLabel(new Date().toISOString()), sources: ["Live scoreboard, standings & odds routes (Public-ESPN-API)", "DraftKings lines via the scoreboard", "Public bets / money %: Action Network + DraftKings Network"], games: (!opts.all && sc && games.length > Math.max(sc.cap, 40) ? [...games].sort((x, y) => (!!y.mkt - !!x.mkt) || x.date.localeCompare(y.date)).slice(0, Math.max(sc.cap, 40)).sort((x, y) => x.date.localeCompare(y.date)) : games) };
 }
 
 // ---- cache: one scan per sport, reused by SLATE and BEST OF SLATE (20 min) ---
@@ -1451,10 +1452,13 @@ function peekSlate(sport) {
   } catch (_) { /* storage unavailable: memory cache only */ }
   return null;
 }
+// a slate is one tab, or one league of it: "Soccer" or "Soccer@eng.1"
+const slateIdOf = (sport, league) => (league ? `${sport}@${league}` : sport);
 function getSlate(sport, { force = false, onRetry } = {}) {
   if (!force) { const hit = peekSlate(sport); if (hit) return Promise.resolve(hit); }
   if (slateFlight[sport]) return slateFlight[sport];           // a second click joins the scan already running
-  const p = fetchSlate(sport, onRetry).then(data => {
+  const [tab, lg] = sport.split("@");
+  const p = fetchSlate(tab, { league: lg || null }).then(data => {
     const rec = { t: Date.now(), day: etDay(), data };
     if (data.games.length) {                                   // never cache an empty result
       slateMem[sport] = rec;
@@ -2114,6 +2118,9 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 .bb-top>span:nth-child(2){text-align:center}
 @media (max-width:520px){.bb-top{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"brand clock" "status status"}.bb-top>span:nth-child(2){text-align:left}}
 .bb-sports{grid-template-columns:repeat(12,minmax(0,1fr))}
+.bb-cats{grid-template-columns:repeat(11,minmax(0,1fr))}
+@media (max-width:720px){.bb-cats{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media (max-width:440px){.bb-cats{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:720px){.bb-sports{grid-template-columns:repeat(6,minmax(0,1fr))}}
 @media (max-width:440px){.bb-sports{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .bb-tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
@@ -2356,50 +2363,63 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
 // ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
 const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
-function LiveScores({ sport, onPick, onFinal, onBox }) {
+function LiveScores({ sport, league = null, onPick, onFinal, onBox }) {
+  const cart = useCart(), inCart = new Set(cart.map(x => x.key));
   const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
   useEffect(() => {
     let alive = true, timer = null;
     const pull = async () => {
       if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
-      const R = ROUTES[sport], day = ymd(new Date()), today = etDay();
-      const lgs = R ? await leaguesOn(sport, day).catch(() => R.core || R.leagues) : [];
-      const res = await pool(lgs, 8, lg => board(sport, lg, day).then(j => liveBoard(j, sport).map(x => ({ ...x, slug: lg, league: x.league || leagueName(sport, lg) }))).catch(() => null));
-      if (lgs.length === 0) res.push([]);                   // nothing on today anywhere in the tab: an empty board, not an error
+      // the sports day (rolls over at 6 AM ET, so last night's late games stay up until morning) and today's date
+      const R = ROUTES[sport], days = [...new Set([sportsDay(0), ymd(new Date())])], keep = new Set([sportsDayISO(0), etDay()]);
+      const jobs = [];
+      for (const day of days) for (const lg of (R ? await leaguesOn(sport, day).catch(() => R.core || R.leagues) : [])) if (!league || lg === league) jobs.push([lg, day]);
+      const res = await pool(jobs, 8, ([lg, day]) => board(sport, lg, day).then(j => liveBoard(j, sport).map(x => ({ ...x, slug: lg, league: x.league || leagueName(sport, lg) }))).catch(() => null));
+      if (jobs.length === 0) res.push([]);                  // nothing on today anywhere in the tab: an empty board, not an error
       if (!alive) return;
       const ok = res.filter(Boolean), seen = new Set();
-      const rows = ok.flat().filter(r => !seen.has(r.id) && seen.add(r.id) && (!r.date || etISO(r.date) === today || r.state === "in"))
+      const rows = ok.flat().filter(r => !seen.has(r.id) && seen.add(r.id) && (!r.date || keep.has(etISO(r.date)) || r.state === "in"))
         .sort((a, b) => String(a.date).localeCompare(String(b.date)));
-      setSt({ sport, rows, err: ok.length ? null : "Couldn't reach the scores routes. Retrying.", at: Date.now() });
+      setSt({ sport: `${sport}|${league || ""}`, rows, err: ok.length ? null : "Couldn't reach the scores routes. Retrying.", at: Date.now() });
       timer = setTimeout(pull, rows.some(r => r.state === "in") ? 30000 : 120000);
     };
-    setSt({ sport, rows: null, err: null, at: 0 });
+    setSt({ sport: `${sport}|${league || ""}`, rows: null, err: null, at: 0 });
     pull();
     return () => { alive = false; clearTimeout(timer); };
-  }, [sport]);
-  const cfg = SPORT_CFG[sport], rows = st.sport === sport ? st.rows : null;
+  }, [sport, league]);
+  const cfg = SPORT_CFG[sport], rows = st.sport === `${sport}|${league || ""}` ? st.rows : null, label = (league && itemLabel(sport, league)) || cfg.label;
   // every game today: live ones first, then the ones still to start (by start time), then the finals
   const live = (rows || []).filter(r => r.state === "in"), byT = (a, b) => String(a.date).localeCompare(String(b.date));
   const show = [...live, ...(rows || []).filter(r => r.state === "pre").sort(byT), ...(rows || []).filter(r => r.state === "post").sort(byT)];
   const what = sport === "Tennis" ? "matches" : sport === "MMA" ? "fights" : "games", one = { matches: "match", fights: "fight", games: "game" }[what];
   // one side of a game: the name takes the room left and trims with "…"; the score (or each set) never moves or overlaps
-  const side = (x, r) => {
+  // the + next to a team: its moneyline onto the slip (to Kalshi); tap again to take it off
+  const plus = (r, which) => {
+    if (r.state === "post") return null;
+    const leg = legFromRow({ ...r, sport, league: r.slug, title: sport === "Tennis" || sport === "MMA" ? r.league : "" }, { market: "ml", side: which }), on = inCart.has(pickKey(leg)), nm = r[which].full || r[which].name;
+    return <button aria-label={on ? `take ${nm} off the slip` : `add ${nm} to the slip`} aria-pressed={on} title={on ? "On your slip: tap to take it off" : "Add to your Kalshi slip"}
+      onClick={e => { e.stopPropagation(); cartToggle(leg); }} onKeyDown={e => e.stopPropagation()}
+      style={{ flexShrink: 0, width: 22, height: 22, padding: 0, display: "inline-grid", placeItems: "center", border: `1px solid ${on ? NEON.teal : T.chrome}88`, background: on ? "rgba(23,242,208,.18)" : "rgba(143,0,255,.14)", color: on ? NEON.teal : "#fff", fontFamily: F.d, fontSize: on ? 11 : 14, lineHeight: 1, cursor: "pointer" }}>{on ? "✓" : "+"}</button>;
+  };
+  const side = (x, r, which) => {
     const sets = String(x.score || "").split(" ").filter(Boolean), tennis = sport === "Tennis" && sets.length > 1;
     return <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0, fontSize: 12, color: x.win ? "#fff" : r.state === "post" ? T.dim : T.ink, fontWeight: x.win ? 700 : 400 }}>
         {x.abbr && <span style={{ fontFamily: F.d, fontWeight: 700, letterSpacing: 1, flexShrink: 0 }}>{x.abbr}</span>}
         <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: x.abbr ? T.dim : undefined }} title={x.full || x.name}>{x.name}</span>
         {x.win && r.state === "post" && <span style={{ color: NEON.green, flexShrink: 0 }}>✓</span>}
+        {plus(r, which)}
       </div>
       {tennis
         ? <div style={{ display: "grid", gridAutoFlow: "column", gridAutoColumns: "16px", gap: 2, fontFamily: F.d, fontSize: 13, fontWeight: 700, textAlign: "center", color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim }}>{sets.map((v, i) => <span key={i}>{v}</span>)}</div>
         : <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: r.state === "in" ? "#fff" : x.win ? "#fff" : T.dim, whiteSpace: "nowrap", textAlign: "right" }}>{x.score}</span>}
     </div>;
   };
-  return <Panel title={live.length ? `LIVE NOW · ${live.length}` : "TODAY'S " + what.toUpperCase()} right={`${cfg.label}${rows ? ` · ${show.length} today` : ""}`} color={live.length ? NEON.red : T.chrome}>
-    {!rows && !st.err && <div style={{ fontSize: 12, color: T.dim }}>Loading the {cfg.label} scoreboard…</div>}
+  return <Panel title={live.length ? `LIVE NOW · ${live.length}` : "TODAY'S " + what.toUpperCase()} right={`${label}${rows ? ` · ${show.length} today` : ""}`} color={live.length ? NEON.red : T.chrome}>
+    {!rows && !st.err && <div style={{ fontSize: 12, color: T.dim }}>Loading the {label} scoreboard…</div>}
     {st.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{st.err}</div>}
-    {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {cfg.label} {what} today.</div>}
+    {rows && !show.length && !st.err && <div style={{ fontSize: 12, color: T.dim }}>No {label} {what} today.</div>}
+    {show.some(r => r.state !== "post") && <div style={{ fontSize: 10, color: T.faint, marginBottom: 8, lineHeight: 1.5 }}>Tap <b style={{ color: T.ink }}>+</b> next to a team to put it on your Kalshi slip.</div>}
     {show.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, maxHeight: 560, overflowY: "auto" }}>
       {show.map(r => { const fin = r.state === "post" && !!onFinal, two = r.state === "in" && !!onBox, can = !two && ((onPick && r.state !== "post") || fin), go = () => (fin ? onFinal(r) : onPick(r));
         return <div key={r.id} role={can ? "button" : undefined} tabIndex={can ? 0 : undefined} title={fin ? "Open the final report" : can ? "Open the full simulation" : undefined}
@@ -2409,8 +2429,8 @@ function LiveScores({ sport, onPick, onFinal, onBox }) {
           <span style={{ color: r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, fontFamily: F.d, whiteSpace: "nowrap" }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "Final") : etTime(r.date) || r.detail}</span>
           <span style={{ color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, textAlign: "right" }}>{[manyLeagues(sport) || sport === "Tennis" || sport === "MMA" ? r.league : "", r.note].filter(Boolean).join(" · ")}</span>
         </div>
-        {side(r.away, r)}
-        {side(r.home, r)}
+        {side(r.away, r, "away")}
+        {side(r.home, r, "home")}
         {can && <div style={{ fontSize: 9, color: fin ? NEON.green : T.faint, letterSpacing: 1.5, textAlign: "right" }}>{fin ? "FINAL REPORT ▸" : "SIMULATE ▸"}</div>}
         {two && <div style={{ display: "grid", gridTemplateColumns: onPick ? "repeat(2,minmax(0,1fr))" : "minmax(0,1fr)", gap: 6, marginTop: 4 }}>
           {onPick && <button onClick={() => onPick(r)} style={{ padding: "7px 4px", border: `1px solid ${T.line}`, background: "rgba(143,0,255,.14)", color: T.ink, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer", whiteSpace: "nowrap" }}>SIMULATE ▸</button>}
@@ -2421,11 +2441,11 @@ function LiveScores({ sport, onPick, onFinal, onBox }) {
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
-function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
+function SetupScreen({sport,league=null,onPickSport,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
-  const indiv=isIndiv(sport);
+  const indiv=isIndiv(sport), lbl=(league&&itemLabel(sport,league))||SPORT_CFG[sport].label;
   const ph=sport==="Tennis"?["Jannik Sinner","Carlos Alcaraz"]:sport==="MMA"?["Fighter one","Fighter two"]:["Dallas Cowboys","San Francisco 49ers"];
   return <Shell status="standing by">
     <div style={{textAlign:"center",padding:"34px 0 22px"}}>
@@ -2435,12 +2455,10 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       </div>
       <div style={{fontSize:13,color:T.dim,marginTop:10}}>Pick a sport and two teams. Live data from the scores routes, 10,000 simulations.</div>
     </div>
-    <div className="bb-sports" style={{display:"grid",gap:6}}>
-      {SPORT_KEYS.map(k=><button key={k} onClick={()=>setSport(k)} style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,minWidth:0,padding:"9px 2px 8px",border:`1px solid ${sport===k?T.chrome:T.line}`,background:sport===k?"rgba(143,0,255,0.25)":"rgba(14,4,26,.6)",color:sport===k?"#fff":T.dim,fontFamily:F.d,fontSize:"clamp(9.5px,1.15vw,11px)",letterSpacing:.5,cursor:"pointer",whiteSpace:"nowrap",boxShadow:sport===k?`0 0 14px rgba(143,0,255,0.54)`:"none"}}><Ico>{SPORT_CFG[k].icon}</Ico><span>{SPORT_CFG[k].label}</span></button>)}
-    </div>
+    <SportPicker sport={sport} league={league} onPick={onPickSport}/>
     <button onClick={()=>onBets&&onBets()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:16,padding:"13px 14px",border:`1px solid ${T.chrome}`,background:"linear-gradient(90deg,rgba(143,0,255,.28),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left",boxShadow:`0 0 18px rgba(143,0,255,.25)`}}>
       <span style={{fontSize:18}}>🎟</span>
-      <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>BET SLIPS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Add your slips · auto-graded · leaderboards</span></span>
+      <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>BET SLIPS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,lineHeight:1.4}}>Add your slips · auto-graded · leaderboards</span></span>
       <span style={{fontFamily:F.d,color:T.chrome}}>▸</span>
     </button>
     <button onClick={()=>onTools&&onTools()} style={{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto",gap:12,alignItems:"center",width:"100%",marginTop:8,padding:"13px 14px",border:`1px solid ${NEON.gold}99`,background:"linear-gradient(90deg,rgba(255,194,38,.14),rgba(14,4,26,.7))",color:"#fff",cursor:"pointer",textAlign:"left"}}>
@@ -2448,16 +2466,16 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <span style={{minWidth:0}}><span style={{display:"block",fontFamily:F.d,fontSize:12,letterSpacing:3}}>TOOLS</span><span style={{display:"block",fontFamily:F.m,fontSize:11,color:T.dim,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>The Book · Kalshi</span></span>
       <span style={{fontFamily:F.d,color:NEON.gold}}>▸</span>
     </button>
-    {isField(sport)?<FieldBoard sport={sport}/>:<>
-    <Panel title="TODAY'S SLATE" right={SPORT_CFG[sport].label}>
-      <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${SPORT_CFG[sport].label} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
+    {isField(sport)?<FieldBoard sport={sport} league={league}/>:<>
+    <Panel title="TODAY'S SLATE" right={lbl}>
+      <div style={{fontSize:12,color:T.dim,lineHeight:1.7}}>{indiv?`${sport==="Tennis"?"Every tennis match today and tomorrow":"Every fight on the next UFC card"}, ranked by how sure the ratings are. Model picks: these routes post no odds.`:`Scan every ${lbl} game on the board and rank them best to worst bet. Every pick comes from the sim.`}</div>
       <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
         {[["▤ SLATE",onSlate],["★ BEST OF SLATE",onBest]].map(([t,fn])=><button key={t} onClick={()=>fn&&fn()} disabled={slateOff} style={{flex:"1 1 150px",padding:"13px 10px",border:`1px solid ${T.chrome}`,background:"rgba(143,0,255,0.22)",color:"#fff",fontFamily:F.d,fontSize:12,letterSpacing:2,cursor:slateOff?"not-allowed":"pointer",opacity:slateOff?.5:1,boxShadow:"0 0 16px rgba(143,0,255,0.32)"}}>{t}</button>)}
       </div>
       <div style={{fontSize:10,color:T.dim,marginTop:8}}>{slateInfo?`● scan ready (${slateInfo.age} min old): opens instantly`:"Pulled live from the scores routes (free), then cached for 20 minutes."}</div>
       {slateErr&&<div style={{marginTop:10,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{slateErr}</div>}
     </Panel>
-    <Panel title="MATCHUP INPUT" right={SPORT_CFG[sport].label}>
+    <Panel title="MATCHUP INPUT" right={lbl}>
       <div style={{display:"flex",alignItems:"flex-end",gap:10}}>
         <div style={{flex:1}}>
           <div style={{fontSize:11,color:AWAY_DEF,marginBottom:5}}>{indiv?(sport==="Tennis"?"player":"fighter"):"away"}</div>
@@ -2473,14 +2491,95 @@ function SetupScreen({sport,setSport,awayInput,setAwayInput,homeInput,setHomeInp
       <button onClick={onFetch} disabled={!ok} style={{width:"100%",marginTop:16,padding:"14px",border:`1px solid ${ok?T.chrome:T.line}`,background:ok?"rgba(143,0,255,0.29)":"none",color:ok?"#fff":T.faint,fontFamily:F.d,fontSize:13,letterSpacing:3,cursor:ok?"pointer":"not-allowed",boxShadow:ok?"0 0 22px rgba(143,0,255,0.45),inset 0 0 18px rgba(143,0,255,0.18)":"none"}}>{loading?"LOADING…":"RUN SIMULATION"}</button>
       {error&&<div style={{marginTop:12,padding:"10px 12px",border:"1px solid #FF335566",background:"rgba(255,51,85,.08)",fontSize:12,color:"#FF8095"}}>{error}</div>}
     </Panel>
-    <LiveScores sport={sport} onPick={onPick} onFinal={onFinal} onBox={onBox}/>
+    <LiveScores sport={sport} league={league} onPick={onPick} onFinal={onFinal} onBox={onBox}/>
     </>}
   </Shell>;
 }
+// ─── THE SPORT PICKER: a few sports; open one for its leagues (men's first, women's second), best-known first, the
+// rest behind MORE, college and youth at the bottom. Picking a league narrows the slate and Today's Games to it.
+function SportPicker({ sport, league, onPick }) {
+  const here = placeOf(sport, league) || { key: MENU[0].key, women: false };
+  const [open, setOpen] = useState(here.key), [women, setWomen] = useState(here.women);
+  const [more, setMore] = useState(false), [young, setYoung] = useState(false), [q, setQ] = useState("");
+  const m = menuFor(open), g = m[women && !m.mixed ? "women" : "men"], hasW = !m.mixed && (m.women.top.length + m.women.more.length + m.women.young.length) > 0;
+  const isOn = x => x.sport === sport && (x.league || null) === (league || null);
+  const inCat = key => { const mm = menuFor(key); return (mm.all && isOn(mm.all)) || ["men", "women"].some(gg => ["top", "more", "young"].some(p => mm[gg][p].some(isOn))); };
+  // a sport opened: if nothing in it is picked yet, its "all" (or its first league) is picked so the screen follows
+  const openCat = key => {
+    setOpen(key); setMore(false); setYoung(false); setQ("");
+    const mm = menuFor(key);
+    if (inCat(key)) { setWomen(placeOf(sport, league)?.women || false); return; }
+    setWomen(false);
+    const first = mm.all || mm.men.top[0] || mm.men.young[0] || mm.women.top[0];
+    if (first) onPick(first.sport, first.league);
+  };
+  const setG = w => {
+    setWomen(w); setMore(false); setYoung(false); setQ("");
+    const gg = m[w ? "women" : "men"], first = gg.top[0] || gg.young[0] || gg.more[0];
+    if (first && !(m.all && isOn(m.all)) && !["top", "more", "young"].some(p => gg[p].some(isOn))) onPick(first.sport, first.league);
+  };
+  const chip = x => <button key={x.id} onClick={() => onPick(x.sport, x.league)} aria-pressed={isOn(x)} title={x.name || x.label}
+    style={{ minWidth: 0, padding: "8px 8px", border: `1px solid ${isOn(x) ? T.chrome : T.line}`, background: isOn(x) ? "rgba(143,0,255,0.28)" : "rgba(14,4,26,.6)", color: isOn(x) ? "#fff" : T.ink, fontFamily: F.m, fontSize: 11, lineHeight: 1.3, cursor: "pointer", textAlign: "left", overflowWrap: "break-word", boxShadow: isOn(x) ? "0 0 12px rgba(143,0,255,0.45)" : "none" }}>{x.label}</button>;
+  const grid = list => <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(128px,1fr))", gap: 6 }}>{list.map(chip)}</div>;
+  const fold = (on, set, label, n) => <button onClick={() => set(!on)} aria-expanded={on} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, width: "100%", marginTop: 10, padding: "8px 10px", border: `1px dashed ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer", textAlign: "left" }}><span style={oneLine}>{label} ({n})</span><span>{on ? "▴" : "▾"}</span></button>;
+  const ql = q.trim().toLowerCase(), moreList = ql ? g.more.filter(x => `${x.label} ${x.name}`.toLowerCase().includes(ql)) : g.more;
+  return <div>
+    <div className="bb-cats" role="tablist" aria-label="sports" style={{ display: "grid", gap: 6 }}>
+      {MENU.map(c => { const sel = open === c.key, has = inCat(c.key);
+        return <button key={c.key} role="tab" aria-selected={sel} onClick={() => openCat(c.key)} style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, minWidth: 0, padding: "9px 2px 8px", border: `1px solid ${sel || has ? T.chrome : T.line}`, background: sel ? "rgba(143,0,255,0.25)" : "rgba(14,4,26,.6)", color: sel ? "#fff" : has ? T.ink : T.dim, fontFamily: F.d, fontSize: "clamp(9.5px,1.15vw,11px)", letterSpacing: .5, cursor: "pointer", whiteSpace: "nowrap", boxShadow: sel ? "0 0 14px rgba(143,0,255,0.54)" : "none" }}>
+          <Ico>{c.icon}</Ico><span style={{ maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }}>{c.label}</span></button>; })}
+    </div>
+    <div style={{ marginTop: 8, padding: 10, border: `1px solid ${T.line}`, background: "rgba(14,4,26,.55)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", marginBottom: 10 }}>
+        <span style={{ ...oneLine, fontFamily: F.d, fontSize: 11, letterSpacing: 2, color: T.chrome }}>{m.label.toUpperCase()}</span>
+        {hasW && <div role="group" aria-label="men or women" style={{ display: "grid", gridTemplateColumns: "repeat(2,auto)", border: `1px solid ${T.line}` }}>
+          {[[false, "MEN"], [true, "WOMEN"]].map(([w, t]) => <button key={t} onClick={() => setG(w)} aria-pressed={women === w} style={{ padding: "6px 12px", border: "none", background: women === w ? "rgba(143,0,255,0.3)" : "none", color: women === w ? "#fff" : T.dim, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer" }}>{t}</button>)}
+        </div>}
+      </div>
+      {grid([...(m.all && !women ? [m.all] : []), ...g.top])}
+      {g.more.length > 0 && fold(more, setMore, m.key === "fighting" ? "MORE PROMOTIONS" : "MORE LEAGUES", g.more.length)}
+      {more && <div style={{ marginTop: 8 }}>
+        {g.more.length > 12 && <input aria-label="find a league" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a league…" style={{ ...fieldStyle(), marginBottom: 8, padding: "8px 10px", fontSize: 12 }}/>}
+        {moreList.length ? grid(moreList) : <div style={{ fontSize: 11, color: T.faint }}>Nothing matches.</div>}
+      </div>}
+      {g.young.length > 0 && fold(young, setYoung, "COLLEGE & YOUTH", g.young.length)}
+      {young && <div style={{ marginTop: 8 }}>{grid(g.young)}</div>}
+    </div>
+  </div>;
+}
+
+// ─── THE CORNER SLIP: picks added with + wait here (bottom right) while you keep looking; OPEN SLIP takes them to
+// NEW SLIP, where they're priced on Kalshi. The same picks either way.
+function SlipDock({ onOpen }) {
+  const cart = useCart(), [open, setOpen] = useState(true), n = useRef(cart.length);
+  useEffect(() => { if (cart.length > n.current) setOpen(true); n.current = cart.length; }, [cart.length]);   // a new pick pops it open
+  if (!cart.length) return null;
+  const when = c => (c?.date ? whenTxt(c.date) : c?.title || "");
+  return <>
+    <div aria-hidden style={{ height: open ? Math.min(360, 120 + cart.length * 44) : 70 }}/>
+    <div role="region" aria-label="your slip" style={{ position: "fixed", right: 16, bottom: 16, zIndex: 50, width: "min(340px, calc(100vw - 32px))", boxSizing: "border-box", border: `1px solid ${NEON.teal}`, background: "rgba(10,3,20,.96)", boxShadow: "0 0 24px rgba(23,242,208,.25), 0 10px 30px rgba(0,0,0,.6)", fontFamily: F.m }}>
+      <button onClick={() => setOpen(!open)} aria-expanded={open} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "center", width: "100%", padding: "10px 12px", border: "none", background: "rgba(23,242,208,.10)", color: "#fff", cursor: "pointer", textAlign: "left" }}>
+        <span style={{ ...oneLine, fontFamily: F.d, fontSize: 11, letterSpacing: 2 }}>SLIP · {cart.length} {cart.length === 1 ? "PICK" : "PICKS"}{cart.length > 1 ? " · PARLAY" : ""}</span>
+        <span style={{ fontFamily: F.d, color: NEON.teal }}>{open ? "▾" : "▴"}</span>
+      </button>
+      {open && <div style={{ padding: "6px 12px 12px" }}>
+        <div style={{ maxHeight: 220, overflowY: "auto" }}>
+          {cart.map(x => <div key={x.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${T.line}` }}>
+            <div style={{ minWidth: 0 }}><div style={{ ...oneLine, fontSize: 12, color: T.ink, fontWeight: 700 }}>{x.text}</div><div style={{ ...oneLine, fontSize: 10, color: T.faint }}>{x.choice ? `${x.choice.sport} · ${when(x.choice)}` : "typed pick"}</div></div>
+            <button aria-label={`remove ${x.text}`} onClick={() => cartSet(_cart.filter(y => y.key !== x.key))} style={{ ...btnStyle(false), padding: "4px 8px", cursor: "pointer", color: T.dim }}>×</button>
+          </div>)}
+        </div>
+        <button onClick={onOpen} style={{ width: "100%", marginTop: 10, padding: 11, border: `1px solid ${NEON.teal}`, background: "rgba(23,242,208,.16)", color: "#fff", fontFamily: F.d, fontSize: 11, letterSpacing: 2, cursor: "pointer" }}>OPEN SLIP · PRICE ON KALSHI ▸</button>
+        <button onClick={() => cartSet([])} style={{ width: "100%", marginTop: 6, padding: 7, border: "none", background: "none", color: T.faint, fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer" }}>CLEAR</button>
+      </div>}
+    </div>
+  </>;
+}
+
 // ─── GOLF + RACING: a field of players, shown as a leaderboard (no two-sided game to simulate) ──────────────
 // Each league's current event (its scoreboard with no date: the event this week, else the latest one), every
 // league ESPN lists for the sport. Events in progress first, then the ones still to start, then the finished ones.
-function FieldBoard({ sport }) {
+function FieldBoard({ sport, league = null }) {
   const [st, setSt] = useState({ sport, evs: null, err: null });
   const [open, setOpen] = useState({});
   useEffect(() => {
@@ -2488,7 +2587,7 @@ function FieldBoard({ sport }) {
     const pull = async () => {
       if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 15000); return; }
       const R = ROUTES[sport];
-      const res = await pool(R.leagues, 5, lg => getJSON(`${SITE_BASE}/${R.sport}/${lg}/scoreboard`).then(j => fieldBoard(j).map(e => ({ ...e, slug: lg, league: e.league || leagueName(sport, lg) }))).catch(() => null));
+      const res = await pool(R.leagues.filter(l => !league || l === league), 5, lg => getJSON(`${SITE_BASE}/${R.sport}/${lg}/scoreboard`).then(j => fieldBoard(j).map(e => ({ ...e, slug: lg, league: e.league || leagueName(sport, lg) }))).catch(() => null));
       if (!alive) return;
       const ok = res.filter(Boolean), seen = new Set(), rank = { in: 0, pre: 1, post: 2 };
       const evs = ok.flat().filter(e => !seen.has(e.id) && seen.add(e.id))
@@ -2499,7 +2598,7 @@ function FieldBoard({ sport }) {
     setSt({ sport, evs: null, err: null }); setOpen({});
     pull();
     return () => { alive = false; clearTimeout(timer); };
-  }, [sport]);
+  }, [sport, league]);
   const cfg = SPORT_CFG[sport], evs = st.sport === sport ? st.evs : null, live = (evs || []).filter(e => e.state === "in").length;
   const when = e => e.state === "pre" ? `${etDayLabel(e.date)}${e.end && etDayLabel(e.end) !== etDayLabel(e.date) ? ` – ${etDayLabel(e.end)}` : ""}` : (e.detail || (e.state === "post" ? "Final" : "Live"));
   return <Panel title={live ? `LIVE NOW · ${live}` : "LEADERBOARDS"} right={`${cfg.label}${evs ? ` · ${evs.length} events` : ""}`} color={live ? NEON.red : T.chrome}>
@@ -3435,11 +3534,38 @@ async function api(method, path, body) {
   if (!r.ok) { const e = new Error(j.error || `Server error ${r.status}`); e.status = r.status; throw e; }
   return j;
 }
+// ---- the slip in progress: picks added from anywhere (the + next to a team on Today's Games) wait in the corner slip
+// and are already on NEW SLIP. Kept on this device, so it survives a refresh. Entries: { key, text, choice, kline }.
+const CART_LS = "bb.cart";
+const cartSubs = new Set();
+const cartRead = () => { try { const a = JSON.parse(localStorage.getItem(CART_LS) || "[]"); return Array.isArray(a) ? a.filter(x => x && typeof x.text === "string" && x.text.trim()).slice(0, 20) : []; } catch (_) { return []; } };
+let _cart = cartRead();
+function cartSet(next) {
+  if (JSON.stringify(next) === JSON.stringify(_cart)) return;
+  _cart = next;
+  try { localStorage.setItem(CART_LS, JSON.stringify(next)); } catch (_) { /* memory only */ }
+  cartSubs.forEach(f => f(next));
+}
+if (typeof window !== "undefined") window.addEventListener("storage", e => { if (e.key === CART_LS) { _cart = cartRead(); cartSubs.forEach(f => f(_cart)); } });
+function useCart() {
+  const [c, setC] = useState(_cart);
+  useEffect(() => { cartSubs.add(setC); setC(_cart); return () => { cartSubs.delete(setC); }; }, []);
+  return c;
+}
+const pickKey = l => (l ? `${l.sport}|${l.eventId}|${l.market}|${l.side}` : "");
+// a team's moneyline from a Today's Games row: on the slip, or off it if it's already there
+function cartToggle(leg) {
+  const k = pickKey(leg);
+  if (_cart.some(x => x.key === k)) { cartSet(_cart.filter(x => x.key !== k)); return false; }
+  cartSet([..._cart.filter(x => !(x.choice && x.choice.sport === leg.sport && String(x.choice.eventId) === String(leg.eventId) && x.choice.market === "ml")), { key: k, text: legLabel(leg), choice: leg, kline: null }]);
+  return true;
+}
+
 // every game on the board today and tomorrow (plus this week's football), as rows a typed pick can match
 let _betRows = null;
 function loadBetRows() {
   if (_betRows && Date.now() - _betRows.t < 120000) return _betRows.p;
-  const days = [ymd(new Date()), ymd(new Date(Date.now() + 864e5))];
+  const days = [...new Set([sportsDay(0), ymd(new Date()), ymd(new Date(Date.now() + 864e5))])];   // last night's late games until 6 AM ET
   const jobs = [];
   const rowsOf = (sp, lg, j) => liveBoard(j, sp).map(x => ({ ...x, sport: sp, league: lg, title: sp === "Tennis" || sp === "MMA" ? x.league : "" }));
   for (const sp of SPORT_KEYS) {
@@ -3467,7 +3593,9 @@ const gameTxt = l => l.market === "kalshi" ? (l.title || "Kalshi market") : (l.s
 
 function BetSlipsScreen({ onBack, onTools }) {
   const [me, setMe] = useState({ loading: true });
-  const [tab, setTab] = useState("slip");
+  // the tab it was on comes back after a refresh (someone's page goes back to the tab it was opened from)
+  const [tab, setTab] = useState(() => { const t = ssGet("bb.betsTab", "slip"); return ["slip", "mine", "board", "live", "past"].includes(t) ? t : "slip"; });
+  useEffect(() => { if (tab !== "user") ssSet("bb.betsTab", tab); }, [tab]);
   const [who, setWho] = useState(null), [from, setFrom] = useState("board");   // a username whose page is open, and the tab it was opened from
   const [ver, setVer] = useState(0);                          // bump to re-read after a change
   const [kal, setKal] = useState(null), [flash, setFlash] = useState(null);   // this device's Kalshi key (never readable, only usable)
@@ -3545,7 +3673,11 @@ function TailBox({ title, onClose, children }) {
 }
 function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
   // tailing: their open picks, their odds (yours to change); each line stays tied to their exact game and bet until you edit it
-  const [lines, setLines] = useState(() => (seed?.legs.length ? seed.legs.map(l => ({ ...blankLine(), text: legLabel(l), odds: oddsPref() === "pct" ? pctTxt1(l.odds) : fmtAm(l.odds), seed: l })) : [blankLine()]));
+  // a new slip starts from the slip in progress (picks added with + on Today's Games); a tail starts from the ticket
+  const [lines, setLines] = useState(() => (seed?.legs.length ? seed.legs.map(l => ({ ...blankLine(), text: legLabel(l), odds: oddsPref() === "pct" ? pctTxt1(l.odds) : fmtAm(l.odds), seed: l }))
+    : seed ? [blankLine()] : _cart.length ? _cart.map(x => ({ ...blankLine(), text: x.text, choice: x.choice || null, kline: x.kline ?? null })) : [blankLine()]));
+  // ...and every change to it is the slip in progress (the corner slip on the other screens shows the same picks)
+  useEffect(() => { if (!seed) cartSet(lines.filter(l => l.text.trim()).map(l => ({ key: l.choice ? pickKey(l.choice) : `t:${l.text.trim().toLowerCase()}`, text: l.text, choice: l.choice || null, kline: l.kline ?? null }))); }, [lines, seed]);
   const [stake, setStake] = useState("");
   const [board, setBoard] = useState(null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState(null);
@@ -3568,7 +3700,8 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
     // a tailed line comes already chosen: the same game and bet as the ticket it was copied from
     const sr = l.seed && board ? rows.find(r => r.sport === l.seed.sport && String(r.id) === String(l.seed.eventId)) : null;
     const ks = l.seed?.market === "kalshi" ? { market: "kalshi", kalshi: true, side: "yes", line: null, ticker: l.seed.ticker, sport: l.seed.sport, league: l.seed.league, eventId: l.seed.ticker, date: l.seed.date, state: "pre", name: l.seed.name, title: l.seed.title, away: l.seed.away, home: l.seed.home } : null;   // a Kalshi market: buy-only
-    const base = l.choice || ks || (sr ? legFromRow(sr, l.seed) : null), leg = base && l.kline != null ? { ...base, line: l.kline } : base;
+    const now = l.choice && !l.choice.kalshi && board ? rows.find(r => r.sport === l.choice.sport && String(r.id) === String(l.choice.eventId)) : null;
+    const base = (now ? { ...l.choice, state: now.state, date: now.date } : l.choice) || ks || (sr ? legFromRow(sr, l.seed) : null), leg = base && l.kline != null ? { ...base, line: l.kline } : base;
     const odds = readOddsAs(l.odds, fmt);
     return { l: base && !l.choice ? { ...l, choice: base } : l, res, leg, odds, ready: !!leg && !leg.kalshi && leg.state === "pre" && odds != null };
   }), [lines, board, kidx, fmt]);
@@ -3589,6 +3722,7 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
     setBusy(true); setErr(null);
     try {
       await api("POST", "slips", { stake: amt, legs: legsOut(), ...(seed ? { tail: seed.id } : {}) });
+      if (!seed) cartSet([]);                                  // placed: the slip in progress is done
       setLines([blankLine()]); setStake(""); onPlaced();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
@@ -3596,6 +3730,7 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
   const kalshiDone = async r => {
     try {
       await api("POST", "slips", { stake: r.cost, legs: legsOut(r.legOdds), kalshi: r.kalshi, ...(seed ? { tail: seed.id } : {}) });
+      if (!seed) cartSet([]);
       setReview(false); setLines([blankLine()]); setStake(""); onPlaced(r.summary);
     } catch (e) { setReview(false); setErr(`${r.summary} It's on Kalshi, but saving it here failed: ${e.message} Add it again with Kalshi switched off to track it.`); }
   };
@@ -3818,8 +3953,8 @@ function SyncPanel({ kal }) {
 }
 
 // ─── TOOLS: Kalshi (each person's own key) and THE BOOK (blackjack basic strategy) ──────────────────────────────────
-function ToolsScreen({ onBack, start = "book" }) {
-  const [tab, setTab] = useState(start), [me, setMe] = useState({ loading: true }), [kal, setKal] = useState(null);
+function ToolsScreen({ onBack, start = "book", onTab }) {
+  const [tab, setTab0] = useState(start), setTab = t => { setTab0(t); onTab && onTab(t); }, [me, setMe] = useState({ loading: true }), [kal, setKal] = useState(null);
   useEffect(() => { api("GET", "me").then(j => setMe({ username: j.username })).catch(e => setMe({ err: e.message })); }, []);
   useEffect(() => { if (me.username) savedKey(me.username).then(k => setKal(k || null)).catch(() => setKal(null)); }, [me.username]);
   return <Shell status="tools">
@@ -4201,7 +4336,15 @@ function SlipCard({ sl, canTakeBack, onTakeBack, top = null, liveRows = null, fo
 // someone else's Kalshi ticket on LIVE NOW: what it would cash out for right now (only its owner can cash it out).
 // Straights and combos with buyers on the book: Kalshi's live bids for those contracts. Other combos: an estimate from each
 // leg's current bid (no one can ask Kalshi's market makers on someone else's behalf).
-function CashValue({ sl }) {
+// a ticket's Kalshi market, side and size (what everyone sees of someone's ticket; the same view of your own)
+function kView(k) {
+  if (!k) return null;
+  if (k.mkt) return k;
+  const o = (k.orders || [])[0], mkt = k.combo ? k.combo.market_ticker : o?.ticker || null;
+  const count = k.combo ? Number(k.combo.contracts) || 0 : (k.orders || []).filter(x => x.ticker === mkt).reduce((a, x) => a + (Number(x.filled) || 0), 0);
+  return { env: k.env, combo: !!k.combo, imported: !!k.imported, mkt, side: k.combo ? "yes" : o?.side === "no" ? "no" : "yes", count: Math.round(count * 100) / 100, dec: k.dec > 1 ? k.dec : null };
+}
+function CashValue({ sl, note = null }) {
   const K = sl.kalshi, [v, setV] = useState(null);
   useEffect(() => {
     if (!K?.mkt || !(K.count > 0)) return;
@@ -4228,7 +4371,7 @@ function CashValue({ sl }) {
   const pl = v && v.value != null ? Math.round((v.value - sl.stake) * 100) / 100 : null;
   return <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}`, fontSize: 12, color: T.dim, lineHeight: 1.5 }}>
     <div>Cash out now {pl != null ? <><b style={{ color: "#fff" }}>{cash(v.value)}</b> <span style={{ color: pl > 0 ? NEON.green : pl < 0 ? NEON.red : T.dim }}>({sCash(pl)})</span></> : <span style={{ color: T.faint }}>{v?.none ? "no bids on Kalshi right now" : "…"}</span>}</div>
-    <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{v?.how === "est" ? "Estimate from each leg's live Kalshi price" : "Kalshi's live bids, after fees"} · only {sl.username} can cash it out</div>
+    <div style={{ fontSize: 10, color: T.faint, overflowWrap: "anywhere" }}>{v?.how === "est" ? "Estimate from each leg's live Kalshi price" : "Kalshi's live bids, after fees"} · {note || `only ${sl.username || "its owner"} can cash it out`}</div>
   </div>;
 }
 
@@ -4363,7 +4506,8 @@ function CashOut({ sl, kal, onCashed }) {
     finally { busyRef.current = false; setBusy(false); }
   };
   const box = { marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.line}` };
-  if (!ready) return <div style={{ ...box, fontSize: 11, color: T.dim, lineHeight: 1.5 }}>{!kal ? "Connect your Kalshi key in Tools → Kalshi to cash out." : kal.env !== K.env ? `This slip was bought on Kalshi ${K.env === "demo" ? "demo" : "live"}; your key here is for ${kal.env}.` : "Couldn't read this slip's Kalshi position."}</div>;
+  // no key for this ticket on this device: the value still shows (from Kalshi's public prices), the button needs the key
+  if (!ready) return <CashValue sl={{ ...sl, kalshi: kView(K) }} note={!kal ? "connect your Kalshi key in Tools → Kalshi to cash out" : kal.env !== K.env ? `bought on Kalshi ${K.env === "demo" ? "demo" : "live"}; your key here is for ${kal.env}` : "couldn't read this ticket's Kalshi position"}/>;
   const val = v && !v.none && !v.gone && v.value != null ? v.value : null, pl = val != null ? Math.round((val - sl.stake) * 100) / 100 : null;
   return <div style={box}>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 8 }}>
@@ -4444,13 +4588,13 @@ function Tickets({ kind, onOpen, kal = null, onTools, onTailed, onCashed }) {
   };
   const card = t => <Fragment key={t.id}>
     <SlipCard sl={t} top={head(t)} liveRows={kind === "live" ? scores : null} track={kind === "live" && isLiveNow(t) ? trackLeg : null} gameOfLeg={kind === "live" ? gameOf : null}
-      foot={kind === "live" && isLiveNow(t) && t.status === "pending" && t.kalshi ? (t.you ? <CashOut sl={t} kal={kal} onCashed={m => onCashed && onCashed(m)}/> : <CashValue sl={t}/>) : null}/>
+      foot={kind === "live" && t.status === "pending" && t.kalshi ? (t.you ? <CashOut sl={t} kal={kal} onCashed={m => onCashed && onCashed(m)}/> : <CashValue sl={t}/>) : null}/>
     {kind === "live" && tailing?.id === t.id && <NewSlip key={`tail${t.id}`} seed={tailing} onUnseed={() => setTailing(null)} kal={kal} onTools={onTools} onPlaced={msg => { setTailing(null); onTailed && onTailed(msg); }}/>}
   </Fragment>;
   if (kind === "live") {
     const today = etDayOf(new Date().toISOString()), list = d?.tickets || [];
     const groups = [["LIVE NOW", list.filter(isLiveNow)], ["LATER TODAY", []], ["UPCOMING", []]];
-    for (const t of list) if (!groups[0][1].includes(t)) (t.next && etDayOf(t.next) === today ? groups[1][1] : groups[2][1]).push(t);
+    for (const t of list) if (!groups[0][1].includes(t)) (t.next && (etDayOf(t.next) === today || etDayOf(t.next) === sportsDayISO(0)) ? groups[1][1] : groups[2][1]).push(t);
     return <>
       <div style={{ marginTop: 14, fontSize: 11, color: T.dim, lineHeight: 1.6 }}>Everyone's tickets that are still riding. Tap <span style={{ color: NEON.gold }}>TAIL ▸</span> on any ticket to bet the same picks right here, upcoming or live (live games go through Kalshi). Updates every minute.</div>
       {!d && <Panel><div style={{ fontSize: 12, color: T.dim }}>Loading tickets…</div></Panel>}
@@ -4701,7 +4845,18 @@ function BoxTable({ g, sport }) {
   </div>;
 }
 
+// ---- where you are, kept for this browser tab: a refresh comes back to the same screen (and the same tab inside it) ----
+const ROUTE_SS = "bb.route";
+const readRoute = () => { try { const r = JSON.parse(sessionStorage.getItem(ROUTE_SS) || "null"); return r && typeof r === "object" && SPORT_CFG[r.sport] ? r : null; } catch (_) { return null; } };
+const saveRoute = r => { try { sessionStorage.setItem(ROUTE_SS, JSON.stringify(r)); } catch (_) { /* nothing kept */ } };
+const ssGet = (k, d) => { try { return sessionStorage.getItem(k) ?? d; } catch (_) { return d; } };
+const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) { /* fine */ } };
+// screens that come back as they are; the rest are re-opened (a slate or a sim is re-run)
+const ROUTE_NOW = new Set(["setup", "bets", "tools", "final", "box"]), ROUTE_RERUN = { slate: "slateLoading", best: "slateLoading", indiv: "slateLoading", indivBest: "slateLoading", ready: "loading", indivMatch: "slateLoading" };
+
 export default function App() {
+  const boot = useRef(undefined);
+  if (boot.current === undefined) boot.current = readRoute();
   useEffect(()=>{try{document.title="Bobby's Boardroom";}catch(_){/* no document */}},[]);
   // anyone with their Kalshi key on this device: their open Kalshi positions are synced as tickets when the site opens
   // ...and every minute on any page, and the moment the tab comes back to the front
@@ -4712,11 +4867,13 @@ export default function App() {
     const vis=()=>{ if(!document.hidden) run(); };
     document.addEventListener("visibilitychange",vis); window.addEventListener("focus",vis);
     return ()=>{ alive=false; clearInterval(timer); document.removeEventListener("visibilitychange",vis); window.removeEventListener("focus",vis); }; },[]);
-  const [phase,setPhase]=useState("setup");
-  const [sport,setSport]=useState("MLB");
-  const [awayInput,setAwayInput]=useState("");
-  const [homeInput,setHomeInput]=useState("");
-  const [isNeutral,setIsNeutral]=useState(false);
+  const B=boot.current;
+  const [phase,setPhase]=useState(()=>!B?"setup":ROUTE_NOW.has(B.phase)&&(!["final","box"].includes(B.phase)||B.finalRow)?B.phase:ROUTE_RERUN[B.phase]||"setup");
+  const [sport,setSport]=useState(B?.sport||"MLB");
+  const [league,setLeague]=useState(B?.league||null);
+  const [awayInput,setAwayInput]=useState(B?.away||"");
+  const [homeInput,setHomeInput]=useState(B?.home||"");
+  const [isNeutral,setIsNeutral]=useState(!!B?.neutral);
   const [matchData,setMatchData]=useState(null);
   const [simResult,setSimResult]=useState(null);
   const [loading,setLoading]=useState(false);
@@ -4729,8 +4886,16 @@ export default function App() {
   const [trackVer,setTrackVer]=useState(0);
   const [indiv,setIndiv]=useState(null);
   const [indivMatch,setIndivMatch]=useState(null);
-  const [finalRow,setFinalRow]=useState(null);
-  const [toolsTab,setToolsTab]=useState("book");
+  const [finalRow,setFinalRow]=useState(B?.finalRow||null);
+  const [toolsTab,setToolsTab]=useState(B?.toolsTab||"book");
+  const pickSport=(sp,lg=null)=>{setSport(sp);setLeague(lg||null);};
+  const openBets=tab=>{if(tab)ssSet("bb.betsTab",tab);setPhase("bets");};
+  // remember where this tab is (a refresh comes back here); loading screens keep the screen they're loading
+  useEffect(()=>{
+    if(phase==="loading"||phase==="slateLoading")return;
+    saveRoute({phase,sport,league,away:awayInput,home:homeInput,neutral:isNeutral,toolsTab,finalRow:phase==="final"||phase==="box"?finalRow:null,backTo,
+      ...(phase==="indivMatch"&&indivMatch?{from:indivMatch.from||null,fromSlate:!!indivMatch.match&&!!indivMatch.from}:{})});
+  },[phase,sport,league,awayInput,homeInput,isNeutral,toolsTab,finalRow,backTo,indivMatch]);
   // Lineups: while a game hasn't started and a side's lineup isn't posted yet, check the game every 90 seconds;
   // the moment it's posted, the matchup is re-pulled with it and re-simulated.
   const [lineupNote,setLineupNote]=useState(null);
@@ -4777,14 +4942,14 @@ export default function App() {
     if(!slateRec)return null;
     try{return rankSlate(slateRec.data.games,slateRec.data.sport);}catch(e){return{error:e.message||"Could not rank the slate."};}
   },[slateRec,trackVer]);
-  const slateInfo=useMemo(()=>{const h=peekSlate(sport);return h?{age:Math.max(0,Math.round((Date.now()-h.t)/60000))}:null;},[sport,phase,slateRec]);
+  const slateInfo=useMemo(()=>{const h=peekSlate(slateIdOf(sport,league));return h?{age:Math.max(0,Math.round((Date.now()-h.t)/60000))}:null;},[sport,league,phase,slateRec]);
 
   async function openIndiv(best,force=false){
     setSlateErr(null);setError(null);
-    if(!force&&indiv&&indiv.sport===sport&&Date.now()-indiv.t<SLATE_TTL_MS){setPhase(best?"indivBest":"indiv");return;}
+    if(!force&&indiv&&indiv.sport===sport&&(indiv.league||null)===(league||null)&&Date.now()-indiv.t<SLATE_TTL_MS){setPhase(best?"indivBest":"indiv");return;}
     const onScreen=phase==="indiv"||phase==="indivBest";
     if(onScreen)setRefreshing(true);else setPhase("slateLoading");
-    try{const r=await fetchIndiv(sport);setIndiv(r);setPhase(best?"indivBest":"indiv");}
+    try{const r=await fetchIndiv(sport,league);setIndiv(r);setPhase(best?"indivBest":"indiv");}
     catch(e){setSlateErr(e.message||"Couldn't load today's board. Try again.");setPhase(onScreen?phase:"setup");}
     finally{setRefreshing(false);}
   }
@@ -4792,10 +4957,10 @@ export default function App() {
     if(isIndiv(sport))return openIndiv(view==="best",force);
     const onScreen=phase==="slate"||phase==="best";
     setSlateErr(null);setError(null);setSlateStatus("");
-    if(!force){const hit=peekSlate(sport);if(hit){setSlateRec(hit);setPhase(view);return;}}
+    if(!force){const hit=peekSlate(slateIdOf(sport,league));if(hit){setSlateRec(hit);setPhase(view);return;}}
     if(force&&onScreen)setRefreshing(true);else setPhase("slateLoading");
     try{
-      const rec=await getSlate(onScreen&&slateRec?slateRec.data.sport:sport,{force,onRetry:r=>setSlateStatus(`API busy or rate limited. Retrying in ${Math.round(r.waitMs/1000)}s (${r.attempt}/${r.retries})`)});
+      const rec=await getSlate(onScreen&&slateRec?slateIdOf(slateRec.data.sport,slateRec.data.league):slateIdOf(sport,league),{force,onRetry:r=>setSlateStatus(`API busy or rate limited. Retrying in ${Math.round(r.waitMs/1000)}s (${r.attempt}/${r.retries})`)});
       setSlateRec(rec);setPhase(view);
     }catch(e){
       setSlateErr(e.message||"Slate scan failed. Try again.");
@@ -4829,24 +4994,38 @@ export default function App() {
       setLoading(false);
     }
   }
+  // after a refresh: what was on screen is opened again (a slate re-read from its cache or re-scanned, a sim re-run)
+  useEffect(()=>{
+    const b=boot.current;
+    if(!b||!ROUTE_RERUN[b.phase])return;
+    if(b.phase==="slate"||b.phase==="best")openSlate(b.phase);
+    else if(b.phase==="indiv"||b.phase==="indivBest")openIndiv(b.phase==="indivBest");
+    else if(b.phase==="indivMatch"&&b.fromSlate)openIndiv(b.from==="indivBest");
+    else if((b.phase==="ready"||b.phase==="indivMatch")&&b.away&&b.home)handleFetch({away:b.away,home:b.home,neutral:!!b.neutral,sport:b.sport});
+    else setPhase("setup");
+  },[]);
   const runFull=(row,from)=>{setBackTo(from);handleFetch({away:row.md.away.name,home:row.md.home.name,neutral:row.neutral,sport:slateRec.data.sport,from});};
 
-  if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onSim={indiv.sport==="Tennis"?m=>{setIndivMatch({sport:"Tennis",match:m,fit:indiv.fit,from:phase});setPhase("indivMatch");}:null} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
-  if (phase==="indivMatch"&&indivMatch) return indivMatch.sport==="Tennis"?<TennisSimScreen res={indivMatch} onBack={()=>setPhase(indivMatch.from||"setup")} onReset={()=>setPhase("setup")}/>:<IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
-  if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")} onTools={()=>{setToolsTab("kalshi");setPhase("tools");}}/>;
-  if (phase==="tools") return <ToolsScreen start={toolsTab} onBack={()=>setPhase("setup")}/>;
-  if (phase==="final"&&finalRow) return <FinalScreen sport={finalRow.sport} row={finalRow.row} onBack={()=>setPhase("setup")}/>;
-  if (phase==="box"&&finalRow) { const r=finalRow.row; return <FinalScreen live sport={finalRow.sport} row={r} onBack={()=>setPhase("setup")} onSim={()=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport:finalRow.sport,row:r})}/>; }
-  if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
-  if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
-  if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
-    const meta={t:slateRec.t,slateDate:slateRec.data.slateDate,sources:slateRec.data.sources};
-    const common={ranked,sport:slateRec.data.sport,meta,refreshing,err:slateErr||error,
-      onRefresh:()=>openSlate(phase,true),onRunFull:r=>runFull(r,phase),onBack:()=>{setPhase("setup");setSlateErr(null);setError(null);}};
-    return phase==="slate"?<SlateScreen {...common} onBest={()=>setPhase("best")}/>:<BestPickScreen {...common} onSlate={()=>setPhase("slate")}/>;
-  }
-  if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
-  return <SetupScreen sport={sport} setSport={setSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
-    onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>setPhase("bets")} onTools={()=>{setToolsTab("book");setPhase("tools");}} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
-    onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport,row:r})}/>;
+  // every screen but Bet Slips carries the corner slip (picks added with +)
+  const screen=()=>{
+    if ((phase==="indiv"||phase==="indivBest")&&indiv) return <IndivSlateScreen res={indiv} best={phase==="indivBest"} refreshing={refreshing} onSim={indiv.sport==="Tennis"?m=>{setIndivMatch({sport:"Tennis",match:m,fit:indiv.fit,from:phase});setPhase("indivMatch");}:null} onBack={()=>setPhase("setup")} onRefresh={()=>openIndiv(phase==="indivBest",true)} onToggle={()=>setPhase(phase==="indiv"?"indivBest":"indiv")}/>;
+    if (phase==="indivMatch"&&indivMatch) return indivMatch.sport==="Tennis"?<TennisSimScreen res={indivMatch} onBack={()=>setPhase(indivMatch.from||"setup")} onReset={()=>setPhase("setup")}/>:<IndivMatchScreen res={indivMatch} onBack={()=>setPhase("setup")}/>;
+    if (phase==="bets") return <BetSlipsScreen onBack={()=>setPhase("setup")} onTools={()=>{setToolsTab("kalshi");setPhase("tools");}}/>;
+    if (phase==="tools") return <ToolsScreen start={toolsTab} onTab={setToolsTab} onBack={()=>setPhase("setup")}/>;
+    if (phase==="final"&&finalRow) return <FinalScreen sport={finalRow.sport} row={finalRow.row} onBack={()=>setPhase("setup")}/>;
+    if (phase==="box"&&finalRow) { const r=finalRow.row; return <FinalScreen live sport={finalRow.sport} row={r} onBack={()=>setPhase("setup")} onSim={()=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport:finalRow.sport,row:r})}/>; }
+    if (phase==="loading") return <LoadingScreen awayName={awayInput} homeName={homeInput} sport={sport}/>;
+    if (phase==="slateLoading") return <SlateLoading sport={sport} status={slateStatus}/>;
+    if ((phase==="slate"||phase==="best")&&slateRec&&ranked&&!ranked.error) {
+      const meta={t:slateRec.t,slateDate:slateRec.data.slateDate,sources:slateRec.data.sources};
+      const common={ranked,sport:slateRec.data.sport,meta,refreshing,err:slateErr||error,
+        onRefresh:()=>openSlate(phase,true),onRunFull:r=>runFull(r,phase),onBack:()=>{setPhase("setup");setSlateErr(null);setError(null);}};
+      return phase==="slate"?<SlateScreen {...common} onBest={()=>setPhase("best")}/>:<BestPickScreen {...common} onSlate={()=>setPhase("slate")}/>;
+    }
+    if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
+    return <SetupScreen sport={sport} league={league} onPickSport={pickSport} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
+      onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>openBets("slip")} onTools={()=>{setToolsTab("book");setPhase("tools");}} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
+      onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport,row:r})}/>;
+  };
+  return <>{screen()}{phase!=="bets"&&<SlipDock onOpen={()=>openBets("slip")}/>}</>;
 }

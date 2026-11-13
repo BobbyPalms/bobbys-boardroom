@@ -185,6 +185,11 @@ export function amOdds(v) {                                   // "-130", "+110",
 const line = v => { if (v == null) return null; const x = n(String(v).replace(/^[ou]/i, "")); return x != null && Math.abs(x) < 500 ? x : null; };
 const statOf = (arr, ...names) => { for (const nm of names) { const s = (arr || []).find(x => x && (x.name === nm || x.abbreviation === nm)); if (s) { const v = n(s.value ?? s.displayValue); if (v != null) return v; } } return null; };
 export const ymd = d => { const p = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(d); return p.replace(/-/g, ""); };
+// The sports day: games are listed under the day they start in ET, and the day rolls over at 6 AM ET, not midnight,
+// so an 11 PM ET tip that runs past midnight (and its final) stays on that night's board until morning.
+export const DAY_ROLL_HOURS = 6;
+export const sportsDay = (k = 0, now = Date.now()) => ymd(new Date(now - DAY_ROLL_HOURS * 3600e3 + k * 864e5));
+export const sportsDayISO = (k = 0, now = Date.now()) => sportsDay(k, now).replace(/(\d{4})(\d\d)(\d\d)/, "$1-$2-$3");
 export const etTime = iso => new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
 export const etDayLabel = iso => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }).replace(",", "");
 
