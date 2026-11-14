@@ -1756,7 +1756,7 @@ function buildWhy(rec, sport) {
 function rankSlate(rawGames, sport) {
   const recs = rawGames.map((g, idx) => {
     const x = slateGameToMatchData(g, sport);
-    const rec = { idx, date: g.date || null, id: `${x.md.away.abbr}@${x.md.home.abbr}#${idx}`, md: x.md, mkt: x.mkt, dq: x.dq, missing: x.missing, used: x.used, neutral: x.neutral,
+    const rec = { idx, date: g.date || null, eventId: g.id ? String(g.id) : null, league: g.league || null, id: `${x.md.away.abbr}@${x.md.home.abbr}#${idx}`, md: x.md, mkt: x.mkt, dq: x.dq, missing: x.missing, used: x.used, neutral: x.neutral,
       time: x.md.matchInfo.time, venue: x.md.matchInfo.venue, note: x.md.matchInfo.injuryNote, sim: null };
     if (x.usable) {
       rec.sim = runSimulations(x.md.home, x.md.away, sport, x.md, 10000, { neutral: x.neutral });
@@ -2126,6 +2126,13 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 .bb-tiles4{grid-template-columns:repeat(4,minmax(0,1fr))}
 .bb-tiles2{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media (max-width:520px){.bb-tiles4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.bb-book{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;margin-top:4px}
+.bb-book-rail{flex:0 1 220px;min-width:200px}
+.bb-book-main{flex:999 1 560px;min-width:0}
+.bb-book-slip{flex:1 1 300px;min-width:min(280px,100%)}
+.bb-book-slip>section:first-child,.bb-pageslip>section:first-child{margin-top:14px}
+@media (min-width:1000px){.bb-book-slip{position:sticky;top:10px;max-height:calc(100vh - 20px);overflow-y:auto}}
+@media (max-width:860px){.bb-book-rail{flex-basis:100%}}
 @media (max-width:720px){.bb-cats{grid-template-columns:repeat(6,minmax(0,1fr))}}
 @media (max-width:440px){.bb-cats{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:720px){.bb-sports{grid-template-columns:repeat(6,minmax(0,1fr))}}
@@ -2370,8 +2377,8 @@ function PublicBetting({md,signals,AWAY_C,HOME_C}){
 // ─── SETUP SCREEN ────────────────────────────────────────────────────────────
 // ─── LIVE SCORES: the chosen sport's games right now, else every game today ─────────
 const etTime = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : ""; };
-function LiveScores({ sport, league = null, onPick, onFinal, onBox, dense = false }) {
-  const cart = useCart(), inCart = new Set(cart.map(x => x.key));
+// today's board for a tab (or one league of it): live scores, every 30 s while a game is on, else every 2 min
+function useBoardRows(sport, league = null) {
   const [st, setSt] = useState({ sport, rows: null, err: null, at: 0 });
   useEffect(() => {
     let alive = true, timer = null;
@@ -2394,7 +2401,12 @@ function LiveScores({ sport, league = null, onPick, onFinal, onBox, dense = fals
     pull();
     return () => { alive = false; clearTimeout(timer); };
   }, [sport, league]);
-  const cfg = SPORT_CFG[sport], rows = st.sport === `${sport}|${league || ""}` ? st.rows : null, label = (league && itemLabel(sport, league)) || cfg.label;
+  return { rows: st.sport === `${sport}|${league || ""}` ? st.rows : null, err: st.err };
+}
+function LiveScores({ sport, league = null, onPick, onFinal, onBox, dense = false }) {
+  const cart = useCart(), inCart = new Set(cart.map(x => x.key));
+  const st = useBoardRows(sport, league);
+  const cfg = SPORT_CFG[sport], rows = st.rows, label = (league && itemLabel(sport, league)) || cfg.label;
   // every game today: live ones first, then the ones still to start (by start time), then the finals
   const live = (rows || []).filter(r => r.state === "in"), byT = (a, b) => String(a.date).localeCompare(String(b.date));
   const show = [...live, ...(rows || []).filter(r => r.state === "pre").sort(byT), ...(rows || []).filter(r => r.state === "post").sort(byT)];
@@ -2462,33 +2474,342 @@ function LiveScores({ sport, league = null, onPick, onFinal, onBox, dense = fals
     {rows && <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>{live.length ? `${live.length} live, ${show.length - live.length} more ${show.length - live.length === 1 ? one : what} today. Updates every 30 seconds.` : "Updates every 2 minutes."}</div>}
   </Panel>;
 }
+// ─── SPORTSBOOK VIEWS: Terminal, Feed and Arena (the three renditions), built on the same data as everything else ───
+// this device's Kalshi key (only usable, never readable), for the slip and cash-out on the home views
+function useKal() {
+  const [kal, setKal] = useState(null), [me, setMe] = useState(null);
+  useEffect(() => { let on = true; api("GET", "me").then(j => { if (!on) return; setMe(j.username || null); return j.username ? savedKey(j.username) : null; }).then(k => on && setKal(k || null)).catch(() => {}); return () => { on = false; }; }, []);
+  return { kal, me };
+}
+// the slate's ranking for the tab (or league) on screen: from the 20-minute cache, else scanned once
+const _rankMemo = new Map();
+const rankedOf = rec => { const k = `${rec.data.sport}|${rec.t}`; if (!_rankMemo.has(k)) { _rankMemo.clear(); try { _rankMemo.set(k, rankSlate(rec.data.games, rec.data.sport)); } catch (_) { _rankMemo.set(k, null); } } return _rankMemo.get(k); };
+function useHomeSlate(sport, league, on) {
+  const [st, setSt] = useState({ id: null, ranked: null, loading: false, err: null });
+  useEffect(() => {
+    if (!on || isIndiv(sport) || isField(sport)) { setSt({ id: null, ranked: null, loading: false, err: null }); return; }
+    const id = slateIdOf(sport, league), hit = peekSlate(id);
+    if (hit) { setSt({ id, ranked: rankedOf(hit), loading: false, err: null }); return; }
+    let alive = true;
+    setSt({ id, ranked: null, loading: true, err: null });
+    getSlate(id).then(rec => alive && setSt({ id, ranked: rankedOf(rec), loading: false, err: null })).catch(e => alive && setSt({ id, ranked: null, loading: false, err: e.message || "Couldn't scan the slate." }));
+    return () => { alive = false; };
+  }, [sport, league, on]);
+  return st;
+}
+// the board: today's games (live, upcoming, finals) joined to the slate's prices and sim, every side a leg for the slip
+const MK_OF = { ML: "ml", SPR: "spread", TOT: "total" };
+function boardGames(rows, ranked, sport) {
+  const recs = ranked?.rows || [], used = new Set(), out = [];
+  const asRow = (row, rec) => row ? { ...row, sport, league: row.slug, title: sport === "Tennis" || sport === "MMA" ? row.league : "" }
+    : { id: rec.eventId, sport, league: rec.league, date: rec.date, state: "pre", title: "", away: { name: rec.md.away.name, full: rec.md.away.name, abbr: rec.md.away.abbr }, home: { name: rec.md.home.name, full: rec.md.home.name, abbr: rec.md.home.abbr } };
+  const build = (row, rec) => {
+    const R = asRow(row, rec), m = rec?.mkt || {}, bet = k => (rec?.bets || []).find(b => b.key === k) || null;
+    const side = (market, sd, line, odds, key, label) => ({ leg: legFromRow(R, { market, side: sd, line }), odds, bet: key ? bet(key) : null, label });
+    const cols = [];
+    cols.push({ t: "SPREAD", a: m.awaySpread != null ? side("spread", "away", m.awaySpread, m.awaySpreadOdds ?? -110, "sp-away", fmtLine(m.awaySpread)) : null, h: m.awaySpread != null ? side("spread", "home", -m.awaySpread, m.homeSpreadOdds ?? -110, "sp-home", fmtLine(-m.awaySpread)) : null });
+    cols.push({ t: "TOTAL", a: m.total != null ? side("total", "over", m.total, m.overOdds ?? -110, "tot-over", `O ${m.total}`) : null, h: m.total != null ? side("total", "under", m.total, m.underOdds ?? -110, "tot-under", `U ${m.total}`) : null });
+    cols.push({ t: "MONEYLINE", a: side("ml", "away", null, m.awayML ?? null, "ml-away", R.away.abbr || R.away.name), h: side("ml", "home", null, m.homeML ?? null, "ml-home", R.home.abbr || R.home.name) });
+    return { id: R.id, row: row || null, rec: rec || null, R, cols, state: row ? row.state : "pre", date: R.date, grade: rec?.grade || null, pick: rec?.status === "bet" ? rec.pick : null };
+  };
+  for (const row of rows || []) {
+    if (row.state === "post") continue;
+    const rec = recs.find(r => r.eventId && String(r.eventId) === String(row.id)) || recs.find(r => !r.eventId && r.md.away.abbr === row.away.abbr && r.md.home.abbr === row.home.abbr) || null;
+    if (rec) used.add(rec);
+    out.push(build(row, row.state === "pre" ? rec : null));
+  }
+  for (const rec of recs) if (!used.has(rec) && rec.eventId) out.push(build(null, rec));   // the slate's next day (tomorrow's games)
+  const rank = g => (g.state === "in" ? 0 : 1);
+  return out.sort((a, b) => rank(a) - rank(b) || String(a.date).localeCompare(String(b.date)));
+}
+const GRADE_C = g => (g === "A" ? NEON.green : g === "B" ? T.chrome : g === "C" ? NEON.gold : T.faint);
+// one price button: Kalshi's price when Kalshi lists that exact bet, else the posted line; tap = on / off the slip
+function PriceBtn({ s, k, inCart, compact = false }) {
+  if (!s) return <div style={{ padding: compact ? "6px 2px" : "8px", border: `1px dashed ${T.line}`, color: T.faint, fontSize: 11, textAlign: "center" }}>–</div>;
+  const on = inCart.has(pickKey(s.leg)), kp = k && k.ok ? k : null;
+  const price = kp ? fmtAm(kp.am) : s.odds != null ? fmtOdds(s.odds) : "";
+  const edge = s.bet && kp ? Math.round((s.bet.wc - kp.price) * 100) : null, hot = edge != null && edge >= 3;
+  const nm = legLabel(s.leg);
+  return <button onClick={() => cartToggle(s.leg)} aria-pressed={on} aria-label={`${on ? "take off the slip" : "add to the slip"}: ${nm}`} title={kp ? `Kalshi ${cents(kp.price)}${s.bet ? ` · sim ${Math.round(s.bet.wc * 100)}%` : ""}` : s.odds != null ? "posted line (Kalshi prices it on the slip)" : "Kalshi prices it on the slip"}
+    style={{ display: "grid", gridTemplateColumns: compact ? "minmax(0,1fr)" : "minmax(0,1fr) auto", gap: compact ? 2 : 4, alignItems: "center", width: "100%", padding: compact ? "5px 5px" : "8px", border: `1px solid ${on ? NEON.teal : hot ? NEON.green : T.line}`, background: on ? "rgba(23,242,208,.16)" : hot ? "rgba(43,255,136,.08)" : "rgba(9,2,17,.6)", color: T.ink, fontFamily: F.m, fontSize: compact ? 11 : 12, cursor: "pointer", textAlign: "left" }}>
+    <span style={{ minWidth: 0, overflowWrap: "anywhere", fontSize: compact ? 10 : undefined, color: compact ? T.dim : undefined }}>{s.label}</span>
+    <b style={{ color: kp ? NEON.teal : "#fff", whiteSpace: "nowrap" }}>{price || "+"}</b>
+  </button>;
+}
+const edgeLine = (col, ka, kh) => {
+  const e = (s, k) => (s?.bet && k?.ok ? { v: Math.round((s.bet.wc - k.price) * 100), wc: s.bet.wc, s } : null);
+  const best = [e(col.a, ka), e(col.h, kh)].filter(Boolean).sort((x, y) => y.v - x.v)[0];
+  if (!best) { const b = [col.a?.bet, col.h?.bet].filter(Boolean).sort((x, y) => y.edge - x.edge)[0]; return b ? { t: `sim ${Math.round(b.wc * 100)}%`, c: T.faint } : null; }
+  return best.v >= 3 ? { t: `${best.s.label} · sim ${Math.round(best.wc * 100)}% · edge +${best.v}`, c: NEON.green } : { t: `sim ${Math.round(best.wc * 100)}% · no edge`, c: T.faint };
+};
+// the Kalshi price of every side on the board (public prices: no key needed to look). One object, so the price
+// lookups don't restart on every render.
+const PUBLIC_KAL = { env: "live" };
+function useBoardPrices(games, kal) {
+  const legs = games.flatMap(g => g.cols.flatMap(c => [c.a?.leg || null, c.h?.leg || null]));
+  const ks = useKalshiMap(kal || PUBLIC_KAL, true, legs);
+  let i = 0;
+  return games.map(g => g.cols.map(() => ({ a: ks[i++], h: ks[i++] })));
+}
+const statusTxt = g => (g.state === "in" ? `● ${g.row?.detail || "LIVE"}` : etTime(g.date) ? `${etDayLabel(g.date) !== etDayLabel(new Date().toISOString()) ? etDayLabel(g.date) + " · " : ""}${etTime(g.date)}` : "");
+function OddsBoard({ games, prices, inCart, onPick, onBox, compact = false }) {
+  if (!games.length) return null;
+  const head = { fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint };
+  const cols = compact ? "minmax(64px,1fr) repeat(3,minmax(74px,1fr))" : "minmax(130px,1.4fr) repeat(3,minmax(92px,1fr))";
+  return <div style={{ overflowX: "auto" }}>
+    <div style={{ minWidth: compact ? 330 : 440 }}>
+      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "6px 2px", ...head }}><span>GAME</span><span>SPREAD</span><span>TOTAL</span><span>{compact ? "ML" : "MONEYLINE"}</span></div>
+      {games.map((g, gi) => { const pr = prices[gi] || [], live = g.state === "in", sc = x => (live && g.row ? <b style={{ color: "#fff", marginLeft: "auto" }}>{x.score}</b> : null);
+        const el = [0, 1, 2].map(c => edgeLine(g.cols[c], pr[c]?.a, pr[c]?.h)).filter(Boolean).sort((x, y) => (y.c === NEON.green) - (x.c === NEON.green))[0];
+        return <div key={g.id} style={{ padding: "10px 2px", borderTop: `1px solid ${T.line}` }}>
+          <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, alignItems: "center" }}>
+            <div style={{ minWidth: 0, display: "grid", gap: 6 }}>
+              <span style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", fontFamily: F.d, fontSize: 9, letterSpacing: 1, color: live ? NEON.red : T.chrome }}><span style={{ overflowWrap: "anywhere" }}>{statusTxt(g)}</span>{g.grade && <span title="the slate's grade" style={{ padding: "1px 5px", border: `1px solid ${GRADE_C(g.grade)}`, color: GRADE_C(g.grade), fontWeight: 900 }}>{g.grade}</span>}</span>
+              {[g.R.away, g.R.home].map((x, i) => <span key={i} style={{ display: "flex", gap: 6, alignItems: "baseline", minWidth: 0 }}><b style={{ fontFamily: F.d, fontSize: 12 }}>{x.abbr || ""}</b>{!compact && <span style={{ color: T.dim, fontSize: 12, overflowWrap: "anywhere", minWidth: 0 }}>{x.name}</span>}{g.row && sc(g.row[i ? "home" : "away"])}</span>)}
+            </div>
+            {g.cols.map((c, ci) => <div key={c.t} style={{ display: "grid", gap: 5 }}><PriceBtn s={c.a} k={pr[ci]?.a} inCart={inCart} compact={compact}/><PriceBtn s={c.h} k={pr[ci]?.h} inCart={inCart} compact={compact}/></div>)}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, marginTop: 6, fontSize: 10 }}>
+            <span style={{ color: el?.c || T.faint, overflowWrap: "anywhere" }}>{el?.t || (live ? "live: Kalshi's price" : g.rec ? "" : "no posted line yet")}</span>
+            <span style={{ display: "flex", gap: 6 }}>
+              {onPick && <button onClick={() => onPick(g.row || { away: { name: g.R.away.name }, home: { name: g.R.home.name } })} style={{ padding: "3px 7px", border: `1px solid ${T.line}`, background: "none", color: T.dim, fontFamily: F.d, fontSize: 9, letterSpacing: 1, cursor: "pointer" }}>SIM ▸</button>}
+              {live && onBox && g.row && <button onClick={() => onBox(g.row)} style={{ padding: "3px 7px", border: `1px solid ${NEON.red}88`, background: "none", color: "#fff", fontFamily: F.d, fontSize: 9, letterSpacing: 1, cursor: "pointer" }}>BOX ▸</button>}
+            </span>
+          </div>
+        </div>; })}
+    </div>
+  </div>;
+}
+function Ticker({ rows, onBox, onPick }) {
+  if (!rows?.length) return null;
+  return <div style={{ display: "flex", overflowX: "auto", marginTop: 10, border: `1px solid ${T.line}`, background: T.panel }}>
+    {rows.map(r => { const c = r.state === "in" ? NEON.red : r.state === "post" ? NEON.green : T.chrome, go = r.state === "in" ? () => onBox && onBox(r) : r.state === "pre" ? () => onPick && onPick(r) : null;
+      return <button key={r.id} onClick={go || undefined} style={{ flex: "0 0 auto", display: "grid", gap: 2, padding: "7px 14px", border: "none", borderRight: `1px solid ${T.line}`, background: "none", color: T.ink, fontFamily: F.m, fontSize: 11, textAlign: "left", cursor: go ? "pointer" : "default" }}>
+        <span style={{ color: c, fontFamily: F.d, fontSize: 9, letterSpacing: 1, whiteSpace: "nowrap" }}>{r.state === "in" ? `● ${r.detail || "LIVE"}` : r.state === "post" ? (r.detail || "FINAL") : etTime(r.date)}</span>
+        <span style={{ whiteSpace: "nowrap" }}>{r.away.abbr || r.away.name} <b>{r.away.score}</b></span>
+        <span style={{ whiteSpace: "nowrap" }}>{r.home.abbr || r.home.name} <b>{r.home.score}</b></span>
+      </button>; })}
+  </div>;
+}
+const railBtn = (t, sub, fn, c = T.chrome, off = false) => <button key={t} onClick={() => fn && fn()} disabled={off} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 6, width: "100%", padding: "9px 10px", marginTop: 6, border: `1px solid ${c}66`, background: `${c}14`, color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: off ? "not-allowed" : "pointer", opacity: off ? .5 : 1, textAlign: "left" }}><span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{t}<span style={{ display: "block", fontFamily: F.m, fontSize: 10, letterSpacing: 0, color: T.dim, marginTop: 2 }}>{sub}</span></span><span style={{ color: c }}>▸</span></button>;
+// the slip, right on the page (the same slip as the corner and NEW SLIP)
+function PageSlip({ kal, onPlaced, onTools }) {
+  return <div className="bb-pageslip"><NewSlip kal={kal} onTools={onTools} onPlaced={onPlaced}/></div>;
+}
+
+// A · TERMINAL: sports and shortcuts on the left, the board in the middle (every price tappable, sim vs Kalshi), the slip on the right
+function TerminalView({ sport, league, onPickSport, onPick, onBox, onSlate, onBest, onBetsTab, onTools, onToolsKalshi, slateOff, field, fieldBoard }) {
+  const { kal } = useKal(), board = useBoardRows(sport, league), sl = useHomeSlate(sport, league, !field);
+  const cart = useCart(), inCart = new Set(cart.map(x => x.key));
+  const games = useMemo(() => boardGames(board.rows, sl.ranked, sport), [board.rows, sl.ranked, sport]);
+  const prices = useBoardPrices(games, kal);
+  const lbl = (league && itemLabel(sport, league)) || SPORT_CFG[sport].label;
+  return <>
+    <Ticker rows={board.rows} onBox={onBox} onPick={onPick}/>
+    <div className="bb-book">
+      <aside className="bb-book-rail">
+        <PickerFold slim sport={sport} league={league} onPick={onPickSport}/>
+        {railBtn("▤ SLATE", "every game, best to worst", onSlate, T.chrome, slateOff)}
+        {railBtn("★ BEST BET", "the one pick", onBest, NEON.teal, slateOff)}
+        {railBtn("🎟 MY BETS", "tickets · cash out", () => onBetsTab("mine"), NEON.purple)}
+        {railBtn("👥 LIVE TICKETS", "everyone's, TAIL", () => onBetsTab("live"), NEON.purple)}
+        {railBtn("🧰 TOOLS", "The Book · Kalshi", onTools, NEON.gold)}
+      </aside>
+      <main className="bb-book-main">
+        {field ? fieldBoard : <Panel title={`${lbl.toUpperCase()} · LINES`} right={sl.loading ? "scanning the slate…" : kal ? "teal = Kalshi's price" : "Kalshi prices shown where listed"}>
+          <div style={{ fontSize: 10, color: T.faint, marginBottom: 6, lineHeight: 1.5 }}>Tap a price to put it on the slip. Green = our sim beats Kalshi's price by 3+ points.</div>
+          {!board.rows && <div style={{ fontSize: 12, color: T.dim }}>Loading the board…</div>}
+          {board.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{board.err}</div>}
+          {board.rows && !games.length && <div style={{ fontSize: 12, color: T.dim }}>No {lbl} games left today{sl.loading ? "; checking tomorrow's slate…" : "."}</div>}
+          <OddsBoard games={games} prices={prices} inCart={inCart} onPick={onPick} onBox={onBox}/>
+          {sl.err && <div style={{ fontSize: 11, color: T.faint, marginTop: 8 }}>Slate scan: {sl.err} Lines show without the sim.</div>}
+        </Panel>}
+      </main>
+      <aside className="bb-book-slip"><PageSlip kal={kal} onTools={onToolsKalshi} onPlaced={() => onBetsTab("mine")}/></aside>
+    </div>
+  </>;
+}
+
+// B · FEED: the best pick up top, the biggest edges, game cards, and what your friends are riding
+function FriendsTickets({ onBetsTab, limit = 5, gameId = null, kal = null }) {
+  const [d, setD] = useState(null);
+  useEffect(() => { let on = true, t = null; const pull = () => api("GET", "tickets/live").then(j => on && setD(j)).catch(() => on && setD(x => x || { tickets: [] })).finally(() => { if (on) t = setTimeout(pull, 60000); }); pull(); return () => { on = false; clearTimeout(t); }; }, []);
+  const list = (d?.tickets || []).filter(t => !gameId || t.legs.some(l => String(l.eventId) === String(gameId))).slice(0, limit);
+  const { gameOf, isLiveNow, track } = useLegTrack(list, !!gameId && list.length > 0);
+  if (!d) return <div style={{ fontSize: 12, color: T.dim }}>Loading tickets…</div>;
+  if (!list.length) return <div style={{ fontSize: 12, color: T.dim }}>{gameId ? "No tickets on this game yet." : "No tickets riding right now."}</div>;
+  return <div style={{ display: "grid", gap: 8 }}>{list.map(t => <SlipCard key={t.id} sl={t} track={gameId && isLiveNow(t) ? track : null} gameOfLeg={gameId ? gameOf : null}
+    top={<div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "center", marginBottom: 6 }}><b style={{ overflowWrap: "anywhere" }}>{t.username}{t.you ? <span style={{ color: T.chrome, fontWeight: 400 }}> · you</span> : ""}</b>{!t.you && <button onClick={() => onBetsTab("live")} style={{ padding: "5px 9px", border: `1px solid ${NEON.gold}`, background: "none", color: NEON.gold, fontFamily: F.d, fontSize: 9, letterSpacing: 1.5, cursor: "pointer" }}>TAIL ▸</button>}</div>}
+    foot={t.kalshi ? (t.you ? <CashOut sl={t} kal={kal} onCashed={() => {}}/> : <CashValue sl={t}/>) : null}/>)}</div>;
+}
+function TopThree() {
+  const [d, setD] = useState(null);
+  useEffect(() => { api("GET", "board").then(setD).catch(() => setD({ money: [] })); }, []);
+  if (!d) return <div style={{ fontSize: 12, color: T.dim }}>Loading…</div>;
+  if (!d.money?.length) return <div style={{ fontSize: 12, color: T.dim }}>No graded bets yet.</div>;
+  return <div>{d.money.slice(0, 3).map((p, i) => <div key={p.username} style={{ display: "grid", gridTemplateColumns: "22px minmax(0,1fr) auto", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.line}` }}>
+    <span style={{ fontFamily: F.d, color: i === 0 ? NEON.gold : T.dim }}>{i + 1}</span><span style={{ overflowWrap: "anywhere" }}>{p.username}</span><span style={{ color: p.net >= 0 ? NEON.green : NEON.red }}>{sCash(p.net)}</span></div>)}</div>;
+}
+const legOfBet = (g, b) => (b ? { leg: legFromRow(g.R, { market: MK_OF[b.market], side: b.side, line: b.line }), label: b.label } : null);
+function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field, fieldBoard }) {
+  const { kal } = useKal(), board = useBoardRows(sport, league), sl = useHomeSlate(sport, league, !field);
+  const cart = useCart(), inCart = new Set(cart.map(x => x.key));
+  const games = useMemo(() => boardGames(board.rows, sl.ranked, sport), [board.rows, sl.ranked, sport]);
+  const picks = games.filter(g => g.pick).sort((a, b) => ({ A: 0, B: 1, C: 2 }[a.grade] ?? 3) - ({ A: 0, B: 1, C: 2 }[b.grade] ?? 3) || b.pick.score - a.pick.score);
+  const [hi, setHi] = useState(0), hero = picks[Math.min(hi, Math.max(0, picks.length - 1))] || null, heroLeg = hero && legOfBet(hero, hero.pick);
+  const lbl = (league && itemLabel(sport, league)) || SPORT_CFG[sport].label;
+  const quick = [["NBA", null, "NBA"], ["NFL", null, "NFL"], ["CBB", null, "CBB"], ["NHL", null, "NHL"], ["Soccer", "eng.1", "EPL"], ["Soccer", "uefa.champions", "UCL"], ["MMA", "ufc", "UFC"], ["Tennis", "atp", "ATP"], ["WNBA", null, "WNBA"], ["CFB", null, "CFB"]];
+  const add = x => x && <button onClick={() => cartToggle(x.leg)} aria-pressed={inCart.has(pickKey(x.leg))} style={{ padding: "11px 16px", border: `1px solid ${NEON.teal}`, background: inCart.has(pickKey(x.leg)) ? "rgba(23,242,208,.3)" : "rgba(23,242,208,.16)", color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 2, cursor: "pointer" }}>{inCart.has(pickKey(x.leg)) ? "✓ ON YOUR SLIP" : "ADD TO SLIP"}</button>;
+  return <>
+    <div style={{ display: "flex", gap: 12, overflowX: "auto", padding: "12px 0 6px" }}>
+      {quick.map(([sp, lg, t]) => { const on = sport === sp && (league || null) === lg; return <button key={t} onClick={() => onPickSport(sp, lg)} aria-pressed={on} style={{ flex: "0 0 auto", display: "grid", justifyItems: "center", gap: 5, border: "none", background: "none", color: on ? "#fff" : T.dim, fontFamily: F.m, fontSize: 10, cursor: "pointer" }}>
+        <span style={{ display: "grid", placeItems: "center", width: 50, height: 50, borderRadius: 25, border: `2px solid ${on ? T.chrome : T.line}`, background: T.panel, fontFamily: F.d, fontSize: 10, color: "#fff", boxShadow: on ? "0 0 14px rgba(143,0,255,.5)" : "none" }}>{t}</span>{t}</button>; })}
+    </div>
+    <PickerFold sport={sport} league={league} onPick={onPickSport}/>
+    <div className="bb-book">
+      <main className="bb-book-main" style={{ flexBasis: 640 }}>
+        {field ? fieldBoard : <>
+        <section style={{ marginTop: 14, border: `1px solid ${T.chrome}`, background: "linear-gradient(120deg,rgba(143,0,255,.35),rgba(14,4,26,.85) 60%)", padding: 18, boxShadow: "0 0 30px rgba(143,0,255,.28)" }}>
+          {!hero ? <div style={{ fontSize: 12, color: T.dim }}>{sl.loading ? `Scanning every ${lbl} game for the best bet…` : sl.err ? `Slate scan: ${sl.err}` : `No graded ${lbl} bet on the board right now.`}</div> : <>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 14 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 3, color: NEON.teal }}>{hi === 0 ? "BEST OF SLATE" : `PICK ${hi + 1} OF ${picks.length}`} · {lbl.toUpperCase()}</div>
+                <div style={{ fontFamily: F.d, fontWeight: 900, fontSize: "clamp(20px,4vw,32px)", marginTop: 8, color: "#fff", overflowWrap: "anywhere" }}>{hero.pick.label.replace(/\s*\([^)]*\)\s*$/, "")}</div>
+                <div style={{ color: T.dim, marginTop: 4, fontSize: 12 }}>{hero.R.away.abbr || hero.R.away.name} @ {hero.R.home.abbr || hero.R.home.name} · {statusTxt(hero)} · 10,000 sims</div>
+              </div>
+              <span style={{ display: "grid", placeItems: "center", width: 58, height: 58, border: `2px solid ${GRADE_C(hero.grade)}`, color: GRADE_C(hero.grade), fontFamily: F.d, fontWeight: 900, fontSize: 26 }}>{hero.grade}</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, fontSize: 12 }}>
+              <span style={{ padding: "5px 9px", border: `1px solid ${NEON.green}`, color: NEON.green }}>SIM {Math.round(hero.pick.wc * 100)}%</span>
+              <span style={{ padding: "5px 9px", border: `1px solid ${T.line}` }}>posted {fmtOdds(hero.pick.odds)}</span>
+              <span style={{ padding: "5px 9px", border: `1px solid ${T.line}` }}>{hero.pick.edge >= 0 ? "+" : ""}{hero.pick.edge.toFixed(1)} pts edge</span>
+              {hero.pick.need != null && <span style={{ padding: "5px 9px", border: `1px solid ${T.line}` }}>good to {fmtOdds(hero.pick.need)}</span>}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14, alignItems: "center" }}>
+              {add(heroLeg)}
+              <button onClick={() => onPick(hero.row || { away: { name: hero.R.away.name }, home: { name: hero.R.home.name } })} style={{ padding: "11px 16px", border: `1px solid ${T.line}`, background: "none", color: T.ink, fontFamily: F.d, fontSize: 10, letterSpacing: 2, cursor: "pointer" }}>FULL SIM ▸</button>
+              {picks.length > 1 && <span style={{ display: "flex", gap: 6, marginLeft: "auto" }}>{picks.slice(0, 5).map((_, i) => <button key={i} aria-label={`pick ${i + 1}`} onClick={() => setHi(i)} style={{ width: 24, height: 24, padding: 0, border: "none", background: "none", cursor: "pointer", display: "grid", placeItems: "center" }}><span style={{ width: 20, height: 3, background: i === hi ? "#fff" : "rgba(241,230,255,.25)" }}/></button>)}</span>}
+            </div>
+          </>}
+        </section>
+        {picks.length > 1 && <Panel title="BOARDROOM EDGES" right="where the sim beats the price most">
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", gap: 8 }}>
+            {picks.slice(1, 7).map(g => { const x = legOfBet(g, g.pick), on = inCart.has(pickKey(x.leg)); return <div key={g.id} style={{ border: `1px solid ${T.line}`, padding: 10, display: "grid", gap: 5 }}>
+              <span style={{ fontSize: 10, color: T.faint }}>{statusTxt(g)} · grade <b style={{ color: GRADE_C(g.grade) }}>{g.grade}</b></span>
+              <b style={{ fontFamily: F.d, fontSize: 12, overflowWrap: "anywhere" }}>{g.pick.label.replace(/\s*\([^)]*\)\s*$/, "")}</b>
+              <span style={{ fontSize: 11, color: NEON.green }}>sim {Math.round(g.pick.wc * 100)}% · +{g.pick.edge.toFixed(1)} pts</span>
+              <button onClick={() => cartToggle(x.leg)} aria-pressed={on} style={{ padding: 8, border: `1px solid ${on ? NEON.teal : T.chrome}`, background: on ? "rgba(23,242,208,.16)" : "rgba(143,0,255,.2)", color: "#fff", fontFamily: F.m, cursor: "pointer" }}>{on ? "✓ on slip" : `add · ${fmtOdds(g.pick.odds)}`}</button>
+            </div>; })}
+          </div>
+        </Panel>}
+        <Panel title={`${lbl.toUpperCase()} · TODAY`} right={board.rows ? `${games.length} games` : "loading…"}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8 }}>
+            {games.map(g => <div key={g.id} style={{ border: `1px solid ${g.state === "in" ? NEON.red + "88" : T.line}`, padding: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, marginBottom: 8 }}><span style={{ color: g.state === "in" ? NEON.red : T.chrome, fontFamily: F.d }}>{statusTxt(g)}</span>{g.grade && <span style={{ color: GRADE_C(g.grade) }}>grade {g.grade}</span>}</div>
+              {[["a", g.R.away], ["h", g.R.home]].map(([k, t]) => <div key={k} style={{ display: "grid", gridTemplateColumns: "minmax(44px,1fr) repeat(3,minmax(60px,1fr))", gap: 5, alignItems: "center", marginBottom: 5 }}>
+                <b style={{ fontFamily: F.d, fontSize: 12, overflowWrap: "anywhere" }}>{t.abbr || t.name}{g.row && g.state === "in" ? <span style={{ fontFamily: F.m, color: "#fff" }}> {g.row[k === "a" ? "away" : "home"].score}</span> : null}</b>
+                {g.cols.map(c => <PriceBtn key={c.t} s={c[k]} k={null} inCart={inCart} compact/>)}
+              </div>)}
+            </div>)}
+          </div>
+          {board.rows && !games.length && <div style={{ fontSize: 12, color: T.dim }}>No {lbl} games left today.</div>}
+        </Panel></>}
+      </main>
+      <aside className="bb-book-slip">
+        <Panel title="FRIENDS' TICKETS" right="riding now"><FriendsTickets onBetsTab={onBetsTab} kal={kal}/></Panel>
+        <Panel title="THIS WEEK · TOP 3" right="by money"><TopThree/></Panel>
+      </aside>
+    </div>
+  </>;
+}
+
+// C · ARENA: live first. Games in play on the left; the one you pick in the middle (score, Kalshi's live prices, every
+// ticket riding it with live stat bars and cash out); the slip on the right
+function ArenaView({ sport, league, onPickSport, onPick, onBox, onBetsTab, onToolsKalshi, field, fieldBoard }) {
+  const { kal } = useKal(), board = useBoardRows(sport, league), sl = useHomeSlate(sport, league, !field);
+  const cart = useCart(), inCart = new Set(cart.map(x => x.key));
+  const games = useMemo(() => boardGames(board.rows, sl.ranked, sport), [board.rows, sl.ranked, sport]);
+  const live = games.filter(g => g.state === "in"), next = games.filter(g => g.state === "pre");
+  const [pick, setPick] = useState(null), g = games.find(x => x.id === pick) || live[0] || next[0] || null;
+  const prices = useBoardPrices(g ? [g] : [], kal);
+  const lbl = (league && itemLabel(sport, league)) || SPORT_CFG[sport].label;
+  const item = x => { const on = g && x.id === g.id, isL = x.state === "in";
+    return <button key={x.id} onClick={() => setPick(x.id)} aria-pressed={on} style={{ display: "grid", gap: 4, width: "100%", padding: "9px 10px", border: "none", borderBottom: `1px solid ${T.line}`, borderLeft: `2px solid ${on ? (isL ? NEON.red : T.chrome) : "transparent"}`, background: on ? "rgba(143,0,255,.14)" : "none", color: T.ink, fontFamily: F.m, fontSize: 12, textAlign: "left", cursor: "pointer" }}>
+      <span style={{ color: isL ? NEON.red : T.chrome, fontFamily: F.d, fontSize: 9, letterSpacing: 1 }}>{statusTxt(x)}</span>
+      {[["away", x.R.away], ["home", x.R.home]].map(([k, t]) => <span key={k} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span style={{ overflowWrap: "anywhere", minWidth: 0 }}>{t.abbr || t.name}</span><b>{x.row && isL ? x.row[k].score : ""}</b></span>)}
+    </button>; };
+  return <div className="bb-book">
+    <aside className="bb-book-rail">
+      <PickerFold slim sport={sport} league={league} onPick={onPickSport}/>
+      <div style={{ marginTop: 10, border: `1px solid ${T.line}`, background: T.panel }}>
+        <div style={{ padding: "8px 10px", fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: live.length ? NEON.red : T.faint, borderBottom: `1px solid ${T.line}` }}>{live.length ? `● IN PLAY · ${live.length}` : "NOTHING LIVE"}</div>
+        {live.map(item)}
+        {next.length > 0 && <div style={{ padding: "8px 10px", fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint, borderBottom: `1px solid ${T.line}` }}>UP NEXT</div>}
+        {next.slice(0, 8).map(item)}
+        {!board.rows && <div style={{ padding: 10, fontSize: 12, color: T.dim }}>Loading…</div>}
+      </div>
+    </aside>
+    <main className="bb-book-main">
+      {field ? fieldBoard : !g ? <Panel title={lbl.toUpperCase()}><div style={{ fontSize: 12, color: T.dim }}>{board.rows ? `No ${lbl} games left today.` : "Loading the board…"}</div></Panel> : <>
+        <section style={{ marginTop: 14, border: `1px solid ${g.state === "in" ? NEON.red + "88" : T.line}`, background: "rgba(14,4,26,.85)", padding: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)", alignItems: "center", gap: 10 }}>
+            {[["away", g.R.away], null, ["home", g.R.home]].map((x, i) => x ? <div key={i} style={{ textAlign: i ? "right" : "left", minWidth: 0 }}>
+              <div style={{ fontFamily: F.d, fontSize: 12, color: T.dim, overflowWrap: "anywhere" }}>{(x[1].name || "").toUpperCase()}</div>
+              <div style={{ fontFamily: F.d, fontWeight: 900, fontSize: "clamp(30px,6vw,46px)", color: "#fff" }}>{g.row && g.state === "in" ? g.row[x[0]].score : x[1].abbr}</div>
+            </div> : <div key={i} style={{ textAlign: "center", color: g.state === "in" ? NEON.red : T.chrome, fontFamily: F.d, fontSize: 11, letterSpacing: 1 }}>{statusTxt(g)}</div>)}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+            {g.state === "in" && g.row && <button onClick={() => onBox(g.row)} style={{ flex: "1 1 160px", padding: 11, border: `1px solid ${NEON.red}`, background: "rgba(255,51,85,.12)", color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 2, cursor: "pointer" }}>LIVE BOX + WIN PROB ▸</button>}
+            <button onClick={() => onPick(g.row || { away: { name: g.R.away.name }, home: { name: g.R.home.name } })} style={{ flex: "1 1 160px", padding: 11, border: `1px solid ${T.chrome}`, background: "rgba(143,0,255,.18)", color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 2, cursor: "pointer" }}>FULL SIMULATION ▸</button>
+          </div>
+        </section>
+        <Panel title={g.state === "in" ? "LIVE LINES · KALSHI" : "LINES"} right={g.grade ? `grade ${g.grade}` : null}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10 }}>
+            {g.cols.map((c, ci) => (c.a || c.h) ? <div key={c.t} style={{ border: `1px solid ${T.line}`, padding: 10 }}>
+              <div style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint, marginBottom: 8 }}>{c.t}</div>
+              <div style={{ display: "grid", gap: 6 }}><PriceBtn s={c.a} k={prices[0]?.[ci]?.a} inCart={inCart}/><PriceBtn s={c.h} k={prices[0]?.[ci]?.h} inCart={inCart}/></div>
+              {(() => { const e = edgeLine(c, prices[0]?.[ci]?.a, prices[0]?.[ci]?.h); return e ? <div style={{ fontSize: 10, color: e.c, marginTop: 6 }}>{e.t}</div> : null; })()}
+            </div> : null)}
+          </div>
+        </Panel>
+        <Panel title="TICKETS RIDING THIS GAME" right="yours: cash out · theirs: TAIL"><FriendsTickets onBetsTab={onBetsTab} gameId={g.id} limit={8} kal={kal}/></Panel>
+      </>}
+    </main>
+    <aside className="bb-book-slip"><PageSlip kal={kal} onTools={onToolsKalshi} onPlaced={() => onBetsTab("mine")}/></aside>
+  </div>;
+}
+
 // ─── HOME: four layouts to compare (VIEW switch at the top; remembered on this device) ────────────────────────────
 //   classic  the original: picker, Bet Slips, Tools, slate, matchup, games, one under the other
 //   split    a command center: games on the left; slate, slips, tools and the matchup in a column on the right
 //   tabs     a compact header and tabs: GAMES / SLATE / SIM, with SLIPS and TOOLS one tap away
 //   compact  a sportsbook board: four action tiles, the sport folded to one line, games as a dense list
-const LAYOUTS = [["classic", "CLASSIC"], ["split", "SPLIT"], ["tabs", "TABS"], ["compact", "COMPACT"]];
+const LAYOUTS = [["classic", "CLASSIC"], ["split", "SPLIT"], ["tabs", "TABS"], ["compact", "COMPACT"], ["terminal", "TERMINAL"], ["feed", "FEED"], ["arena", "ARENA"]];
+// the sportsbook views carry the slip on the page (wide screens): the corner slip stays out of their way there
+const PAGE_SLIP = new Set(["terminal", "arena"]);
 const LAYOUT_LS = "bb.layout";
 const layoutPref = () => { try { const v = localStorage.getItem(LAYOUT_LS); return LAYOUTS.some(([k]) => k === v) ? v : "classic"; } catch (_) { return "classic"; } };
 function LayoutSwitch({ layout, setLayout }) {
   return <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", gap: 10, alignItems: "center", marginTop: 10 }}>
     <span style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint }}>VIEW</span>
-    <div role="group" aria-label="home layout" style={{ display: "grid", gridTemplateColumns: `repeat(${LAYOUTS.length},minmax(0,1fr))`, border: `1px solid ${T.line}` }}>
+    <div role="group" aria-label="home layout" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(84px,1fr))", border: `1px solid ${T.line}` }}>
       {LAYOUTS.map(([k, t]) => <button key={k} onClick={() => setLayout(k)} aria-pressed={layout === k} style={{ minWidth: 0, padding: "6px 2px", border: "none", background: layout === k ? "rgba(143,0,255,0.3)" : "none", color: layout === k ? "#fff" : T.dim, fontFamily: F.d, fontSize: 9, letterSpacing: 1, cursor: "pointer", overflowWrap: "anywhere" }}>{t}</button>)}
     </div>
   </div>;
 }
 // the sport on one line; tap to open the full picker (it folds again once a league is picked)
-function PickerFold({ sport, league, onPick }) {
+function PickerFold({ sport, league, onPick, slim = false }) {
   const [open, setOpen] = useState(false), here = placeOf(sport, league), cat = MENU.find(m => m.key === here?.key);
   const lbl = (league && itemLabel(sport, league)) || itemLabel(sport, null) || SPORT_CFG[sport].label;
   return <div style={{ marginTop: 12 }}>
     <button onClick={() => setOpen(!open)} aria-expanded={open} aria-label="change sport" style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", padding: "11px 12px", border: `1px solid ${T.chrome}`, background: "linear-gradient(90deg,rgba(143,0,255,.22),rgba(14,4,26,.7))", color: "#fff", cursor: "pointer", textAlign: "left" }}>
       <span style={{ fontSize: 16 }}><Ico>{cat?.icon || SPORT_CFG[sport].icon}</Ico></span>
-      <span style={{ minWidth: 0, overflowWrap: "anywhere", lineHeight: 1.3 }}><span style={{ fontFamily: F.d, fontSize: 12, letterSpacing: 2 }}>{(cat?.label || SPORT_CFG[sport].label).toUpperCase()}</span><span style={{ fontSize: 12, color: T.dim }}> · {lbl}{here?.women ? " (W)" : ""}</span></span>
-      <span style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, color: T.chrome, whiteSpace: "nowrap" }}>{open ? "DONE ▴" : "CHANGE ▾"}</span>
+      <span style={{ minWidth: 0, overflowWrap: "break-word", lineHeight: 1.3 }}><span style={{ fontFamily: F.d, fontSize: slim ? 11 : 12, letterSpacing: slim ? 1 : 2, display: slim ? "block" : "inline" }}>{(cat?.label || SPORT_CFG[sport].label).toUpperCase()}</span><span style={{ fontSize: 12, color: T.dim }}>{slim ? "" : " · "}{lbl}{here?.women ? " (W)" : ""}</span></span>
+      <span style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, color: T.chrome, whiteSpace: "nowrap" }}>{slim ? (open ? "▴" : "▾") : open ? "DONE ▴" : "CHANGE ▾"}</span>
     </button>
-    {open && <div style={{ marginTop: 8 }}><SportPicker sport={sport} league={league} onPick={onPick} onChose={() => setOpen(false)}/></div>}
+    {open && (slim
+      ? <div style={{ position: "relative", zIndex: 30 }}><div style={{ position: "absolute", left: 0, top: 8, width: "min(880px, calc(100vw - 32px))", padding: 10, border: `1px solid ${T.chrome}`, background: "rgba(10,3,20,.98)", boxShadow: "0 12px 40px rgba(0,0,0,.6)" }}><SportPicker sport={sport} league={league} onPick={onPick} onChose={() => setOpen(false)}/></div></div>
+      : <div style={{ marginTop: 8 }}><SportPicker sport={sport} league={league} onPick={onPick} onChose={() => setOpen(false)}/></div>)}
   </div>;
 }
 // SLATE · BEST · SLIPS · TOOLS as four tiles
@@ -2503,7 +2824,7 @@ function ActionTiles({ onSlate, onBest, onBets, onTools, slateOff, cols = 4 }) {
     {tile("🧰", "TOOLS", "The Book · Kalshi", onTools, NEON.gold)}
   </div>;
 }
-function SetupScreen({sport,league=null,onPickSport,layout="classic",setLayout,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
+function SetupScreen({sport,league=null,onPickSport,layout="classic",setLayout,onBetsTab,onToolsKalshi,awayInput,setAwayInput,homeInput,setHomeInput,isNeutral,setIsNeutral,onFetch,loading,error,onSlate,onBest,onBets,onTools,onFinal,onBox,slateInfo,slateBusy,slateErr,onPick}){
   const canGo=awayInput.trim().length>1&&homeInput.trim().length>1,ok=canGo&&!loading;
   const slateOff=slateBusy||loading;
   const inp=c=>({width:"100%",background:"rgba(9,2,17,.8)",border:`1px solid ${c}66`,color:c,fontFamily:F.d,fontSize:14,fontWeight:700,padding:"12px",outline:"none",boxSizing:"border-box",boxShadow:`inset 0 0 14px ${c}18`});
@@ -2572,6 +2893,11 @@ function SetupScreen({sport,league=null,onPickSport,layout="classic",setLayout,a
     </Panel>;
   const games=dense=>field?<FieldBoard sport={sport} league={league}/>:<LiveScores dense={dense} sport={sport} league={league} onPick={onPick} onFinal={onFinal} onBox={onBox}/>;
 
+  const fieldBoard=<FieldBoard sport={sport} league={league}/>;
+  const bookProps={sport,league,onPickSport,onPick,onBox,onSlate,onBest,onTools,onBetsTab:t=>onBetsTab?onBetsTab(t):onBets(),onToolsKalshi:onToolsKalshi||onTools,slateOff,field,fieldBoard};
+  if(layout==="terminal") return <Shell status="sportsbook" wide>{switcher}{hero(true)}<TerminalView {...bookProps}/></Shell>;
+  if(layout==="feed") return <Shell status="sportsbook" wide>{switcher}{hero(true)}<FeedView {...bookProps}/></Shell>;
+  if(layout==="arena") return <Shell status="live" wide>{switcher}{hero(true)}<ArenaView {...bookProps}/></Shell>;
   if(layout==="split") return <Shell status="standing by" wide>
     {switcher}{hero(true)}
     <div className="bb-split">
@@ -2681,7 +3007,7 @@ function SlipDock({ onOpen }) {
       {open && <div style={{ padding: "6px 12px 12px" }}>
         <div style={{ maxHeight: 220, overflowY: "auto" }}>
           {cart.map(x => <div key={x.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${T.line}` }}>
-            <div style={{ minWidth: 0 }}><div style={{ ...oneLine, fontSize: 12, color: T.ink, fontWeight: 700 }}>{x.text}</div><div style={{ ...oneLine, fontSize: 10, color: T.faint }}>{x.choice ? `${x.choice.sport} · ${when(x.choice)}` : "typed pick"}</div></div>
+            <div style={{ minWidth: 0 }}><div style={{ overflowWrap: "anywhere", lineHeight: 1.35, fontSize: 12, color: T.ink, fontWeight: 700 }}>{x.text}</div><div style={{ overflowWrap: "anywhere", fontSize: 10, color: T.faint }}>{x.choice ? `${x.choice.sport} · ${when(x.choice)}` : "typed pick"}</div></div>
             <button aria-label={`remove ${x.text}`} onClick={() => cartSet(_cart.filter(y => y.key !== x.key))} style={{ ...btnStyle(false), padding: "4px 8px", cursor: "pointer", color: T.dim }}>×</button>
           </div>)}
         </div>
@@ -3673,7 +3999,7 @@ const pickKey = l => (l ? `${l.sport}|${l.eventId}|${l.market}|${l.side}` : "");
 function cartToggle(leg) {
   const k = pickKey(leg);
   if (_cart.some(x => x.key === k)) { cartSet(_cart.filter(x => x.key !== k)); return false; }
-  cartSet([..._cart.filter(x => !(x.choice && x.choice.sport === leg.sport && String(x.choice.eventId) === String(leg.eventId) && x.choice.market === "ml")), { key: k, text: legLabel(leg), choice: leg, kline: null }]);
+  cartSet([..._cart.filter(x => !(x.choice && x.choice.sport === leg.sport && String(x.choice.eventId) === String(leg.eventId) && x.choice.market === leg.market)), { key: k, text: legLabel(leg), choice: leg, kline: null }]);
   return true;
 }
 
@@ -3793,7 +4119,15 @@ function NewSlip({ onPlaced, kal, onTools, seed = null, onUnseed }) {
   const [lines, setLines] = useState(() => (seed?.legs.length ? seed.legs.map(l => ({ ...blankLine(), text: legLabel(l), odds: oddsPref() === "pct" ? pctTxt1(l.odds) : fmtAm(l.odds), seed: l }))
     : seed ? [blankLine()] : _cart.length ? _cart.map(x => ({ ...blankLine(), text: x.text, choice: x.choice || null, kline: x.kline ?? null })) : [blankLine()]));
   // ...and every change to it is the slip in progress (the corner slip on the other screens shows the same picks)
-  useEffect(() => { if (!seed) cartSet(lines.filter(l => l.text.trim()).map(l => ({ key: l.choice ? pickKey(l.choice) : `t:${l.text.trim().toLowerCase()}`, text: l.text, choice: l.choice || null, kline: l.kline ?? null }))); }, [lines, seed]);
+  const asCart = ls => ls.filter(l => l.text.trim()).map(l => ({ key: l.choice ? pickKey(l.choice) : `t:${l.text.trim().toLowerCase()}`, text: l.text, choice: l.choice || null, kline: l.kline ?? null }));
+  useEffect(() => { if (!seed) cartSet(asCart(lines)); }, [lines, seed]);
+  const cartNow = useCart();
+  useEffect(() => {
+    if (seed || JSON.stringify(cartNow) === JSON.stringify(asCart(lines))) return;
+    setLines(ls => { const by = new Map(ls.filter(l => l.choice).map(l => [pickKey(l.choice), l]));
+      const next = cartNow.map(x => by.get(x.key) || { ...blankLine(), text: x.text, choice: x.choice || null, kline: x.kline ?? null });
+      return next.length ? next : [blankLine()]; });
+  }, [cartNow]);
   const [stake, setStake] = useState("");
   const [board, setBoard] = useState(null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState(null);
@@ -5006,6 +5340,9 @@ export default function App() {
   const [toolsTab,setToolsTab]=useState(B?.toolsTab||"book");
   const pickSport=(sp,lg=null)=>{setSport(sp);setLeague(lg||null);};
   const [layout,setLayout0]=useState(layoutPref), setLayout=v=>{setLayout0(v);try{localStorage.setItem(LAYOUT_LS,v);}catch(_){/* this visit only */}};
+  const wideQ=()=>typeof window!=="undefined"&&window.matchMedia?window.matchMedia("(min-width:1000px)").matches:true;
+  const [wideNow,setWideNow]=useState(wideQ);
+  useEffect(()=>{if(typeof window==="undefined"||!window.matchMedia)return;const m=window.matchMedia("(min-width:1000px)"),f=()=>setWideNow(m.matches);m.addEventListener?m.addEventListener("change",f):m.addListener(f);return()=>{m.removeEventListener?m.removeEventListener("change",f):m.removeListener(f);};},[]);
   const openBets=tab=>{if(tab)ssSet("bb.betsTab",tab);setPhase("bets");};
   // remember where this tab is (a refresh comes back here); loading screens keep the screen they're loading
   useEffect(()=>{
@@ -5140,9 +5477,10 @@ export default function App() {
       return phase==="slate"?<SlateScreen {...common} onBest={()=>setPhase("best")}/>:<BestPickScreen {...common} onSlate={()=>setPhase("slate")}/>;
     }
     if (phase==="ready"&&matchData&&simResult) return <SimScreen lineupNote={lineupNote} matchData={matchData} simResult={simResult} sport={sport} isNeutral={isNeutral} onBack={backTo&&ranked&&!ranked.error?()=>setPhase(backTo):null} onReset={()=>{setPhase("setup");setMatchData(null);setSimResult(null);setBackTo(null);}}/>;
-    return <SetupScreen sport={sport} league={league} onPickSport={pickSport} layout={layout} setLayout={setLayout} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
+    return <SetupScreen sport={sport} league={league} onPickSport={pickSport} layout={layout} setLayout={setLayout} onBetsTab={openBets} onToolsKalshi={()=>{setToolsTab("kalshi");setPhase("tools");}} awayInput={awayInput} setAwayInput={setAwayInput} homeInput={homeInput} setHomeInput={setHomeInput} isNeutral={isNeutral} setIsNeutral={setIsNeutral} onFetch={handleFetch} loading={loading} error={error}
       onSlate={()=>openSlate("slate")} onBest={()=>openSlate("best")} onBets={()=>openBets("slip")} onTools={()=>{setToolsTab("book");setPhase("tools");}} onFinal={r=>{setFinalRow({sport,row:r});setPhase("final");}} onBox={r=>{setFinalRow({sport,row:r});setPhase("box");}} slateInfo={slateInfo} slateBusy={false} slateErr={slateErr||(ranked&&ranked.error)||null}
       onPick={r=>handleFetch({away:r.away.full||r.away.name,home:r.home.full||r.home.name,neutral:false,sport,row:r})}/>;
   };
-  return <>{screen()}{phase!=="bets"&&<SlipDock onOpen={()=>openBets("slip")}/>}</>;
+  const pageSlip=phase==="setup"&&PAGE_SLIP.has(layout)&&wideNow;
+  return <>{screen()}{phase!=="bets"&&!pageSlip&&<SlipDock onOpen={()=>openBets("slip")}/>}</>;
 }
