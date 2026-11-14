@@ -155,7 +155,7 @@ async function placeSlip(env, email, body) {
       seen.add(ticker);
       const title = String(mkt.title || x.title || "").slice(0, 140), vs = title.split(/\s+vs\.?\s+|\s+at\s+/i);
       legs.push({ pick: String(x.pick || "").slice(0, 80), sport: String(x.sport || "Kalshi").slice(0, 20), league: "kalshi", eventId: ticker, ticker, kenv: kalshi.env, date: mkt.close_time || mkt.expected_expiration_time || new Date().toISOString(),
-        market: "kalshi", side: "yes", line: null, odds, name: String(mkt.yes_sub_title || x.name || ticker).slice(0, 80), title,
+        market: "kalshi", side: x.side === "no" ? "no" : "yes", line: null, odds, name: String(mkt.yes_sub_title || x.name || ticker).slice(0, 80), title,
         away: { name: vs.length === 2 ? vs[0] : title, abbr: "" }, home: { name: vs.length === 2 ? vs[1] : "", abbr: "" }, res: null, live: true });
       continue;
     }

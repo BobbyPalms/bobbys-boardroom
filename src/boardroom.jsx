@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { liveFeed } from "./livetrack.js";
 import { parseFinal, finalRundown, algoReview, teamStatRows, colOrder, groupTitle } from "./postgame.js";
 import { UP, HARD, SOFT, PAIRS, SURRENDER, KEY, bookCall } from "./book.js";
 import { propOf, gameFor, legProgress, kalshiGameLeg } from "./legtrack.js";
@@ -6,7 +7,7 @@ import { fitPower, marketScores, dcTau, applyKeyNumbers, logitPool } from "./pow
 import { parseTennis, parseUFC, eloP, tennisOutlook, rateFor, servePoints, tennisLive, readSets, tourOf, h2hShard, parseSetScores, fitServe, tennisSim, overProb, coverProb, TOUR_GAMES } from "./ratings.js";
 import { liveBoard, matchSplit, teamQueryScore, fifaIndex, matchFifa, athleteSeasonUrl, playerRating, athleteLogUrl, logRefs, combineStats, parseLineups, probableLineup, lastCompletedEvent, teamScheduleUrl, qbrUrl, parseQBR, qbrToRating, athleteStatsUrl, parseGoalie, powerUrl, parsePower, powerRatios } from "./routes.js";
 import { parsePick, resolvePick, slipPrice, readOdds, fmtAm, legLabel, amToDec, money as cash, USERNAME_RE, amToPct, readOddsAs, fmtOdds as oddsAs, legFromRow } from "./bets.js";
-import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, syncPayload, comboCost, fillTotals, buyYesContracts, sellYesContracts, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
+import { seriesFor, mapLeg, sizeOrder, priceToAm, cents, comboCollection, bestComboQuote, quotesPath, positionOf, sellValue, sellOrder, bestSellQuote, feeEstimate, comboEstimate, syncPayload, comboCost, fillTotals, buyYesContracts, sellYesContracts, kalshiGameCode, gameEvents, sidePrices, importKey, signHeaders, savedKey, saveKey, forgetKey, API_ROOT, indexMarkets, kalshiSearch, kalshiLeg, quoteMarket, planFunding, transferBody } from "./kalshi.js";
 import { MENU, menuFor, placeOf, itemLabel } from "./sportmenu.js";
 import { ROUTES, scoreboardUrl, standingsUrl, summaryUrl, parseStandings, leagueAvg, parseScoreboard, parseSummary, injuryNote, finalsFrom, espnSeason, ymd, etDayLabel, makeBoards, pool, sportsDay, sportsDayISO, fieldBoard, leagueName, seasonStartYear, FIELD_SPORTS } from "./routes.js";
 
@@ -2552,7 +2553,7 @@ function useBoardPrices(games, kal) {
   return games.map(g => g.cols.map(() => ({ a: ks[i++], h: ks[i++] })));
 }
 const statusTxt = g => (g.state === "in" ? `● ${g.row?.detail || "LIVE"}` : etTime(g.date) ? `${etDayLabel(g.date) !== etDayLabel(new Date().toISOString()) ? etDayLabel(g.date) + " · " : ""}${etTime(g.date)}` : "");
-function OddsBoard({ games, prices, inCart, onPick, onBox, compact = false }) {
+function OddsBoard({ games, prices, inCart, onPick, onBox, compact = false, kal = null }) {
   if (!games.length) return null;
   const head = { fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint };
   const cols = compact ? "minmax(64px,1fr) repeat(3,minmax(74px,1fr))" : "minmax(130px,1.4fr) repeat(3,minmax(92px,1fr))";
@@ -2576,6 +2577,7 @@ function OddsBoard({ games, prices, inCart, onPick, onBox, compact = false }) {
               {live && onBox && g.row && <button onClick={() => onBox(g.row)} style={{ padding: "3px 7px", border: `1px solid ${NEON.red}88`, background: "none", color: "#fff", fontFamily: F.d, fontSize: 9, letterSpacing: 1, cursor: "pointer" }}>BOX ▸</button>}
             </span>
           </div>
+          <GameMarkets leg={g.cols[2].a?.leg} kal={kal} inCart={inCart}/>
         </div>; })}
     </div>
   </div>;
@@ -2595,6 +2597,228 @@ const railBtn = (t, sub, fn, c = T.chrome, off = false) => <button key={t} onCli
 // the slip, right on the page (the same slip as the corner and NEW SLIP)
 function PageSlip({ kal, onPlaced, onTools }) {
   return <div className="bb-pageslip"><NewSlip kal={kal} onTools={onTools} onPlaced={onPlaced}/></div>;
+}
+
+// ─── EVERY KALSHI MARKET ON A GAME: winner, spreads and totals at every line, halves and quarters, every player prop.
+// Found through the game's code on Kalshi in the data job's index of every open sports market; priced live (YES and NO)
+// one series at a time; any side taps onto the slip, which buys it on Kalshi.
+let _kxIndex = null;
+const kalshiIndexEv = () => (_kxIndex = _kxIndex || dataFile("kalshi/sports.json").then(f => f?.ev || []));
+function useGameMarkets(leg, env = "live", on = true) {
+  const [st, setSt] = useState({ code: null, groups: null });
+  const key = leg ? `${leg.sport}|${leg.league}|${leg.eventId}` : "";
+  useEffect(() => {
+    if (!leg || !on) return;
+    let alive = true;
+    (async () => {
+      const s = seriesFor(leg.sport, leg.league, "ml"), bySeries = s ? { [s]: await kalshiEvents(env, s) } : {};
+      const code = kalshiGameCode(leg, bySeries), ev = await kalshiIndexEv();
+      if (alive) setSt({ code, groups: gameEvents(ev, code) });
+    })().catch(() => alive && setSt({ code: null, groups: [] }));
+    return () => { alive = false; };
+  }, [key, env, on]);
+  return st;
+}
+// live prices for the groups that are open on screen: one call per series (Kalshi lists every game's markets in it)
+function useGroupPrices(groups, env, openSet) {
+  const [px, setPx] = useState({});
+  const want = (groups || []).filter(g => openSet.has(g.event)), wkey = want.map(g => g.event).join(",");
+  useEffect(() => {
+    if (!want.length) return;
+    let alive = true, timer = null;
+    const pull = async () => {
+      const res = await pool(want, 6, async g => { const evs = await kalshiEvents(env, g.series); const e = evs.find(x => x.event_ticker === g.event); return [g.event, Object.fromEntries((e?.markets || []).map(m => [m.ticker, m]))]; });
+      if (alive) setPx(o => ({ ...o, ...Object.fromEntries(res.filter(Boolean)) }));
+      if (alive) timer = setTimeout(pull, 20000);
+    };
+    pull();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [wkey, env]);
+  return px;
+}
+const KIND_T = { game: "GAME", periods: "HALVES · QUARTERS · PERIODS", props: "PLAYER PROPS" };
+function GameMarkets({ leg, kal = null, startOpen = false, inCart }) {
+  const env = kal?.env || "live", { code, groups } = useGameMarkets(leg, env, true);
+  const [open, setOpen] = useState(startOpen), [openEv, setOpenEv] = useState(() => new Set()), [q, setQ] = useState("");
+  // the game's own markets open first; props open as you tap them
+  useEffect(() => { if (groups && openEv.size === 0) setOpenEv(new Set(groups.filter(g => g.kind === "game").map(g => g.event))); }, [groups]);
+  const px = useGroupPrices(open ? groups : null, env, openEv);
+  if (!groups) return <div style={{ fontSize: 10, color: T.faint, marginTop: 6 }}>Finding this game on Kalshi…</div>;
+  if (!groups.length) return null;
+  const total = groups.reduce((a, g) => a + g.markets.length, 0), ql = q.trim().toLowerCase();
+  const toggleEv = e => setOpenEv(s => { const n = new Set(s); n.has(e) ? n.delete(e) : n.add(e); return n; });
+  const sideBtn = (g, m, side) => {
+    const mk = px[g.event]?.[m.ticker], p = mk ? sidePrices(mk)[side] : null;
+    const l = { ...kalshiLeg({ ...m, sport: leg.sport }), side }, on = inCart.has(pickKey(l));
+    return <button key={side} onClick={() => cartToggle(l)} disabled={mk && !p} aria-pressed={on} aria-label={`${on ? "take off the slip" : "add to the slip"}: ${m.sub} ${side.toUpperCase()}`}
+      style={{ minWidth: 0, padding: "6px 6px", border: `1px solid ${on ? NEON.teal : T.line}`, background: on ? "rgba(23,242,208,.16)" : "rgba(9,2,17,.6)", color: mk && !p ? T.faint : T.ink, fontFamily: F.m, fontSize: 11, cursor: mk && !p ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}>
+      <span style={{ color: T.dim }}>{side.toUpperCase()} </span><b style={{ color: p ? NEON.teal : T.faint }}>{p ? `${Math.round(p * 100)}¢` : mk ? "–" : "…"}</b>{p ? <span style={{ color: T.dim }}> {fmtAm(priceToAm(p))}</span> : null}
+    </button>;
+  };
+  return <div style={{ marginTop: 8 }}>
+    <button onClick={() => setOpen(!open)} aria-expanded={open} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, width: "100%", padding: "8px 10px", border: `1px solid ${NEON.teal}66`, background: "rgba(23,242,208,.06)", color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, cursor: "pointer", textAlign: "left" }}>
+      <span style={{ overflowWrap: "anywhere" }}>ALL KALSHI MARKETS · {total} <span style={{ fontFamily: F.m, letterSpacing: 0, color: T.dim }}>({groups.length} kinds{groups.some(g => g.kind === "props") ? ", player props" : ""})</span></span><span style={{ color: NEON.teal }}>{open ? "▴" : "▾"}</span>
+    </button>
+    {open && <div style={{ border: `1px solid ${T.line}`, borderTop: "none", padding: 10 }}>
+      {groups.some(g => g.kind === "props") && <input aria-label="find a market or player" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a player or market…" style={{ ...fieldStyle(), padding: "8px 10px", fontSize: 12, marginBottom: 8 }}/>}
+      {["game", "periods", "props"].map(kind => { const gs = groups.filter(g => g.kind === kind && (!ql || g.name.toLowerCase().includes(ql) || g.markets.some(m => m.sub.toLowerCase().includes(ql)))); if (!gs.length) return null;
+        return <div key={kind} style={{ marginTop: 6 }}>
+          <div style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint, margin: "8px 0 6px" }}>{KIND_T[kind]}</div>
+          {gs.map(g => { const isOpen = openEv.has(g.event) || !!ql, ms = ql && !g.name.toLowerCase().includes(ql) ? g.markets.filter(m => m.sub.toLowerCase().includes(ql)) : g.markets;
+            return <div key={g.event} style={{ borderTop: `1px solid ${T.line}` }}>
+              <button onClick={() => toggleEv(g.event)} aria-expanded={isOpen} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, width: "100%", padding: "8px 2px", border: "none", background: "none", color: T.ink, fontFamily: F.m, fontSize: 12, cursor: "pointer", textAlign: "left" }}>
+                <span style={{ overflowWrap: "anywhere" }}>{g.kind === "game" && !/:/.test(g.title) ? "Winner" : g.name} <span style={{ color: T.faint }}>· {ms.length}</span></span><span style={{ color: T.chrome }}>{isOpen ? "▴" : "▾"}</span>
+              </button>
+              {isOpen && <div style={{ display: "grid", gap: 4, paddingBottom: 8 }}>
+                {ms.map(m => <div key={m.ticker} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto", gap: 6, alignItems: "center" }}>
+                  <span style={{ minWidth: 0, fontSize: 12, overflowWrap: "anywhere" }}>{m.sub}</span>{sideBtn(g, m, "yes")}{sideBtn(g, m, "no")}
+                </div>)}
+              </div>}
+            </div>; })}
+        </div>; })}
+      <div style={{ fontSize: 10, color: T.faint, marginTop: 8 }}>Prices are Kalshi's asks right now (refreshed every 20 s). Tap YES or NO to put it on the slip; it's bought on Kalshi from there.</div>
+    </div>}
+  </div>;
+}
+
+// ─── THE LIVE TRACKER (Arena): the game as it happens. The summary is re-read every 10 seconds while it's live: score
+// by period, the last play, a court / rink / field / diamond with what's going on, the play-by-play, win probability,
+// leaders and team stats. Everything comes from the game's live feed; nothing is drawn that didn't happen.
+function useLiveSummary(sport, row) {
+  const [st, setSt] = useState({ id: null, feed: null, err: null, at: 0 });
+  useEffect(() => {
+    if (!row?.id || !row.slug || !ROUTES[sport]) return;
+    let alive = true, timer = null;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) { timer = setTimeout(pull, 10000); return; }
+      try { const j = await getJSON(summaryUrl(sport, row.slug, row.id)); const feed = liveFeed(j, sport); if (alive) setSt({ id: row.id, feed, err: null, at: Date.now() }); if (alive && feed && feed.state === "post") return; }
+      catch (e) { if (alive) setSt(x => ({ ...x, id: row.id, err: "Couldn't reach the live feed. Retrying." })); }
+      if (alive) timer = setTimeout(pull, 10000);
+    };
+    setSt({ id: row.id, feed: null, err: null, at: 0 });
+    pull();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [sport, row?.id, row?.slug]);
+  return st.id === row?.id ? st : { feed: null, err: null, at: 0 };
+}
+const SIDE_C = { away: AWAY_DEF, home: HOME_DEF };
+function CourtView({ shots, away, home }) {
+  return <svg viewBox="-2 -2 98 54" role="img" aria-label={`Shot chart: ${shots.length} shots so far, ${away} at the left basket, ${home} at the right`} style={{ width: "100%", display: "block", background: "linear-gradient(90deg,rgba(143,0,255,.10),rgba(23,242,208,.05))" }}>
+    <g fill="none" stroke="rgba(194,123,255,.55)" strokeWidth=".35">
+      <rect x="0" y="0" width="94" height="50"/><line x1="47" y1="0" x2="47" y2="50"/><circle cx="47" cy="25" r="6"/>
+      <rect x="0" y="17" width="19" height="16"/><rect x="75" y="17" width="19" height="16"/>
+      <path d="M0 3 H14 A23.75 23.75 0 0 1 14 47 H0"/><path d="M94 3 H80 A23.75 23.75 0 0 0 80 47 H94"/>
+      <circle cx="5.25" cy="25" r=".9"/><circle cx="88.75" cy="25" r=".9"/>
+    </g>
+    {shots.map((p, i) => p.made
+      ? <circle key={i} cx={p.x} cy={p.y} r={p.last ? 1.4 : .9} fill={SIDE_C[p.side] || NEON.green} stroke={p.last ? "#fff" : "none"} strokeWidth=".4"><title>{p.text}</title></circle>
+      : <circle key={i} cx={p.x} cy={p.y} r={p.last ? 1.4 : .8} fill="none" stroke={SIDE_C[p.side] || NEON.red} strokeWidth=".35" opacity=".8"><title>{p.text}</title></circle>)}
+    {shots.filter(p => p.last).map((p, i) => <circle key={`r${i}`} cx={p.x} cy={p.y} r="3" fill="none" stroke="#fff" strokeWidth=".3" opacity=".7"/>)}
+  </svg>;
+}
+function RinkView({ shots }) {
+  return <svg viewBox="-2 -2 204 89" role="img" aria-label={`Shot map: ${shots.length} shots so far`} style={{ width: "100%", display: "block", background: "linear-gradient(90deg,rgba(47,155,255,.08),rgba(143,0,255,.08))" }}>
+    <g fill="none" strokeWidth=".6"><rect x="0" y="0" width="200" height="85" rx="28" stroke="rgba(194,123,255,.6)"/><line x1="100" y1="0" x2="100" y2="85" stroke="#FF335588"/>
+      <line x1="75" y1="0" x2="75" y2="85" stroke="#2F9BFF88"/><line x1="125" y1="0" x2="125" y2="85" stroke="#2F9BFF88"/><line x1="11" y1="4" x2="11" y2="81" stroke="#FF335566"/><line x1="189" y1="4" x2="189" y2="81" stroke="#FF335566"/>
+      <circle cx="100" cy="42.5" r="15" stroke="rgba(194,123,255,.4)"/></g>
+    {shots.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={p.made ? 2.6 : p.last ? 2.2 : 1.5} fill={p.made ? NEON.green : "none"} stroke={p.made ? "#fff" : SIDE_C[p.side] || T.dim} strokeWidth=".6"><title>{p.text}</title></circle>)}
+  </svg>;
+}
+function FieldView({ s, away, home }) {
+  const X = v => 10 + v;
+  return <svg viewBox="0 0 120 54" role="img" aria-label={`Field: ${s.text || "ball position"}`} style={{ width: "100%", display: "block", background: "rgba(43,255,136,.05)" }}>
+    <rect x="0" y="0" width="10" height="54" fill={`${AWAY_DEF}33`}/><rect x="110" y="0" width="10" height="54" fill={`${HOME_DEF}33`}/>
+    <text x="5" y="27" fill={AWAY_DEF} fontSize="4" textAnchor="middle" transform="rotate(-90 5 27)" fontFamily="Orbitron, sans-serif">{away}</text>
+    <text x="115" y="27" fill={HOME_DEF} fontSize="4" textAnchor="middle" transform="rotate(90 115 27)" fontFamily="Orbitron, sans-serif">{home}</text>
+    {Array.from({ length: 11 }, (_, i) => <line key={i} x1={10 + i * 10} y1="0" x2={10 + i * 10} y2="54" stroke="rgba(194,123,255,.35)" strokeWidth=".3"/>)}
+    {[10, 20, 30, 40, 50, 40, 30, 20, 10].map((n, i) => <text key={i} x={20 + i * 10} y="50" fill="rgba(241,230,255,.45)" fontSize="3" textAnchor="middle">{n}</text>)}
+    {s.firstDown != null && <line x1={X(s.firstDown)} y1="0" x2={X(s.firstDown)} y2="54" stroke={NEON.gold} strokeWidth=".6"/>}
+    {s.x != null && <><line x1={X(s.x)} y1="0" x2={X(s.x)} y2="54" stroke="#2F9BFF" strokeWidth=".6"/><ellipse cx={X(s.x)} cy="27" rx="2.2" ry="1.4" fill="#C8763A" stroke="#fff" strokeWidth=".3"/></>}
+  </svg>;
+}
+function DiamondView({ s }) {
+  const base = (on, x, y, k) => <rect key={k} x={x - 4} y={y - 4} width="8" height="8" transform={`rotate(45 ${x} ${y})`} fill={on ? NEON.gold : "none"} stroke={on ? NEON.gold : "rgba(194,123,255,.6)"} strokeWidth=".8"/>;
+  const dots = (n, of, c) => Array.from({ length: of }, (_, i) => <circle key={i} cx={8 + i * 7} cy="0" r="2.4" fill={i < n ? c : "none"} stroke={c} strokeWidth=".6"/>);
+  return <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 14, alignItems: "center" }}>
+    <svg viewBox="0 0 100 70" role="img" aria-label={`Bases: ${["first", "second", "third"].filter((_, i) => s.on[i]).join(", ") || "empty"}; ${s.outs} out`} style={{ width: "100%", maxWidth: 260, display: "block" }}>
+      <path d="M50 64 L80 34 L50 6 L20 34 Z" fill="rgba(43,255,136,.05)" stroke="rgba(194,123,255,.4)" strokeWidth=".6"/>
+      {base(s.on[1], 50, 8, "2")}{base(s.on[0], 78, 34, "1")}{base(s.on[2], 22, 34, "3")}
+      <path d="M46 62 h8 v3 l-4 3 l-4 -3 z" fill="#fff" opacity=".8"/>
+    </svg>
+    <div style={{ display: "grid", gap: 8, fontSize: 11 }}>
+      {[["B", s.balls, 4, NEON.green], ["S", s.strikes, 3, NEON.gold], ["O", s.outs, 3, NEON.red]].map(([t, n, of, c]) => <div key={t} style={{ display: "flex", alignItems: "center", gap: 6 }}><b style={{ width: 12 }}>{t}</b><svg width={of * 7 + 6} height="8" viewBox={`3 -4 ${of * 7 + 2} 8`} aria-hidden="true">{dots(n, of, c)}</svg></div>)}
+    </div>
+  </div>;
+}
+function WinProbLine({ wp, away, home }) {
+  if (!wp || wp.length < 3) return null;
+  const W = 300, H = 60, pts = wp.map((v, i) => `${(i / (wp.length - 1)) * W},${H - v * H}`).join(" "), now = wp[wp.length - 1];
+  const lead = now >= 0.5 ? { t: home, v: now, c: HOME_DEF } : { t: away, v: 1 - now, c: AWAY_DEF };
+  return <div>
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.dim }}><span>WIN PROBABILITY · live</span><span><b style={{ color: lead.c }}>{lead.t} {Math.round(lead.v * 100)}%</b></span></div>
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={`Win probability over the game: ${lead.t} ${Math.round(lead.v * 100)}% now`} style={{ width: "100%", height: 60, display: "block", marginTop: 4 }}>
+      <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="rgba(167,80,255,.3)" strokeDasharray="4 4"/>
+      <polyline points={pts} fill="none" stroke={T.chrome} strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+    </svg>
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.faint }}><span>{home} ▲</span><span>{away} ▼</span></div>
+  </div>;
+}
+function LiveTracker({ sport, row }) {
+  const { feed: f, err, at } = useLiveSummary(sport, row);
+  const [all, setAll] = useState(false);
+  if (!row?.slug) return null;
+  if (!f) return <Panel title="LIVE TRACKER"><div style={{ fontSize: 12, color: err ? "#FF8095" : T.dim }}>{err || "Connecting to the live feed…"}</div></Panel>;
+  const A = f.F.away, H = f.F.home, nP = Math.max(A.lines.length, H.lines.length);
+  const pLbl = i => (f.fam === "base" ? String(i + 1) : f.fam === "soccer" ? (i < 2 ? `${i + 1}H` : `ET${i - 1}`) : f.fam === "hockey" ? (i < 3 ? `P${i + 1}` : "OT") : i < (sport === "CBB" ? 2 : 4) ? (sport === "CBB" ? `${i + 1}H` : `Q${i + 1}`) : `OT${i - (sport === "CBB" ? 1 : 3) > 1 ? i - (sport === "CBB" ? 1 : 3) : ""}`);
+  const cell = { padding: "5px 6px", textAlign: "center", fontFamily: F.d, fontSize: 11 };
+  const plays = all ? f.plays.slice(0, 60) : f.plays.slice(0, 10);
+  return <Panel title={f.state === "post" ? "FINAL · TRACKER" : "● LIVE TRACKER"} right={at ? `updated ${new Date(at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}` : null} color={f.state === "in" ? NEON.red : T.chrome}>
+    {nP > 0 && <div style={{ overflowX: "auto" }}><table style={{ borderCollapse: "collapse", width: "100%", minWidth: 220 }}>
+      <thead><tr><th style={{ ...cell, textAlign: "left", color: T.faint, fontSize: 9 }}/>{Array.from({ length: nP }, (_, i) => <th key={i} style={{ ...cell, color: T.faint, fontSize: 9 }}>{pLbl(i)}</th>)}<th style={{ ...cell, color: T.chrome, fontSize: 9 }}>T</th></tr></thead>
+      <tbody>{[A, H].map((t, k) => <tr key={k} style={{ borderTop: `1px solid ${T.line}` }}><td style={{ ...cell, textAlign: "left", color: k ? HOME_DEF : AWAY_DEF }}>{t.abbr}</td>{Array.from({ length: nP }, (_, i) => <td key={i} style={{ ...cell, color: T.ink, fontFamily: F.m }}>{t.lines[i] ?? ""}</td>)}<td style={{ ...cell, color: "#fff", fontWeight: 900 }}>{t.score ?? ""}</td></tr>)}</tbody>
+    </table></div>}
+    {f.last && <div style={{ marginTop: 10, padding: "9px 11px", borderLeft: `3px solid ${f.last.scoring ? NEON.green : T.chrome}`, background: f.last.scoring ? "rgba(43,255,136,.08)" : "rgba(143,0,255,.10)", fontSize: 12, lineHeight: 1.5 }}>
+      <span style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: f.last.scoring ? NEON.green : T.chrome }}>LAST PLAY{f.last.clock ? ` · ${[f.last.period, f.last.clock].filter(Boolean).join(" ")}` : ""}</span>
+      <div style={{ overflowWrap: "anywhere" }}>{f.last.text}</div>
+    </div>}
+    <div style={{ marginTop: 10, border: `1px solid ${T.line}` }}>
+      {f.fam === "basket" && <CourtView shots={f.shots} away={A.abbr} home={H.abbr}/>}
+      {f.fam === "hockey" && <RinkView shots={f.shots}/>}
+      {f.fam === "foot" && f.situation && <FieldView s={f.situation} away={A.abbr} home={H.abbr}/>}
+      {f.fam === "base" && f.situation && <div style={{ padding: 10 }}><DiamondView s={f.situation}/></div>}
+      {f.fam === "soccer" && f.possession && <div style={{ padding: 10 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: AWAY_DEF }}>{A.abbr} {f.possession.a}%</span><span style={{ color: T.faint }}>POSSESSION</span><span style={{ color: HOME_DEF }}>{f.possession.h}% {H.abbr}</span></div>
+        <div style={{ display: "flex", height: 8, marginTop: 6 }}><div style={{ width: `${f.possession.a}%`, background: AWAY_DEF }}/><div style={{ flex: 1, background: HOME_DEF }}/></div></div>}
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, padding: "6px 10px", fontSize: 10, color: T.dim, borderTop: `1px solid ${T.line}` }}>
+        {f.fam === "basket" || f.fam === "hockey" ? <span>{f.shots.length} shots · filled = scored · <span style={{ color: AWAY_DEF }}>{A.abbr}</span> / <span style={{ color: HOME_DEF }}>{H.abbr}</span> · ringed = latest</span>
+          : f.fam === "foot" && f.situation ? <span style={{ color: f.situation.redZone ? NEON.red : T.dim }}>{f.situation.text || "Between plays"}{f.situation.poss ? ` · ${f.situation.poss === "away" ? A.abbr : H.abbr} ball` : ""}{f.situation.redZone ? " · RED ZONE" : ""}</span>
+          : f.fam === "base" && f.situation ? <span>{f.situation.inning}{f.situation.batter ? ` · AB: ${f.situation.batter}` : ""}{f.situation.pitcher ? ` · P: ${f.situation.pitcher}` : ""}</span>
+          : <span>{f.detail}</span>}
+        <span>{f.detail}</span>
+      </div>
+    </div>
+    {f.wp.length > 2 && <div style={{ marginTop: 12 }}><WinProbLine wp={f.wp} away={A.abbr} home={H.abbr}/></div>}
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint, marginBottom: 4 }}>PLAY BY PLAY</div>
+      {plays.length ? plays.map(p => <div key={p.id} style={{ display: "grid", gridTemplateColumns: "64px minmax(0,1fr) auto", gap: 8, padding: "6px 0", borderTop: `1px solid ${T.line}`, fontSize: 11, lineHeight: 1.45 }}>
+        <span style={{ color: T.faint, overflowWrap: "anywhere" }}>{[p.period, p.clock].filter(Boolean).join(" ")}</span>
+        <span style={{ color: p.scoring ? "#fff" : T.ink, fontWeight: p.scoring ? 700 : 400, overflowWrap: "anywhere" }}>{p.side && <span style={{ color: SIDE_C[p.side] }}>● </span>}{p.text}</span>
+        <span style={{ fontFamily: F.d, color: p.scoring ? NEON.green : T.faint, whiteSpace: "nowrap" }}>{p.as != null && p.hs != null ? `${p.as}-${p.hs}` : ""}</span>
+      </div>) : <div style={{ fontSize: 11, color: T.dim }}>No plays logged yet.</div>}
+      {f.plays.length > 10 && <button onClick={() => setAll(!all)} style={{ ...btnStyle(false), width: "100%", marginTop: 6, color: T.dim, cursor: "pointer" }}>{all ? "SHOW LESS" : `SHOW MORE (${Math.min(60, f.plays.length)})`}</button>}
+    </div>
+    {(f.F.leaders.away.length > 0 || f.F.teamStats.length > 0) && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12, marginTop: 12 }}>
+      {f.F.leaders.away.length + f.F.leaders.home.length > 0 && <div>
+        <div style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint, marginBottom: 4 }}>LEADERS</div>
+        {[["away", A], ["home", H]].flatMap(([k, t]) => f.F.leaders[k].slice(0, 3).map((l, i) => <div key={`${k}${i}`} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, padding: "4px 0", borderTop: `1px solid ${T.line}`, fontSize: 11 }}>
+          <span style={{ overflowWrap: "anywhere" }}><span style={{ color: SIDE_C[k] }}>{t.abbr}</span> {l.name} <span style={{ color: T.faint }}>· {l.cat}</span></span><b>{l.v}</b></div>))}
+      </div>}
+      {f.F.teamStats.length > 0 && <div>
+        <div style={{ fontFamily: F.d, fontSize: 9, letterSpacing: 2, color: T.faint, marginBottom: 4 }}>TEAM STATS · <span style={{ color: AWAY_DEF }}>{A.abbr}</span> / <span style={{ color: HOME_DEF }}>{H.abbr}</span></div>
+        {f.F.teamStats.slice(0, 8).map(r => <div key={r.key} style={{ display: "grid", gridTemplateColumns: "56px minmax(0,1fr) 56px", gap: 6, padding: "4px 0", borderTop: `1px solid ${T.line}`, fontSize: 11 }}>
+          <b style={{ color: AWAY_DEF }}>{r.a}</b><span style={{ textAlign: "center", color: T.dim, overflowWrap: "anywhere" }}>{r.label}</span><b style={{ color: HOME_DEF, textAlign: "right" }}>{r.h}</b></div>)}
+      </div>}
+    </div>}
+  </Panel>;
 }
 
 // A · TERMINAL: sports and shortcuts on the left, the board in the middle (every price tappable, sim vs Kalshi), the slip on the right
@@ -2621,7 +2845,7 @@ function TerminalView({ sport, league, onPickSport, onPick, onBox, onSlate, onBe
           {!board.rows && <div style={{ fontSize: 12, color: T.dim }}>Loading the board…</div>}
           {board.err && <div style={{ fontSize: 12, color: "#FF8095" }}>{board.err}</div>}
           {board.rows && !games.length && <div style={{ fontSize: 12, color: T.dim }}>No {lbl} games left today{sl.loading ? "; checking tomorrow's slate…" : "."}</div>}
-          <OddsBoard games={games} prices={prices} inCart={inCart} onPick={onPick} onBox={onBox}/>
+          <OddsBoard games={games} prices={prices} inCart={inCart} onPick={onPick} onBox={onBox} kal={kal}/>
           {sl.err && <div style={{ fontSize: 11, color: T.faint, marginTop: 8 }}>Slate scan: {sl.err} Lines show without the sim.</div>}
         </Panel>}
       </main>
@@ -2710,6 +2934,7 @@ function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field,
                 <b style={{ fontFamily: F.d, fontSize: 12, overflowWrap: "anywhere" }}>{t.abbr || t.name}{g.row && g.state === "in" ? <span style={{ fontFamily: F.m, color: "#fff" }}> {g.row[k === "a" ? "away" : "home"].score}</span> : null}</b>
                 {g.cols.map(c => <PriceBtn key={c.t} s={c[k]} k={null} inCart={inCart} compact/>)}
               </div>)}
+              <GameMarkets leg={g.cols[2].a?.leg} kal={kal} inCart={inCart}/>
             </div>)}
           </div>
           {board.rows && !games.length && <div style={{ fontSize: 12, color: T.dim }}>No {lbl} games left today.</div>}
@@ -2763,6 +2988,7 @@ function ArenaView({ sport, league, onPickSport, onPick, onBox, onBetsTab, onToo
             <button onClick={() => onPick(g.row || { away: { name: g.R.away.name }, home: { name: g.R.home.name } })} style={{ flex: "1 1 160px", padding: 11, border: `1px solid ${T.chrome}`, background: "rgba(143,0,255,.18)", color: "#fff", fontFamily: F.d, fontSize: 10, letterSpacing: 2, cursor: "pointer" }}>FULL SIMULATION ▸</button>
           </div>
         </section>
+        {g.state === "in" && g.row && <LiveTracker key={g.id} sport={sport} row={g.row}/>}
         <Panel title={g.state === "in" ? "LIVE LINES · KALSHI" : "LINES"} right={g.grade ? `grade ${g.grade}` : null}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10 }}>
             {g.cols.map((c, ci) => (c.a || c.h) ? <div key={c.t} style={{ border: `1px solid ${T.line}`, padding: 10 }}>
@@ -2772,6 +2998,7 @@ function ArenaView({ sport, league, onPickSport, onPick, onBox, onBetsTab, onToo
             </div> : null)}
           </div>
         </Panel>
+        <Panel title="EVERY KALSHI MARKET ON THIS GAME" right="YES or NO, any line"><GameMarkets key={g.id} leg={g.cols[2].a?.leg} kal={kal} inCart={inCart} startOpen/></Panel>
         <Panel title="TICKETS RIDING THIS GAME" right="yours: cash out · theirs: TAIL"><FriendsTickets onBetsTab={onBetsTab} gameId={g.id} limit={8} kal={kal}/></Panel>
       </>}
     </main>

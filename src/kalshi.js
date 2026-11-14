@@ -318,10 +318,39 @@ export function kalshiLeg(m) {
 export function quoteMarket(m, leg) {
   if (!m) return { ok: false, why: "Couldn't read this market on Kalshi." };
   if (!open(m)) return { ok: false, why: "That market isn't open on Kalshi right now." };
-  const p = ask(m, "yes");
-  if (!(p > 0 && p < 1)) return { ok: false, why: "No one is selling YES on this market right now." };
-  return { ok: true, ticker: m.ticker, event_ticker: m.event_ticker, side: "yes", price: p, am: priceToAm(p), line: null, label: `${m.yes_sub_title || leg?.name || m.ticker} · YES`, title: m.title };
+  const side = leg?.side === "no" ? "no" : "yes", p = ask(m, side);
+  if (!(p > 0 && p < 1)) return { ok: false, why: `No one is selling ${side.toUpperCase()} on this market right now.` };
+  return { ok: true, ticker: m.ticker, event_ticker: m.event_ticker, side, price: p, am: priceToAm(p), line: null, label: `${m.yes_sub_title || leg?.name || m.ticker} · ${side.toUpperCase()}`, title: m.title };
 }
+
+// ---------- every Kalshi market on one game ----------
+// The game's code on Kalshi (e.g. 26NOV13OKCLAC): the one its moneyline event carries. Every other market on that game
+// (spreads and totals at every line, halves, quarters, player props...) sits in an event ending in the same code.
+export function kalshiGameCode(leg, bySeries) {
+  const s = seriesFor(leg.sport, leg.league, "ml"), g = s ? findGameEvent(bySeries[s], leg) : null;
+  return g ? g.code : null;
+}
+// what kind of market an event on a game is, from its title ("Oklahoma City vs Los Angeles C: 1st Half Spread")
+export const marketKind = title => {
+  const t = String(title || "").split(": ").slice(1).join(": ") || "";
+  if (!t || /^(winner|game|match|fight)$/i.test(t) || /\b(spread|total|overtime|tie|draw|both teams|correct score|winning margin|method|round|go the distance)\b/i.test(t) && !/\b(1st|2nd|3rd|4th|half|quarter|period|inning|set \d)\b/i.test(t)) return "game";
+  if (/\b(1st|2nd|3rd|4th|first|second|half|quarter|period|inning|set \d|innings)\b/i.test(t)) return "periods";
+  return "props";
+};
+// index events (data/kalshi/sports.json ev rows) on one game code -> groups to show, duplicates (the *PROT combo copies of
+// a series) left out when the plain series is there
+export function gameEvents(ev, code) {
+  if (!code) return [];
+  const rows = (ev || []).filter(e => String(e[0]).endsWith(`-${code}`));
+  const have = new Set(rows.map(e => e[1]));
+  const order = { game: 0, periods: 1, props: 2 };
+  return rows.filter(e => !(/PROT$/.test(e[1]) && have.has(e[1].replace(/PROT$/, ""))))
+    .map(([event, series, title, esub, close, ms]) => ({ event, series, title, name: String(title).split(": ").slice(1).join(": ") || "Winner", kind: marketKind(title), close,
+      markets: (ms || []).map(([ticker, sub, mclose]) => ({ ticker, event, series, sub: sub || "", title, close: mclose || close || null })) }))
+    .sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
+}
+// a market's price to buy each side right now: { yes, no } in dollars (null when nobody is selling that side)
+export const sidePrices = m => { const y = ask(m || {}, "yes"), n = ask(m || {}, "no"); return { yes: y > 0 && y < 1 ? y : null, no: n > 0 && n < 1 ? n : null, open: !!m && open(m) }; };
 
 // ---------- funding the right part of the exchange ----------
 // Kalshi runs several matching engines ("shards"): tennis, baseball and basketball markets trade on shard 3, combos on
