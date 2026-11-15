@@ -1,5 +1,5 @@
 // Bet slips: reading typed picks, matching them to games, odds math, grading and the leaderboards (no network).
-import { parsePick, resolvePick, slipPrice, amToDec, decToAm, gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, legLabel, readPct, amToPct, fmtPct, fmtOdds, readOddsAs, legFromRow } from "../src/bets.js";
+import { parsePick, resolvePick, slipPrice, amToDec, decToAm, gradeLeg, settleSlip, bettorStats, leaderboards, boardFun, weekStartET, readOdds, legLabel, readPct, amToPct, fmtPct, fmtOdds, readOddsAs, legFromRow } from "../src/bets.js";
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 400)); } };
 
@@ -98,5 +98,25 @@ check("tail leg: ML carries no line", legFromRow(rows[2], { market: "ml", side: 
 // a Kalshi ticket pays its contracts: bet (fees in) x its own odds = contracts, for straights and combos alike
 check("Kalshi ticket: wins what the contracts pay over what was paid ($751.57 - $94.95)", settleSlip({ stake: 94.95, kalshi: { dec: 751.57 / 94.95 }, legs: [{ res: "W", odds: -178 }, { res: "W", odds: -223 }, { res: "W", odds: 223 }, { res: "W", odds: -733 }] }).profit === 656.62);
 check("Kalshi straight with its own price: same rule", settleSlip({ stake: 9.99, kalshi: { dec: 16.2 / 9.99 }, legs: [{ res: "W", odds: -150 }] }).profit === 6.21);
+// ---- the leaderboard's fun part ----
+{
+  const now = Date.parse("2026-11-14T20:00:00Z");                    // Saturday; the week started Monday Nov 9 (ET)
+  check("the week starts Monday (ET)", weekStartET(now) === "2026-11-09" && weekStartET(Date.parse("2026-11-09T06:00:00Z")) === "2026-11-09" && weekStartET(Date.parse("2026-11-09T03:00:00Z")) === "2026-11-02");
+  const sl = (id, status, stake, profit, odds, legs, settled, extra = {}) => ({ id, status, stake, profit, odds, legs: Array.from({ length: legs }, () => ({})), settled, created: settled, ...extra });
+  const people = [
+    { username: "amy", slips: [sl("a1", "won", 10, 90, 900, 4, "2026-11-10T03:00:00Z"), sl("a2", "won", 10, 9.1, -110, 1, "2026-11-11T03:00:00Z"), sl("a3", "won", 10, 9.1, -110, 1, "2026-11-12T03:00:00Z"), sl("a4", "lost", 10, -10, -110, 1, "2026-11-01T03:00:00Z"), sl("a5", "won", 20, 18.2, -110, 1, "2026-11-13T03:00:00Z")] },
+    { username: "bob", slips: [sl("b1", "lost", 50, -50, 200, 3, "2026-11-12T03:00:00Z"), sl("b2", "lost", 50, -50, 150, 2, "2026-11-13T03:00:00Z"), sl("b3", "lost", 50, -50, 120, 1, "2026-11-14T03:00:00Z"), sl("b4", "pending", 5, null, 100, 1, null, { tail: "a1" }), sl("b5", "dup", 50, -50, 120, 1, "2026-11-14T03:00:00Z")] },
+    { username: "cat", slips: [sl("c1", "cashed", 10, 5, 300, 2, "2026-11-13T03:00:00Z", { tail: "a1" })] },
+  ];
+  const f = boardFun(people, now), A = Object.fromEntries(f.awards.map(a => [a.k, a]));
+  check("this week's race: money since Monday, best first (amy +126.40, cat +5, bob -150)", f.week.map(x => `${x.username}:${x.net}`).join() === "amy:126.4,cat:5,bob:-150", f.week);
+  check("bankroll line per player, starting at 0", JSON.stringify(f.players.amy.series) === "[0,-10,80,89.1,98.2,116.4]", f.players.amy.series);
+  check("awards: king of the week, on fire (W4), biggest hit, longshot (+900), parlay king, tail magnet (2 tails), ice cold (L3), high roller", A.week.who === "amy" && A.hot.who === "amy" && A.hot.stat === "W4" && A.hit.who === "amy" && A.long.stat === "+900" && A.parlay.who === "amy" && A.tail.who === "amy" && A.tail.stat === "2 tails" && A.cold.who === "bob" && A.cold.stat === "L3" && A.roller.who === "bob", f.awards);
+  check("sharpshooter / shark need 5+ bets", A.sharp.who === "amy" && A.sharp.stat === "80%" && A.shark.who === "amy");
+  check("a set-aside duplicate counts for nothing (bob: 4 bets, not 5)", f.players.bob.bets === 4);
+  check("records: biggest win, longest odds, longest streak, biggest parlay", f.records.biggest.who === "amy" && f.records.biggest.profit === 90 && f.records.longest.odds === 900 && f.records.streak.n === 4 && f.records.parlay.legs === 4);
+  check("badges ride with the player", f.players.amy.badges.includes("hot") && f.players.bob.badges.includes("cold"));
+  check("a parlay is one bet in the record", bettorStats(people[0].slips).W === 4 && bettorStats(people[0].slips).L === 1);
+}
 console.log(`bets: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

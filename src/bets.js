@@ -164,4 +164,75 @@ export function leaderboards(people) {
   const cash = [...rated].sort((a, b) => b.stats.net - a.stats.net || b.stats.won - a.stats.won || b.stats.pct - a.stats.pct);
   return { record, money: cash };
 }
+// ---------- the fun part of the leaderboard: this week's race, bankroll lines, awards, all-time records ----------
+// people: [{ username, you, slips }]. Every ticket is one bet (a parlay is one bet, whatever its legs).
+const etDate = t => new Date(t).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+export function weekStartET(now = Date.now()) {
+  const wd = new Date(now).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short" });
+  const back = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 }[wd] ?? 0;
+  return etDate(now - back * 864e5);                                   // Monday, ET
+}
+export function boardFun(people, now = Date.now()) {
+  const wk = weekStartET(now), r2 = v => Math.round(v * 100) / 100;
+  const tailsOf = new Map();                                           // how many times each ticket was tailed
+  for (const p of people) for (const x of p.slips) if (x.tail) tailsOf.set(x.tail, (tailsOf.get(x.tail) || 0) + 1);
+  const out = people.map(p => {
+    const done = p.slips.filter(x => ["won", "lost", "push", "cashed"].includes(x.status)).sort((a, b) => String(a.settled || a.created).localeCompare(String(b.settled || b.created)));
+    const res = x => (x.status === "cashed" ? (x.profit > 0 ? "W" : x.profit < 0 ? "L" : "P") : x.status === "won" ? "W" : x.status === "lost" ? "L" : "P");
+    const pl = x => (x.status === "push" ? 0 : x.status === "lost" ? -x.stake : x.profit || 0);
+    let run = 0, best = null, longOdds = null, streak = 0, maxStreak = 0, parlayW = 0, bigParlay = null, staked = 0, weekNet = 0, weekBets = 0;
+    const series = [0];
+    for (const x of done) {
+      const r = res(x), v = pl(x);
+      run += v; series.push(r2(run)); if (r !== "P") staked += x.stake;
+      if (etDate(x.settled || x.created) >= wk) { weekNet += v; weekBets++; }
+      if (r === "W") { streak++; maxStreak = Math.max(maxStreak, streak);
+        if (!best || v > best.profit) best = { profit: r2(v), odds: x.odds, legs: (x.legs || []).length };
+        if (x.status === "won" && (!longOdds || x.odds > longOdds.odds)) longOdds = { odds: x.odds, profit: r2(v), legs: (x.legs || []).length };
+        if ((x.legs || []).length > 1 && x.status === "won") { parlayW++; if (!bigParlay || x.legs.length > bigParlay.legs) bigParlay = { legs: x.legs.length, profit: r2(v), odds: x.odds }; } }
+      else if (r === "L") streak = 0;
+    }
+    const tails = p.slips.reduce((a, x) => a + (tailsOf.get(x.id) || 0), 0);
+    const graded = done.filter(x => res(x) !== "P").length, W = done.filter(x => res(x) === "W").length;
+    return { username: p.username, you: !!p.you, bets: p.slips.filter(x => x.status !== "dup").length, graded, W, net: r2(run), staked: r2(staked), roi: staked ? run / staked : null, pct: graded ? W / graded : null,
+      weekNet: r2(weekNet), weekBets, best, longOdds, bigParlay, maxStreak, parlayW, tails, series: series.slice(-40),
+      cur: (() => { const rs = done.map(res).filter(z => z !== "P"); if (!rs.length) return null; const l = rs[rs.length - 1]; let k = 0; for (let i = rs.length - 1; i >= 0 && rs[i] === l; i--) k++; return { r: l, n: k }; })() };
+  });
+  // awards: one winner each (ties go to who got there with more bets); minimums keep a 1-for-1 from taking the crown
+  const top = (list, val, min = () => true) => { const c = list.filter(min).filter(x => val(x) != null && val(x) > 0).sort((a, b) => val(b) - val(a) || b.graded - a.graded); return c[0] || null; };
+  const award = (k, title, who, stat, why) => (who ? { k, title, who: who.username, stat, why } : null);
+  const hot = top(out, x => (x.cur?.r === "W" ? x.cur.n : null), x => x.cur?.n >= 2);
+  const cold = top(out, x => (x.cur?.r === "L" ? x.cur.n : null), x => x.cur?.n >= 3);
+  const sharp = top(out, x => x.pct, x => x.graded >= 5);
+  const shark = top(out, x => x.roi, x => x.graded >= 5);
+  const hit = top(out, x => x.best?.profit);
+  const lng = top(out, x => x.longOdds?.odds);
+  const pk = top(out, x => x.parlayW);
+  const mag = top(out, x => x.tails);
+  const roller = top(out, x => x.staked);
+  const grinder = top(out, x => x.bets);
+  const wkKing = top(out, x => x.weekNet);
+  const sgn = v => `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`, odds = o => `${o > 0 ? "+" : ""}${o}`;
+  const awards = [
+    award("week", "King of the Week", wkKing, wkKing && sgn(wkKing.weekNet), "most money won since Monday"),
+    award("hot", "On Fire", hot, hot && `W${hot.cur.n}`, "longest winning streak going right now"),
+    award("sharp", "Sharpshooter", sharp, sharp && `${Math.round(sharp.pct * 100)}%`, "best win rate (5+ bets)"),
+    award("shark", "The Shark", shark, shark && `${shark.roi > 0 ? "+" : ""}${(shark.roi * 100).toFixed(1)}% ROI`, "best return on money bet (5+ bets)"),
+    award("hit", "Biggest Hit", hit, hit && sgn(hit.best.profit), hit ? `one ticket at ${odds(hit.best.odds)}${hit.best.legs > 1 ? `, ${hit.best.legs} legs` : ""}` : ""),
+    award("long", "Longshot Legend", lng, lng && odds(lng.longOdds.odds), "longest odds ever cashed"),
+    award("parlay", "Parlay King", pk, pk && `${pk.parlayW} hit`, pk?.bigParlay ? `biggest: ${pk.bigParlay.legs} legs` : ""),
+    award("tail", "Tail Magnet", mag, mag && `${mag.tails} tail${mag.tails > 1 ? "s" : ""}`, "most times others copied their ticket"),
+    award("roller", "High Roller", roller, roller && `$${roller.staked.toFixed(0)}`, "most money put on the line"),
+    award("grind", "The Grinder", grinder, grinder && `${grinder.bets} bets`, "most tickets"),
+    award("cold", "Ice Cold", cold, cold && `L${cold.cur.n}`, "it's gotta turn around"),
+  ].filter(Boolean);
+  const records = {
+    biggest: hit ? { who: hit.username, profit: hit.best.profit, odds: hit.best.odds, legs: hit.best.legs } : null,
+    longest: lng ? { who: lng.username, odds: lng.longOdds.odds, profit: lng.longOdds.profit } : null,
+    streak: (x => (x ? { who: x.username, n: x.maxStreak } : null))(top(out, x => x.maxStreak)),
+    parlay: (x => (x?.bigParlay ? { who: x.username, legs: x.bigParlay.legs, profit: x.bigParlay.profit } : null))(top(out, x => x.bigParlay?.legs)),
+  };
+  const week = out.filter(x => x.weekBets > 0).sort((a, b) => b.weekNet - a.weekNet).map(x => ({ username: x.username, you: x.you, net: x.weekNet, bets: x.weekBets }));
+  return { week, weekOf: wk, awards, records, players: Object.fromEntries(out.map(x => [x.username, { series: x.series, bets: x.bets, maxStreak: x.maxStreak, tails: x.tails, badges: awards.filter(a => a.who === x.username).map(a => a.k) }])) };
+}
 export const USERNAME_RE = /^[A-Za-z0-9_]{3,16}$/;

@@ -17,7 +17,7 @@
 //   GET  /api/tickets/past       -> everyone's settled tickets, newest first (?status=won|lost|push, ?before=<settled> for more)
 // Grading: every call first settles any leg whose game is over, from ESPN's final score.
 import { ROUTES, scoreboardUrl, liveBoard, ymd } from "../../src/routes.js";
-import { gradeLeg, settleSlip, bettorStats, leaderboards, readOdds, amToDec, decToAm, USERNAME_RE } from "../../src/bets.js";
+import { gradeLeg, settleSlip, bettorStats, leaderboards, boardFun, readOdds, amToDec, decToAm, USERNAME_RE } from "../../src/bets.js";
 import { sportOfSeries, priceToAm, importKey, signHeaders, syncPayload, API_ROOT } from "../../src/kalshi.js";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -66,7 +66,36 @@ async function init(env) {
   try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN kalshi TEXT").run(); } catch (_) { /* already there */ }
   try { await env.DB.prepare("ALTER TABLE slips ADD COLUMN tail TEXT").run(); } catch (_) { /* already there */ }
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS sync_keys (email TEXT PRIMARY KEY, env TEXT NOT NULL, key_id TEXT NOT NULL, secret TEXT NOT NULL, created TEXT NOT NULL, synced TEXT, fails INTEGER NOT NULL DEFAULT 0, last_error TEXT)").run();
+  await dedupeOnce(env);
   ready = true;
+}
+// ---------- one ticket per bet ----------
+// A Kalshi position could be imported by the sync while the slip that bought it on this site was still being saved, and
+// several syncs running at once could each import it again: one bet showed up as up to six tickets and counted six
+// times. The copies are set aside as status 'dup' (kept, never counted or listed; reversible), once, here.
+// key: the person, Kalshi environment, market and side a ticket sits on
+const kKey = (email, k) => { if (!k) return null; const o = (k.orders || [])[0], mkt = k.mkt || k.combo?.market_ticker || o?.ticker; return mkt ? `${email}|${k.env || "live"}|${mkt}|${k.combo ? "yes" : k.side || o?.side || "yes"}` : null; };
+export function findDups(rows) {
+  const by = new Map(), dup = [];
+  for (const r of rows) { const k = kKey(r.email, r.kalshi); if (k) (by.get(k) || by.set(k, []).get(k)).push(r); }
+  for (const list of by.values()) {
+    if (list.length < 2) continue;
+    const placed = list.filter(r => !r.kalshi.imported), imp = list.filter(r => r.kalshi.imported).sort((a, b) => String(a.created).localeCompare(String(b.created)) || String(a.id).localeCompare(String(b.id)));
+    const near = (a, b) => Math.abs(Date.parse(a.created) - Date.parse(b.created)) < 10 * 60e3;
+    const kept = [];
+    for (const r of imp) {
+      if (placed.some(p => near(p, r)) || kept.some(k => near(k, r))) dup.push(r.id);   // a copy of a slip placed here, or of an earlier import
+      else kept.push(r);
+    }
+  }
+  return dup;
+}
+async function dedupeOnce(env) {
+  if (await setting(env, "dedupe_v1")) return;
+  const rows = (await env.DB.prepare("SELECT * FROM slips WHERE kalshi IS NOT NULL").all()).results.map(r => ({ ...rowToSlip(r), email: r.email }));
+  const ids = findDups(rows);
+  for (let i = 0; i < ids.length; i += 50) await env.DB.batch(ids.slice(i, i + 50).map(id => env.DB.prepare("UPDATE slips SET status='dup' WHERE id=?").bind(id)));
+  await setSetting(env, "dedupe_v1", JSON.stringify({ at: new Date().toISOString(), n: ids.length, ids }));
 }
 const setting = async (env, k) => (await env.DB.prepare("SELECT v FROM settings WHERE k=?").bind(k).first())?.v ?? null;
 const setSetting = (env, k, v) => env.DB.prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(k, v).run();
@@ -187,6 +216,11 @@ async function placeSlip(env, email, body) {
   }
   const id = crypto.randomUUID(), created = new Date().toISOString();
   await env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi, tail) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, ?)").bind(id, email, created, stake, odds, JSON.stringify(legs), kalshi ? JSON.stringify(kalshi) : null, tail).run();
+  if (kalshi) {                                              // the sync imported this same bet a moment before it was saved here
+    const mine = kKey(email, kalshi);
+    const imp = (await env.DB.prepare("SELECT * FROM slips WHERE email=? AND status='pending' AND kalshi IS NOT NULL").bind(email).all()).results.map(rowToSlip).filter(r => r.kalshi.imported && kKey(email, r.kalshi) === mine);
+    if (imp.length) await env.DB.batch(imp.map(r => env.DB.prepare("UPDATE slips SET status='dup' WHERE id=?").bind(r.id)));
+  }
   return json({ slip: { id, created, stake, odds, status: "pending", profit: null, settled: null, legs, kalshi, tail } });
 }
 
@@ -242,6 +276,11 @@ export function kalshiResult(m, side = "yes") {
 // placed on this site is held to the position too, so its bet and contracts are always what Kalshi shows (bought more
 // in the app, sold some, or a slip that recorded the wrong size). Tickets grade on Kalshi's own result as before.
 const SYNC_FRESH = 60000;                // a slip placed in the last minute is left alone: its fill may still be landing
+// the same position, imported twice at the same moment, gets the same id (and the second insert is ignored)
+async function importId(email, env, ticker, side, since) {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${email}|${env}|${ticker}|${side}|${since}`)));
+  return `kx-${[...h.slice(0, 16)].map(b => b.toString(16).padStart(2, "0")).join("")}`;
+}
 async function syncKalshi(env, email, body) { return json(await syncCore(env, email, body)); }
 async function syncCore(env, email, body) {
   const kenv = body?.env === "demo" ? "demo" : "live", now = Date.now();
@@ -296,12 +335,14 @@ async function syncCore(env, email, body) {
     const odds = decToAm(dec), kalshi = { env: kenv, imported: true, mkt: ticker, side, count, dec: count / cost,
       ...(legs.length > 1 ? { combo: { market_ticker: ticker, contracts: count, price } } : { orders: [{ ticker, side, count, price, order_id: null, filled: count }] }) };
     const old = synced.get(key);
+    if (!old && Date.parse(p.since) && now - Date.parse(p.since) < 120000) continue;   // just bought: the site's own slip may still be saving
     if (old) {
       if (Math.abs((old.kalshi.count || 0) - count) < 0.005 && Math.abs(old.stake - cost) < 0.005) continue;
       writes.push(env.DB.prepare("UPDATE slips SET stake=?, odds=?, kalshi=? WHERE id=? AND status='pending'").bind(cost, odds, JSON.stringify(kalshi), old.id)); updated++;
     } else {
       const created = Date.parse(p.since) ? new Date(p.since).toISOString() : new Date().toISOString();
-      writes.push(env.DB.prepare("INSERT INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi, tail) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL)").bind(crypto.randomUUID(), email, created, cost, odds, JSON.stringify(legs), JSON.stringify(kalshi))); added++;
+      const id = await importId(email, kenv, ticker, side, created);
+      writes.push(env.DB.prepare("INSERT OR IGNORE INTO slips (id, email, created, stake, odds, status, profit, settled, legs, kalshi, tail) VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL)").bind(id, email, created, cost, odds, JSON.stringify(legs), JSON.stringify(kalshi))); added++;
     }
   }
   if (writes.length) await env.DB.batch(writes);
@@ -472,7 +513,7 @@ export async function onRequest({ request, env, params, waitUntil }) {
     else { await Promise.race([run, new Promise(r => setTimeout(r, 4000))]); if (waitUntil) waitUntil(run); }
   }
   await gradePending(env).catch(() => {});
-  const slipsOf = async em => (await env.DB.prepare("SELECT * FROM slips WHERE email=? ORDER BY created DESC").bind(em).all()).results.map(rowToSlip);
+  const slipsOf = async em => (await env.DB.prepare("SELECT * FROM slips WHERE email=? AND status != 'dup' ORDER BY created DESC").bind(em).all()).results.map(rowToSlip);
   if (what === "slips" && m === "GET") { const slips = await slipsOf(email); return json({ username: me.username, slips, stats: bettorStats(slips) }); }
   if (what === "user" && m === "GET" && path[1]) {
     const u = await env.DB.prepare("SELECT email, username FROM users WHERE uname=?").bind(String(path[1]).toLowerCase()).first();
@@ -483,13 +524,14 @@ export async function onRequest({ request, env, params, waitUntil }) {
   if (what === "tickets" && m === "GET") return tickets(env, email, path[1] === "past" ? "past" : "live", new URL(request.url).searchParams);
   if (what === "board" && m === "GET") {
     const users = (await env.DB.prepare("SELECT email, username FROM users").all()).results;
-    const all = (await env.DB.prepare("SELECT * FROM slips").all()).results;
+    const all = (await env.DB.prepare("SELECT * FROM slips WHERE status != 'dup'").all()).results;
     const by = {};
     for (const r of all) (by[r.email] = by[r.email] || []).push(rowToSlip(r));
     const people = users.map(u => ({ username: u.username, you: u.email === email, stats: bettorStats(by[u.email] || []) }));
     const strip = p => ({ username: p.username, you: p.you, W: p.stats.W, L: p.stats.L, P: p.stats.P, pending: p.stats.pending, pct: p.stats.pct, net: p.stats.net, won: p.stats.won, staked: p.stats.staked, roi: p.stats.roi, streak: p.stats.streak });
     const lb = leaderboards(people);
-    return json({ record: lb.record.map(strip), money: lb.money.map(strip), players: people.length, waiting: people.filter(p => p.stats.W + p.stats.L === 0).map(p => p.username) });
+    const fun = boardFun(users.map(u => ({ username: u.username, you: u.email === email, slips: by[u.email] || [] })));
+    return json({ record: lb.record.map(strip), money: lb.money.map(strip), players: people.length, waiting: people.filter(p => p.stats.W + p.stats.L === 0).map(p => p.username), fun });
   }
   return bad("Not found.", 404);
 }

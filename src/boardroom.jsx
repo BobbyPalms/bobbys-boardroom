@@ -2127,6 +2127,7 @@ button{font-family:inherit}button:focus-visible,input:focus-visible{outline:2px 
 .bb-tiles4{grid-template-columns:repeat(4,minmax(0,1fr))}
 .bb-tiles2{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media (max-width:520px){.bb-tiles4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:420px){.bb-hide-narrow{display:none}}
 .bb-book{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;margin-top:4px}
 .bb-book-rail{flex:0 1 220px;min-width:200px}
 .bb-book-main{flex:999 1 560px;min-width:0}
@@ -2822,7 +2823,7 @@ function LiveTracker({ sport, row }) {
 }
 
 // A · TERMINAL: sports and shortcuts on the left, the board in the middle (every price tappable, sim vs Kalshi), the slip on the right
-function TerminalView({ sport, league, onPickSport, onPick, onBox, onSlate, onBest, onBetsTab, onTools, onToolsKalshi, slateOff, field, fieldBoard }) {
+function TerminalView({ sport, league, onPickSport, onPick, onBox, onSlate, onBest, onBetsTab, onTools, onToolsKalshi, slateOff, field, fieldBoard, extras = {} }) {
   const { kal } = useKal(), board = useBoardRows(sport, league), sl = useHomeSlate(sport, league, !field);
   const cart = useCart(), inCart = new Set(cart.map(x => x.key));
   const games = useMemo(() => boardGames(board.rows, sl.ranked, sport), [board.rows, sl.ranked, sport]);
@@ -2838,6 +2839,7 @@ function TerminalView({ sport, league, onPickSport, onPick, onBox, onSlate, onBe
         {railBtn("🎟 MY BETS", "tickets · cash out", () => onBetsTab("mine"), NEON.purple)}
         {railBtn("👥 LIVE TICKETS", "everyone's, TAIL", () => onBetsTab("live"), NEON.purple)}
         {railBtn("🧰 TOOLS", "The Book · Kalshi", onTools, NEON.gold)}
+        {extras.slateNote}
       </aside>
       <main className="bb-book-main">
         {field ? fieldBoard : <Panel title={`${lbl.toUpperCase()} · LINES`} right={sl.loading ? "scanning the slate…" : kal ? "teal = Kalshi's price" : "Kalshi prices shown where listed"}>
@@ -2848,6 +2850,7 @@ function TerminalView({ sport, league, onPickSport, onPick, onBox, onSlate, onBe
           <OddsBoard games={games} prices={prices} inCart={inCart} onPick={onPick} onBox={onBox} kal={kal}/>
           {sl.err && <div style={{ fontSize: 11, color: T.faint, marginTop: 8 }}>Slate scan: {sl.err} Lines show without the sim.</div>}
         </Panel>}
+        {extras.matchup}{extras.games}
       </main>
       <aside className="bb-book-slip"><PageSlip kal={kal} onTools={onToolsKalshi} onPlaced={() => onBetsTab("mine")}/></aside>
     </div>
@@ -2875,7 +2878,7 @@ function TopThree() {
     <span style={{ fontFamily: F.d, color: i === 0 ? NEON.gold : T.dim }}>{i + 1}</span><span style={{ overflowWrap: "anywhere" }}>{p.username}</span><span style={{ color: p.net >= 0 ? NEON.green : NEON.red }}>{sCash(p.net)}</span></div>)}</div>;
 }
 const legOfBet = (g, b) => (b ? { leg: legFromRow(g.R, { market: MK_OF[b.market], side: b.side, line: b.line }), label: b.label } : null);
-function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field, fieldBoard }) {
+function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field, fieldBoard, extras = {} }) {
   const { kal } = useKal(), board = useBoardRows(sport, league), sl = useHomeSlate(sport, league, !field);
   const cart = useCart(), inCart = new Set(cart.map(x => x.key));
   const games = useMemo(() => boardGames(board.rows, sl.ranked, sport), [board.rows, sl.ranked, sport]);
@@ -2890,6 +2893,7 @@ function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field,
         <span style={{ display: "grid", placeItems: "center", width: 50, height: 50, borderRadius: 25, border: `2px solid ${on ? T.chrome : T.line}`, background: T.panel, fontFamily: F.d, fontSize: 10, color: "#fff", boxShadow: on ? "0 0 14px rgba(143,0,255,.5)" : "none" }}>{t}</span>{t}</button>; })}
     </div>
     <PickerFold sport={sport} league={league} onPick={onPickSport}/>
+    {extras.tiles}{extras.slateNote}
     <div className="bb-book">
       <main className="bb-book-main" style={{ flexBasis: 640 }}>
         {field ? fieldBoard : <>
@@ -2939,6 +2943,7 @@ function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field,
           </div>
           {board.rows && !games.length && <div style={{ fontSize: 12, color: T.dim }}>No {lbl} games left today.</div>}
         </Panel></>}
+        {extras.matchup}{extras.games}
       </main>
       <aside className="bb-book-slip">
         <Panel title="FRIENDS' TICKETS" right="riding now"><FriendsTickets onBetsTab={onBetsTab} kal={kal}/></Panel>
@@ -2950,7 +2955,7 @@ function FeedView({ sport, league, onPickSport, onPick, onBox, onBetsTab, field,
 
 // C · ARENA: live first. Games in play on the left; the one you pick in the middle (score, Kalshi's live prices, every
 // ticket riding it with live stat bars and cash out); the slip on the right
-function ArenaView({ sport, league, onPickSport, onPick, onBox, onBetsTab, onToolsKalshi, field, fieldBoard }) {
+function ArenaView({ sport, league, onPickSport, onPick, onBox, onSlate, onBest, onTools, onBetsTab, onToolsKalshi, slateOff, field, fieldBoard, extras = {} }) {
   const { kal } = useKal(), board = useBoardRows(sport, league), sl = useHomeSlate(sport, league, !field);
   const cart = useCart(), inCart = new Set(cart.map(x => x.key));
   const games = useMemo(() => boardGames(board.rows, sl.ranked, sport), [board.rows, sl.ranked, sport]);
@@ -2973,6 +2978,12 @@ function ArenaView({ sport, league, onPickSport, onPick, onBox, onBetsTab, onToo
         {next.slice(0, 8).map(item)}
         {!board.rows && <div style={{ padding: 10, fontSize: 12, color: T.dim }}>Loading…</div>}
       </div>
+      {railBtn("▤ SLATE", "every game, best to worst", onSlate, T.chrome, slateOff)}
+      {railBtn("★ BEST BET", "the one pick", onBest, NEON.teal, slateOff)}
+      {railBtn("🎟 MY BETS", "tickets · cash out", () => onBetsTab("mine"), NEON.purple)}
+      {railBtn("👥 LIVE TICKETS", "everyone's, TAIL", () => onBetsTab("live"), NEON.purple)}
+      {railBtn("🧰 TOOLS", "The Book · Kalshi", onTools, NEON.gold)}
+      {extras.slateNote}
     </aside>
     <main className="bb-book-main">
       {field ? fieldBoard : !g ? <Panel title={lbl.toUpperCase()}><div style={{ fontSize: 12, color: T.dim }}>{board.rows ? `No ${lbl} games left today.` : "Loading the board…"}</div></Panel> : <>
@@ -3001,6 +3012,7 @@ function ArenaView({ sport, league, onPickSport, onPick, onBox, onBetsTab, onToo
         <Panel title="EVERY KALSHI MARKET ON THIS GAME" right="YES or NO, any line"><GameMarkets key={g.id} leg={g.cols[2].a?.leg} kal={kal} inCart={inCart} startOpen/></Panel>
         <Panel title="TICKETS RIDING THIS GAME" right="yours: cash out · theirs: TAIL"><FriendsTickets onBetsTab={onBetsTab} gameId={g.id} limit={8} kal={kal}/></Panel>
       </>}
+      {extras.matchup}{extras.games}
     </main>
     <aside className="bb-book-slip"><PageSlip kal={kal} onTools={onToolsKalshi} onPlaced={() => onBetsTab("mine")}/></aside>
   </div>;
@@ -3121,7 +3133,10 @@ function SetupScreen({sport,league=null,onPickSport,layout="classic",setLayout,o
   const games=dense=>field?<FieldBoard sport={sport} league={league}/>:<LiveScores dense={dense} sport={sport} league={league} onPick={onPick} onFinal={onFinal} onBox={onBox}/>;
 
   const fieldBoard=<FieldBoard sport={sport} league={league}/>;
-  const bookProps={sport,league,onPickSport,onPick,onBox,onSlate,onBest,onTools,onBetsTab:t=>onBetsTab?onBetsTab(t):onBets(),onToolsKalshi:onToolsKalshi||onTools,slateOff,field,fieldBoard};
+  // what every home view carries (the same as Classic): the slate's status, the matchup sim, and today's full game list
+  // (live, upcoming and finals, with SIM / BOX / FINAL REPORT and + on every team)
+  const extras={slateNote,tiles:tiles(4),matchup:field?null:matchupFold,games:field?null:<LiveScores dense sport={sport} league={league} onPick={onPick} onFinal={onFinal} onBox={onBox}/>};
+  const bookProps={sport,league,onPickSport,onPick,onBox,onSlate,onBest,onTools,onBetsTab:t=>onBetsTab?onBetsTab(t):onBets(),onToolsKalshi:onToolsKalshi||onTools,slateOff,field,fieldBoard,extras};
   if(layout==="terminal") return <Shell status="sportsbook" wide>{switcher}{hero(true)}<TerminalView {...bookProps}/></Shell>;
   if(layout==="feed") return <Shell status="sportsbook" wide>{switcher}{hero(true)}<FeedView {...bookProps}/></Shell>;
   if(layout==="arena") return <Shell status="live" wide>{switcher}{hero(true)}<ArenaView {...bookProps}/></Shell>;
@@ -5295,21 +5310,79 @@ function Tickets({ kind, onOpen, kal = null, onTools, onTailed, onCashed }) {
 }
 
 // ---------- leaderboards: by record ("5 for 7") and by money ----------
+// the leaderboard: every ticket is one bet (a parlay is one bet). The fun up top: the podium, this week's race, awards
+// and all-time records; then the full boards by record and by money, each with its bankroll line and badges.
+const BADGE = { week: ["👑", "King of the Week"], hot: ["🔥", "On Fire"], sharp: ["🎯", "Sharpshooter"], shark: ["🦈", "The Shark"], hit: ["💥", "Biggest Hit"], long: ["🚀", "Longshot Legend"],
+  parlay: ["🎰", "Parlay King"], tail: ["🧲", "Tail Magnet"], roller: ["💎", "High Roller"], grind: ["⚙️", "The Grinder"], cold: ["🧊", "Ice Cold"] };
+function Spark({ pts, w = 90, h = 26 }) {
+  if (!pts || pts.length < 2) return <span style={{ display: "inline-block", width: w }}/>;
+  const lo = Math.min(0, ...pts), hi = Math.max(0, ...pts), sp = hi - lo || 1, X = i => (i / (pts.length - 1)) * w, Y = v => h - ((v - lo) / sp) * h, end = pts[pts.length - 1];
+  return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label={`bankroll ${end >= 0 ? "up" : "down"} ${Math.abs(end).toFixed(2)} dollars over ${pts.length - 1} bets`} style={{ display: "block", flexShrink: 0 }}>
+    <line x1="0" y1={Y(0)} x2={w} y2={Y(0)} stroke="rgba(167,80,255,.35)" strokeDasharray="3 3"/>
+    <polyline points={pts.map((v, i) => `${X(i)},${Y(v)}`).join(" ")} fill="none" stroke={end >= 0 ? NEON.green : NEON.red} strokeWidth="1.6"/>
+    <circle cx={w} cy={Y(end)} r="2.2" fill={end >= 0 ? NEON.green : NEON.red}/>
+  </svg>;
+}
 function Leaderboard({ onOpen }) {
   const [d, setD] = useState(null), [err, setErr] = useState(null);
   useEffect(() => { api("GET", "board").then(setD).catch(e => setErr(e.message)); }, []);
   if (err) return <Panel color={NEON.red}><div style={{ fontSize: 13, color: "#FF8095" }}>{err}</div></Panel>;
   if (!d) return <Panel><div style={{ fontSize: 12, color: T.dim }}>Grading and loading…</div></Panel>;
-  const row = (p, i, right, sub) => <button key={p.username} onClick={() => onOpen(p.username)} style={{ display: "grid", gridTemplateColumns: "26px minmax(0,1fr) auto", gap: 10, alignItems: "center", width: "100%", padding: "10px 4px", border: "none", borderTop: i ? `1px solid ${T.line}` : "none", background: p.you ? "rgba(143,0,255,.14)" : "none", cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
+  const fun = d.fun || { week: [], awards: [], records: {}, players: {} }, P = u => fun.players?.[u] || {};
+  const badges = u => (P(u).badges || []).map(k => BADGE[k] ? <span key={k} title={BADGE[k][1]} aria-label={BADGE[k][1]} style={{ marginLeft: 4 }}>{BADGE[k][0]}</span> : null);
+  const row = (p, i, right, sub) => <button key={p.username} onClick={() => onOpen(p.username)} style={{ display: "grid", gridTemplateColumns: "26px minmax(0,1fr) auto auto", gap: 10, alignItems: "center", width: "100%", padding: "10px 4px", border: "none", borderTop: i ? `1px solid ${T.line}` : "none", background: p.you ? "rgba(143,0,255,.14)" : "none", cursor: "pointer", textAlign: "left", fontFamily: F.m }}>
     <span style={{ fontFamily: F.d, fontSize: 14, fontWeight: 700, color: i === 0 ? NEON.gold : i === 1 ? NEON.silver : i === 2 ? "#E08A4F" : T.dim, textAlign: "center" }}>{i + 1}</span>
     <div style={{ minWidth: 0 }}>
-      <div style={{ ...oneLine, fontSize: 13, color: "#fff" }}>{p.username}</div>
+      <div style={{ fontSize: 13, color: "#fff", overflowWrap: "anywhere" }}>{p.username}{badges(p.username)}</div>
       <div style={{ fontSize: 10, color: T.faint, lineHeight: 1.5, marginTop: 1 }}>{p.you ? <span style={{ color: T.chrome }}>you · </span> : null}{sub}</div>
     </div>
+    <span className="bb-hide-narrow"><Spark pts={P(p.username).series} w={70} h={22}/></span>
     <span style={{ fontFamily: F.d, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", color: right.c }}>{right.v}</span>
   </button>;
+  const pod = d.money.slice(0, 3), order = [pod[1], pod[0], pod[2]].filter(Boolean), medal = { 0: NEON.gold, 1: NEON.silver, 2: "#E08A4F" };
+  const R = fun.records || {}, wk = fun.week || [], wkMax = Math.max(1, ...wk.map(x => Math.abs(x.net)));
+  const sg = v => `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`, od = o => `${o > 0 ? "+" : ""}${o}`;
   return <>
-    <Panel title="BY RECORD" right="win %, then wins">
+    {pod.length > 0 && <Panel title="THE PODIUM" right="by money">
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${order.length},minmax(0,1fr))`, gap: 8, alignItems: "end" }}>
+        {order.map(p => { const i = d.money.indexOf(p), c = medal[i], h = i === 0 ? 150 : i === 1 ? 118 : 96;
+          return <button key={p.username} onClick={() => onOpen(p.username)} style={{ display: "grid", alignContent: "end", justifyItems: "center", gap: 4, minWidth: 0, minHeight: h, padding: "10px 6px", border: `1px solid ${c}`, background: `linear-gradient(180deg, ${c}26, rgba(14,4,26,.85))`, boxShadow: i === 0 ? `0 0 24px ${c}55` : "none", color: "#fff", cursor: "pointer", fontFamily: F.m }}>
+            {i === 0 && <span aria-hidden="true" style={{ fontSize: 22 }}>👑</span>}
+            <span style={{ fontFamily: F.d, fontWeight: 900, fontSize: i === 0 ? 26 : 20, color: c }}>{i + 1}</span>
+            <span style={{ fontSize: 12, overflowWrap: "anywhere", textAlign: "center" }}>{p.username}{p.you ? <span style={{ color: T.chrome }}> · you</span> : null}</span>
+            <span style={{ fontFamily: F.d, fontSize: 13, color: p.net >= 0 ? NEON.green : NEON.red }}>{sg(p.net)}</span>
+            <span style={{ fontSize: 10, color: T.dim }}>{p.W}-{p.L}</span>
+            <Spark pts={P(p.username).series} w={64} h={18}/>
+          </button>; })}
+      </div>
+    </Panel>}
+    {wk.length > 0 && <Panel title="THIS WEEK'S RACE" right={`since Mon ${fun.weekOf ? new Date(fun.weekOf + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""}`}>
+      {wk.map((x, i) => <div key={x.username} style={{ display: "grid", gridTemplateColumns: "minmax(0,110px) minmax(0,1fr) auto", gap: 10, alignItems: "center", padding: "6px 0", borderTop: i ? `1px solid ${T.line}` : "none" }}>
+        <span style={{ fontSize: 12, overflowWrap: "anywhere", color: x.you ? T.chrome : T.ink }}>{i === 0 && x.net > 0 ? "👑 " : ""}{x.username}</span>
+        <div style={{ position: "relative", height: 10, background: "rgba(241,230,255,.06)" }}><div style={{ position: "absolute", left: x.net >= 0 ? "50%" : `${50 - (Math.abs(x.net) / wkMax) * 50}%`, width: `${(Math.abs(x.net) / wkMax) * 50}%`, top: 0, bottom: 0, background: x.net >= 0 ? NEON.green : NEON.red, boxShadow: `0 0 8px ${x.net >= 0 ? NEON.green : NEON.red}88` }}/><div style={{ position: "absolute", left: "50%", top: -2, bottom: -2, width: 1, background: T.line }}/></div>
+        <span style={{ fontFamily: F.d, fontSize: 12, whiteSpace: "nowrap", color: x.net >= 0 ? NEON.green : NEON.red }}>{sg(x.net)} <span style={{ fontFamily: F.m, color: T.faint, fontSize: 10 }}>· {x.bets}</span></span>
+      </div>)}
+    </Panel>}
+    {(fun.awards || []).length > 0 && <Panel title="AWARDS" right="who's earned what">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(122px,1fr))", gap: 8 }}>
+        {fun.awards.map(a => <button key={a.k} onClick={() => onOpen(a.who)} style={{ display: "grid", gap: 4, justifyItems: "start", padding: 10, border: `1px solid ${a.k === "cold" ? "#5B7CFF88" : T.line}`, background: a.k === "cold" ? "rgba(91,124,255,.08)" : "rgba(143,0,255,.08)", color: T.ink, fontFamily: F.m, cursor: "pointer", textAlign: "left", minWidth: 0 }}>
+          <span style={{ fontSize: 20 }} aria-hidden="true">{BADGE[a.k]?.[0]}</span>
+          <span style={{ fontFamily: F.d, fontSize: 10, letterSpacing: 1.5, color: T.chrome }}>{a.title.toUpperCase()}</span>
+          <b style={{ fontSize: 13, color: "#fff", overflowWrap: "anywhere" }}>{a.who}</b>
+          <span style={{ fontFamily: F.d, fontSize: 12, color: a.k === "cold" ? "#9DB1FF" : NEON.green }}>{a.stat}</span>
+          <span style={{ fontSize: 10, color: T.faint, lineHeight: 1.4 }}>{a.why}</span>
+        </button>)}
+      </div>
+    </Panel>}
+    {(R.biggest || R.longest || R.streak || R.parlay) && <Panel title="ALL-TIME RECORDS" right="the books">
+      {[R.biggest && ["Biggest single win", `${sg(R.biggest.profit)} at ${od(R.biggest.odds)}${R.biggest.legs > 1 ? ` · ${R.biggest.legs} legs` : ""}`, R.biggest.who],
+        R.longest && ["Longest odds cashed", `${od(R.longest.odds)} (${sg(R.longest.profit)})`, R.longest.who],
+        R.streak && ["Longest win streak", `W${R.streak.n}`, R.streak.who],
+        R.parlay && ["Biggest parlay hit", `${R.parlay.legs} legs (${sg(R.parlay.profit)})`, R.parlay.who]].filter(Boolean).map(([t, v, who], i) =>
+        <div key={t} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, padding: "8px 0", borderTop: i ? `1px solid ${T.line}` : "none", fontSize: 12 }}>
+          <span style={{ color: T.dim }}>{t} · <button onClick={() => onOpen(who)} style={{ border: "none", background: "none", padding: 0, color: "#fff", fontFamily: F.m, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>{who}</button></span><b style={{ color: NEON.gold, whiteSpace: "nowrap" }}>{v}</b></div>)}
+    </Panel>}
+    <Panel title="BY RECORD" right="win %, then wins · one ticket = one bet">
       {!d.record.length && <div style={{ fontSize: 12, color: T.dim }}>No graded bets yet. The board fills in as games finish.</div>}
       {d.record.map((p, i) => row(p, i, { v: `${p.W}-${p.L}`, c: T.ink }, `${pctTxt(p.pct)} · ${p.W} for ${p.W + p.L}${p.P ? ` · ${p.P} push` : ""}${p.streak ? ` · streak ${p.streak}` : ""}`))}
     </Panel>

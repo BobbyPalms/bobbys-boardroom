@@ -11,7 +11,7 @@ let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) pass++; else { fail++; console.log("  FAIL:", n, d === undefined ? "" : JSON.stringify(d).slice(0, 500)); } };
 const root = join(dirname(fileURLToPath(import.meta.url)), ".."), out = join(mkdtempSync(join(tmpdir(), "bbapi-")), "api.mjs");
 await build({ entryPoints: [join(root, "functions/api/[[path]].js")], bundle: true, platform: "neutral", format: "esm", outfile: out, logLevel: "error" });
-const { onRequest } = await import(out);
+const { onRequest, findDups } = await import(out);
 
 // ---- D1 on SQLite ----
 const db = new DatabaseSync(":memory:");
@@ -235,7 +235,7 @@ check("someone else can't sync into your account (it's per login)", (await call(
   const kp = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
   const pk8 = Buffer.from(await crypto.subtle.exportKey("pkcs8", kp.privateKey)).toString("base64").match(/.{1,64}/g).join("\n");
   const PEM = `-----BEGIN PRIVATE KEY-----\n${pk8}\n-----END PRIVATE KEY-----`;
-  let signedOk = 0, positionsNow = [{ ticker: "KXNBAGAME-26NOV09LALATL-LAL", position_fp: "40.00", market_exposure_dollars: "22.000000", last_updated_ts: new Date().toISOString() }];
+  let signedOk = 0, positionsNow = [{ ticker: "KXNBAGAME-26NOV09LALATL-LAL", position_fp: "40.00", market_exposure_dollars: "22.000000", last_updated_ts: new Date(Date.now() - 5 * 60e3).toISOString() }];
   globalThis.__kx = async (u, opts) => {
     const p = u.pathname.replace("/trade-api/v2/", "");
     if (p === "portfolio/positions") {
@@ -313,6 +313,37 @@ check("someone else can't sync into your account (it's per login)", (await call(
   const st3 = (await call("rec@x.com", "POST", "slips", { stake: 5, legs: [legNBA("76ers ML", "402", "ml", "away", null, "-110")], kalshi: { env: "live", orders: [{ ticker: "KXNBAGAME-26NOV12PHIDET-PHI", side: "yes", count: 9, price: 0.52, order_id: "o-23", filled: 9 }] } })).j.slip;
   r = await call("rec@x.com", "POST", "slips/sync", { env: "live", positions: [{ ticker: T2, side: "yes", count: 100, cost: 61.5 }] });
   check("a ticket placed moments ago is never reported as gone", !r.j.gone.some(g => g.id === st3.id), r.j.gone);
+}
+// ---- one ticket per bet: a Kalshi position is never imported twice, and never on top of the slip that bought it ----
+{
+  await call("dup@x.com", "POST", "me", { username: "DupTest" });
+  const since = new Date(Date.now() - 10 * 60e3).toISOString(), T9 = "KXMVECROSSCATEGORY-S2026DUP-XYZ";
+  const pos = [{ ticker: T9, side: "yes", count: 100, cost: 10, combo: true, since, legs: [{ ticker: "KXUFCFIGHT-26NOV14DOBDUN-DOB", side: "yes", name: "Drew Dober", price: 0.5 }, { ticker: "KXUFCFIGHT-26NOV14MILMCK-MCK", side: "yes", name: "Terrance McKinney", price: 0.5 }] }];
+  const rs = await Promise.all([1, 2, 3, 4, 5].map(() => call("dup@x.com", "POST", "slips/sync", { env: "live", positions: pos })));
+  const mine = () => db.prepare("SELECT id, status, kalshi FROM slips WHERE email='dup@x.com'").all();
+  check("five syncs at once import the position once (same id, the rest ignored)", rs.every(r => r.status === 200) && mine().filter(r => r.status === "pending").length === 1, mine().map(r => r.status));
+  const fresh = [{ ...pos[0], ticker: "KXMVECROSSCATEGORY-S2026DUP-NEW", since: new Date().toISOString() }];
+  check("a position bought in the last 2 minutes isn't imported (the slip that bought it may still be saving)", (await call("dup@x.com", "POST", "slips/sync", { env: "live", positions: fresh })).j.added === 0 && mine().length === 1);
+  check("...and is imported once it's 2 minutes old", (await call("dup@x.com", "POST", "slips/sync", { env: "live", positions: [{ ...fresh[0], since: new Date(Date.now() - 3 * 60e3).toISOString() }] })).j.added === 1);
+  // the slip bought on this site lands after the import: the import is set aside, the site's slip is the ticket
+  for (const id of ["401", "402"]) Object.assign(games[id], { state: "pre", date: new Date(Date.now() + 3 * 3600e3).toISOString(), as: "", hs: "" });
+  const placed = await call("dup@x.com", "POST", "slips", { stake: 10, legs: [legNBA("Lakers ML", "401", "ml", "away", null, "-150"), legNBA("76ers ML", "402", "ml", "away", null, "-110")], kalshi: { env: "live", dec: 10, combo: { market_ticker: T9, rfq_id: "r", quote_id: "q", price: 0.1, contracts: 100 } } });
+  const after = mine();
+  check("placing the slip sets the earlier import aside: one pending ticket for the bet", placed.status === 200 && after.filter(r => r.status === "pending" && JSON.parse(r.kalshi).combo?.market_ticker === T9).length === 1 && after.some(r => r.status === "dup"), after.map(r => [r.status, JSON.parse(r.kalshi).imported]));
+  const me = (await call("dup@x.com", "GET", "slips")).j;
+  check("set-aside copies never show in My Bets or count in the numbers", !me.slips.some(x => x.status === "dup") && me.stats.pending === 2, me.stats);
+  check("the leaderboard counts each ticket once", !JSON.stringify((await call("bob@x.com", "GET", "board")).j).includes('"dup"'));
+  // the clean-up of what was already there: copies of a slip placed here, and imports of the same bet at the same moment
+  const k = (imp, t = T9) => ({ env: "live", imported: imp, mkt: imp ? t : undefined, side: "yes", combo: { market_ticker: t, contracts: 100 } });
+  const rows = [
+    { id: "site", email: "a", created: "2026-11-15T00:35:47.851Z", kalshi: k(false) },
+    ...[1, 2, 3, 4, 5].map(i => ({ id: `imp${i}`, email: "a", created: "2026-11-15T00:35:46.646Z", kalshi: k(true) })),
+    { id: "solo1", email: "a", created: "2026-11-15T03:00:00Z", kalshi: k(true, "OTHER") }, { id: "solo2", email: "a", created: "2026-11-15T03:00:00Z", kalshi: k(true, "OTHER") },
+    { id: "later", email: "a", created: "2026-11-16T03:00:00Z", kalshi: k(true, "OTHER") },
+    { id: "otherperson", email: "b", created: "2026-11-15T00:35:46.646Z", kalshi: k(true) },
+  ];
+  const d = findDups(rows);
+  check("clean-up: the 5 imports of the site's slip and the 2nd copy of a same-moment import are set aside; a later rebuy and another person's ticket stay", d.sort().join() === "imp1,imp2,imp3,imp4,imp5,solo2", d);
 }
 check("no storage, clear message", (await onRequest({ request: new Request("https://x/api/me"), env: {}, params: { path: ["me"] } })).status === 503);
 
